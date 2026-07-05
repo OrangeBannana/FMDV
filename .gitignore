@@ -4,8 +4,9 @@
 fmdv_res.o
 fmdv*.exe
 
-# Headless test render outputs
+# Headless test render outputs (but keep README screenshots)
 *.png
+!docs/*.png
 
 # OS / OneDrive cruft
 Thumbs.db

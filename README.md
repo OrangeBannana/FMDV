@@ -8,6 +8,17 @@ markdown parser + a hand-written Win32/GDI layout & rendering engine.
 - **~417 KB** single self-contained exe, no DLLs to ship
 - Cached layout + viewport culling → scrolling stays ~1.5 ms even on huge docs
 
+![FMDV rendering a markdown file](docs/screenshot-light.png)
+
+<details>
+<summary>More screenshots: <b>dark mode</b> · <b>split editor</b></summary>
+
+![Dark mode](docs/screenshot-dark.png)
+
+![Split editor with live preview (Ctrl+E)](docs/screenshot-editor.png)
+
+</details>
+
 ## Run
 Download `fmdv.exe` from the [latest release](../../releases/latest), or build it
 from source (see below):
