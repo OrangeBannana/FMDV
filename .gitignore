@@ -1,12 +1,8 @@
-# Build intermediates / outputs
+# Build intermediates / outputs (binaries ship via GitHub Releases, not git)
 *.o
 *.syso
 fmdv_res.o
-cpp/fmdv.exe
-cpp/fmdv_dbg.exe
-
-# Superseded WebView2/Go binary (rebuild from the Go source if you want it)
-fmdv-webview2.exe
+fmdv*.exe
 
 # Headless test render outputs
 *.png

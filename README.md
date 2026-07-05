@@ -9,7 +9,8 @@ markdown parser + a hand-written Win32/GDI layout & rendering engine.
 - Cached layout + viewport culling → scrolling stays ~1.5 ms even on huge docs
 
 ## Run
-The prebuilt native binary is [`fmdv.exe`](fmdv.exe) at the repo root:
+Download `fmdv.exe` from the [latest release](../../releases/latest), or build it
+from source (see below):
 
 ```
 fmdv.exe path\to\file.md
