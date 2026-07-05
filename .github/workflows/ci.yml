@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MinGW-w64 (MSYS2 UCRT64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Build (release + debug)
+        shell: pwsh
+        run: |
+          $env:FMDV_MINGW = "$env:RUNNER_TEMP\msys64\ucrt64\bin"
+          .\cpp\build.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\cpp\build.ps1 -Debug
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not (Test-Path cpp\fmdv.exe)) { throw "release exe missing" }
+          if (-not (Test-Path cpp\fmdv_dbg.exe)) { throw "debug exe missing" }
+
+      - name: Headless checks (parser + renderer)
+        shell: pwsh
+        run: |
+          $pd = & .\cpp\fmdv_dbg.exe test.md --parse-dump 2>&1 | Out-String
+          foreach ($want in 'Heading level=1', 'CodeBlock lang=python', 'Table', 'BlockQuote', 'HRule', 'link=https://github.com') {
+            if ($pd -notmatch [regex]::Escape($want)) { throw "parse-dump missing: $want" }
+          }
+          # piping forces PowerShell to wait for the GUI-subsystem exe to exit
+          & .\cpp\fmdv.exe test.md --dump light.png --width 900 | Out-Null
+          & .\cpp\fmdv.exe test.md --dump dark.png --width 900 --dark | Out-Null
+          & .\cpp\fmdv.exe test.md --dump scroll.png --width 900 --viewport 500 --scroll 250 | Out-Null
+          foreach ($f in 'light.png', 'dark.png', 'scroll.png') {
+            if (-not (Test-Path $f) -or (Get-Item $f).Length -lt 1500) { throw "render failed: $f" }
+          }
+          Write-Host "headless checks OK"
+
+      # The full suite drives live windows (selection, clipboard, autocomplete).
+      # It usually works on Windows runners but is inherently flakier than the
+      # headless checks, so it doesn't gate the build.
+      - name: Full test suite (non-blocking)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $env:FMDV_MINGW = "$env:RUNNER_TEMP\msys64\ucrt64\bin"
+          powershell -ExecutionPolicy Bypass -File cpp\tests\run-tests.ps1
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fmdv
+          path: cpp/fmdv.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fmdv
+
+      - name: Attach exe to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: fmdv.exe
+          generate_release_notes: true
