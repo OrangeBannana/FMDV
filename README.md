@@ -47,8 +47,9 @@ powershell -File tests\run-tests.ps1   # 47-check suite
 > toolchain's `bin` directory, or pass `-MinGW <path>` to `build.ps1`.
 
 ## History
-Started as a Go + WebView2 prototype (`main.go`, still in the repo), then rewritten
-from scratch in C++/Win32/GDI for the speed. The git history reflects that pivot.
+Started as a Go + WebView2 prototype (now in [`legacy/webview2/`](legacy/webview2/)),
+then rewritten from scratch in C++/Win32/GDI for the speed. The git history
+reflects that pivot.
 
 ## License
 [MIT](LICENSE)
