@@ -11,7 +11,9 @@ if (-not (Get-Command g++ -ErrorAction SilentlyContinue)) {
     Write-Host "g++ not found. Install MinGW-w64 and add its bin dir to PATH, set FMDV_MINGW, or pass -MinGW <path>." -ForegroundColor Red
     exit 1
 }
-Set-Location $PSScriptRoot
+# Build inside cpp/ without leaking the cwd change to the caller
+Push-Location $PSScriptRoot
+try {
 
 # Compile resource (icon + version info)
 & windres fmdv.rc -O coff -o fmdv_res.o
@@ -39,3 +41,5 @@ if ($Debug) {
         Write-Host "OK -> fmdv.exe ($kb KB)"
     } else { Write-Host "BUILD FAILED" }
 }
+
+} finally { Pop-Location }
