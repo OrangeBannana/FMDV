@@ -41,11 +41,13 @@ cd cpp
 powershell -File tests\run-tests.ps1   # 47-check suite
 ```
 
-> **Toolchain note:** the build script points at a portable MinGW at
-> `C:\Users\<user>\mingw\mingw64` (MSI installers were blocked by policy on the
-> original machine, so it was unzipped manually). On a new device, install/unzip
-> MinGW-w64 (GCC, UCRT) and update the `$mingw` path at the top of `build.ps1`.
+> **Toolchain note:** requires MinGW-w64 (GCC, UCRT — e.g. [winlibs](https://winlibs.com/)
+> or MSYS2's `ucrt64`). Either have `g++` on `PATH`, set `FMDV_MINGW` to the
+> toolchain's `bin` directory, or pass `-MinGW <path>` to `build.ps1`.
 
 ## History
 Started as a Go + WebView2 prototype (`main.go`, still in the repo), then rewritten
 from scratch in C++/Win32/GDI for the speed. The git history reflects that pivot.
+
+## License
+[MIT](LICENSE)

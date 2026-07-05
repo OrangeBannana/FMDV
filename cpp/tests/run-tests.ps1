@@ -2,8 +2,7 @@
 # Usage:  powershell -ExecutionPolicy Bypass -File tests\run-tests.ps1
 $ErrorActionPreference = "Stop"
 $cpp = Split-Path $PSScriptRoot -Parent
-$mingw = "C:\Users\<user>\mingw\mingw64\bin"
-$env:PATH = "$mingw;$env:PATH"
+# Toolchain is resolved by build.ps1 (PATH, FMDV_MINGW env var, or -MinGW param).
 
 $exe = "$cpp\fmdv.exe"
 $dbg = "$cpp\fmdv_dbg.exe"

@@ -3,7 +3,7 @@
 Status key: ⬜ todo · 🔄 in progress · ✅ done · 🐛 bug · ⏸ blocked
 
 ## Phases
-- ✅ **P0** Toolchain — MinGW GCC 16 UCRT at `C:\Users\<user>\mingw`, g++ + windres verified
+- ✅ **P0** Toolchain — portable MinGW GCC 16 UCRT unzipped locally, g++ + windres verified
 - ✅ **P1** Skeleton window — instant open, icon, message loop, timing instrumented
 - ✅ **P2** Markdown parser — all block + inline types verified via `--parse-dump`
 - ✅ **P3** Layout + GDI render — all block types, wrapping, both themes, verified via `--dump` PNG
@@ -119,7 +119,7 @@ _(none)_
 - WM_PRINTCLIENT bypasses WM_CTLCOLOREDIT (PrintWindow showed light editor in dark mode) — testing artifact only; real on-screen grab confirmed correct dark theming.
 
 ## Notes / decisions
-- Portable MinGW at `C:\Users\<user>\mingw\mingw64` (MSI installers blocked by policy).
+- Portable MinGW unzipped locally on the original dev machine (MSI installers blocked by policy).
 - Testing relies on `--dump` PNG output since no screen access.
 - Coexists with the working Go/WebView2 build until P7; root `fmdv.exe` stays the
   Go build until the native one reaches parity.

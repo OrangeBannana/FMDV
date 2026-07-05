@@ -3,8 +3,8 @@
 A from-scratch markdown viewer with no browser engine. Custom markdown parser +
 hand-written GDI layout/renderer drawing straight to the window.
 
-- **first-paint ~65–130ms** (vs 250–500ms for the old WebView2 build)
-- **~380 KB** single exe, no DLLs to ship (uses only system libraries)
+- **first-paint ~40–55ms** (vs 250–500ms for the old WebView2 build)
+- **~417 KB** single exe, no DLLs to ship (uses only system libraries)
 - Custom icon embedded
 
 ## Features
@@ -19,13 +19,14 @@ hand-written GDI layout/renderer drawing straight to the window.
 - Preferences (dark mode, split ratio) saved to `%APPDATA%\fmdv\prefs.txt`.
 
 ## Build
-Requires the portable MinGW-w64 toolchain at `C:\Users\<user>\mingw\mingw64`
-(GCC 16, UCRT). MSI installers are blocked by group policy here, so the toolchain
-was unzipped manually rather than installed.
+Requires a MinGW-w64 toolchain (GCC, UCRT — e.g. [winlibs](https://winlibs.com/) or
+MSYS2's `ucrt64`). `build.ps1` finds `g++` on `PATH`, or you can point it at a
+specific toolchain with the `FMDV_MINGW` env var or the `-MinGW` parameter (path
+to the toolchain's `bin` directory).
 
 ```powershell
 .\build.ps1          # release: -O2 -mwindows -static -s  -> fmdv.exe
-.\build.ps1 -Debug   # console build with symbols + --parse-mp -> fmdv_dbg.exe
+.\build.ps1 -Debug   # console build with symbols -> fmdv_dbg.exe (enables --parse-dump)
 ```
 
 ## Testing (headless, since rendering can't be eyeballed in CI)

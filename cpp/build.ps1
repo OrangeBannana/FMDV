@@ -1,17 +1,23 @@
 # FMDV native build script
-param([switch]$Debug)
+# Toolchain: MinGW-w64 (g++ + windres). Resolved from, in order:
+#   1. -MinGW <path-to-bin> parameter
+#   2. FMDV_MINGW environment variable
+#   3. g++ already on PATH
+param([switch]$Debug, [string]$MinGW = $env:FMDV_MINGW)
 
 $ErrorActionPreference = "Stop"
-$mingw = "C:\Users\<user>\mingw\mingw64\bin"
-$env:PATH = "$mingw;$env:PATH"
+if ($MinGW) { $env:PATH = "$MinGW;$env:PATH" }
+if (-not (Get-Command g++ -ErrorAction SilentlyContinue)) {
+    Write-Host "g++ not found. Install MinGW-w64 and add its bin dir to PATH, set FMDV_MINGW, or pass -MinGW <path>." -ForegroundColor Red
+    exit 1
+}
 Set-Location $PSScriptRoot
 
 # Compile resource (icon + version info)
 & windres fmdv.rc -O coff -o fmdv_res.o
 if ($LASTEXITCODE -ne 0) { Write-Host "windres FAILED"; exit 1 }
 
-$srcs = @("fmdv.cpp", "markdown.cpp", "layout.cpp", "render.cpp", "prefs.cpp")
-$srcs = $srcs | Where-Object { Test-Path $_ }
+$srcs = @("fmdv.cpp", "markdown.cpp", "render.cpp", "prefs.cpp")
 
 $common = @(
     "-municode", "-std=c++17", "-Wall", "-Wextra",
@@ -20,14 +26,14 @@ $common = @(
 
 if ($Debug) {
     # console subsystem so stdout/stderr are visible; with symbols
-    $args = @("-g", "-O0", "-DFMDV_CONSOLE") + $srcs + @("fmdv_res.o", "-o", "fmdv_dbg.exe") + $common
+    $buildArgs = @("-g", "-O0", "-DFMDV_CONSOLE") + $srcs + @("fmdv_res.o", "-o", "fmdv_dbg.exe") + $common
     Write-Host "Building DEBUG (console) ..."
-    & g++ @args
+    & g++ @buildArgs
     if ($LASTEXITCODE -eq 0) { Write-Host "OK -> fmdv_dbg.exe" } else { Write-Host "BUILD FAILED" }
 } else {
-    $args = @("-O2", "-mwindows", "-static", "-s") + $srcs + @("fmdv_res.o", "-o", "fmdv.exe") + $common
+    $buildArgs = @("-O2", "-mwindows", "-static", "-s") + $srcs + @("fmdv_res.o", "-o", "fmdv.exe") + $common
     Write-Host "Building RELEASE (gui) ..."
-    & g++ @args
+    & g++ @buildArgs
     if ($LASTEXITCODE -eq 0) {
         $kb = [math]::Round((Get-Item fmdv.exe).Length / 1KB)
         Write-Host "OK -> fmdv.exe ($kb KB)"

@@ -1,5 +1,11 @@
 # FMDV — Native C++ / Win32 GDI Rewrite
 
+> **Historical design document** written before the rewrite started, kept for
+> context. A few details drifted during implementation: layout lives in
+> `render.cpp` (there is no separate `layout.cpp`), and prefs are a plain-text
+> `prefs.txt` rather than JSON. See `README.md` for the current state and
+> `ISSUES.md` for the development log.
+
 ## Goal
 A `.md` viewer that opens **near-instantly** (target: window visible in <30ms cold,
 vs ~250–500ms for the WebView2/Go build). Achieved by eliminating the Chromium
@@ -48,9 +54,9 @@ body + mono. Use `CreateFontW` with ClearType quality.
 ---
 
 ## Build toolchain
-Portable **MinGW-w64 (winlibs, GCC 16, UCRT)** unzipped to `C:\Users\<user>\mingw`
-(no MSI — group policy blocks installers). `g++` + `windres`. Static-link libstdc++
-and use `-mwindows` for a GUI subsystem exe (no console window).
+Portable **MinGW-w64 (winlibs, GCC 16, UCRT)** unzipped locally (no MSI — group
+policy blocked installers on the original dev machine). `g++` + `windres`.
+Static-link libstdc++ and use `-mwindows` for a GUI subsystem exe (no console window).
 
 Build flags: `-O2 -municode -mwindows -static -s -Wall -Wextra`.
 Link: `-lgdi32 -lgdiplus -lcomctl32 -luser32 -lshell32`.
