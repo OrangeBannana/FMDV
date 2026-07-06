@@ -1294,7 +1294,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (GetKeyState(VK_CONTROL) < 0 && wp == 'C') { CopySelection(hwnd); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wp == 'A') { SelectAll(hwnd); return 0; }
         switch (wp) {
-            case VK_ESCAPE: DestroyWindow(hwnd); return 0;
+            // Escape only dismisses overlays (find bar, pickers — each closes
+            // itself via its own handler before a keystroke ever reaches
+            // here). On the bare main window it's a no-op: quitting the app
+            // needs Alt+F4 or the window's own close button, same as any
+            // other app — a lone Escape used to close the whole window,
+            // which meant a quick double-tap while dismissing an overlay
+            // (first press closes the overlay, second reaches this handler)
+            // silently quit the app.
+            case VK_ESCAPE: return 0;
             case VK_UP:     ScrollTo(hwnd, g_scrollY - 40); return 0;
             case VK_DOWN:   ScrollTo(hwnd, g_scrollY + 40); return 0;
             case VK_PRIOR:  ScrollTo(hwnd, g_scrollY - (g_clientH - 40)); return 0; // PgUp
