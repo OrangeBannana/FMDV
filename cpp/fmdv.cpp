@@ -1194,8 +1194,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ApplyZoom(hwnd, g_zoomPct + (delta > 0 ? 10 : -10));
             return 0;
         }
-        int lines = delta / WHEEL_DELTA;
-        ScrollTo(hwnd, g_scrollY - lines * 60);
+        // Proportional, not delta/WHEEL_DELTA lines: precision touchpads send
+        // small fractional deltas for smooth scrolling (not just clean +-120
+        // clicks), and truncating integer division rounds most of those to
+        // zero lines — scrolling would barely respond at all on a trackpad.
+        int px = MulDiv(delta, 60, WHEEL_DELTA);
+        ScrollTo(hwnd, g_scrollY - px);
         return 0;
     }
 
