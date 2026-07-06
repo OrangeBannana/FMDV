@@ -725,12 +725,24 @@ static LRESULT CALLBACK EditSubProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 
 // ---------------- table grid-picker (Ctrl+T) ----------------
 //
-// A small popup grid: arrow keys size the table (1..8 cols/rows), Enter inserts
-// a markdown table skeleton at the caret, Esc cancels.
+// A small popup grid: arrow keys size the table (1..TP_HARD_MAX cols/rows),
+// Enter inserts a markdown table skeleton at the caret, Esc cancels. The grid
+// starts showing TP_MAX (8x8) cells; pushing past that boundary grows the
+// visible grid (and the popup window) one cell at a time, up to TP_HARD_MAX.
+// The grid only grows during a session (never shrinks back) — same as the
+// insert-table picker in Word/Sheets — and resets to TP_MAX on next open.
 
 static HWND g_tpHwnd = nullptr;
 static int g_tpCols = 2, g_tpRows = 3;
-static const int TP_MAX = 8, TP_CELL = 20, TP_GAP = 3, TP_PAD = 10, TP_LABEL = 22;
+static int g_tpVisCols = 8, g_tpVisRows = 8; // currently visible/allocated grid size
+static const int TP_MAX = 8, TP_HARD_MAX = 20;
+static const int TP_CELL = 20, TP_GAP = 3, TP_PAD = 10, TP_LABEL = 22;
+
+static SIZE TpWindowSize(int visCols, int visRows) {
+    int gridW = visCols * (TP_CELL + TP_GAP) - TP_GAP;
+    int gridH = visRows * (TP_CELL + TP_GAP);
+    return SIZE{ TP_PAD * 2 + gridW, TP_PAD * 2 + gridH + TP_LABEL };
+}
 
 static void InsertTableMarkdown(int cols, int rows) {
     if (!g_hEdit) return;
@@ -760,18 +772,28 @@ static void CloseTablePicker() {
 
 static LRESULT CALLBACK TablePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_KEYDOWN:
+    case WM_KEYDOWN: {
         switch (wp) {
-            case VK_RIGHT: if (g_tpCols < TP_MAX) g_tpCols++; break;
+            case VK_RIGHT: if (g_tpCols < TP_HARD_MAX) g_tpCols++; break;
             case VK_LEFT:  if (g_tpCols > 1) g_tpCols--; break;
-            case VK_DOWN:  if (g_tpRows < TP_MAX) g_tpRows++; break;
+            case VK_DOWN:  if (g_tpRows < TP_HARD_MAX) g_tpRows++; break;
             case VK_UP:    if (g_tpRows > 1) g_tpRows--; break;
             case VK_RETURN: InsertTableMarkdown(g_tpCols, g_tpRows); CloseTablePicker(); return 0;
             case VK_ESCAPE: CloseTablePicker(); return 0;
             default: return 0;
         }
+        // grow (never shrink) the visible grid to cover the current selection
+        bool grew = false;
+        if (g_tpCols > g_tpVisCols) { g_tpVisCols = g_tpCols; grew = true; }
+        if (g_tpRows > g_tpVisRows) { g_tpVisRows = g_tpRows; grew = true; }
+        if (grew) {
+            SIZE sz = TpWindowSize(g_tpVisCols, g_tpVisRows);
+            // top-left stays put (near the caret) — only extend right/down
+            SetWindowPos(hwnd, nullptr, 0, 0, sz.cx, sz.cy, SWP_NOMOVE | SWP_NOZORDER);
+        }
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
+    }
     case WM_KILLFOCUS:
         CloseTablePicker();
         return 0;
@@ -780,7 +802,7 @@ static LRESULT CALLBACK TablePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         RECT rc; GetClientRect(hwnd, &rc);
         Theme th = g_dark ? DarkTheme() : LightTheme();
         HBRUSH bg = CreateSolidBrush(th.bg); FillRect(hdc, &rc, bg); DeleteObject(bg);
-        for (int r = 0; r < TP_MAX; r++) for (int c = 0; c < TP_MAX; c++) {
+        for (int r = 0; r < g_tpVisRows; r++) for (int c = 0; c < g_tpVisCols; c++) {
             int x = TP_PAD + c * (TP_CELL + TP_GAP);
             int y = TP_PAD + r * (TP_CELL + TP_GAP);
             RECT cell{ x, y, x + TP_CELL, y + TP_CELL };
@@ -792,7 +814,7 @@ static LRESULT CALLBACK TablePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         wchar_t lbl[32]; _snwprintf_s(lbl, 32, _TRUNCATE, L"%d x %d table", g_tpCols, g_tpRows);
         SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, th.text);
         HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT); HFONT of = (HFONT)SelectObject(hdc, f);
-        int gridH = TP_MAX * (TP_CELL + TP_GAP);
+        int gridH = g_tpVisRows * (TP_CELL + TP_GAP);
         TextOutW(hdc, TP_PAD, TP_PAD + gridH, lbl, (int)wcslen(lbl));
         SelectObject(hdc, of);
         EndPaint(hwnd, &ps);
@@ -818,12 +840,11 @@ static void ShowTablePicker(HWND main) {
         reg = true;
     }
     g_tpCols = 2; g_tpRows = 3;
-    int gridW = TP_MAX * (TP_CELL + TP_GAP) - TP_GAP;
-    int w = TP_PAD * 2 + gridW;
-    int h = TP_PAD * 2 + TP_MAX * (TP_CELL + TP_GAP) + TP_LABEL;
+    g_tpVisCols = TP_MAX; g_tpVisRows = TP_MAX;
+    SIZE sz = TpWindowSize(g_tpVisCols, g_tpVisRows);
     POINT pt; GetCaretPos(&pt); ClientToScreen(g_hEdit, &pt);
     g_tpHwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"FMDV_TablePicker", L"",
-        WS_POPUP | WS_BORDER, pt.x, pt.y + 18, w, h, main, nullptr, GetModuleHandleW(nullptr), nullptr);
+        WS_POPUP | WS_BORDER, pt.x, pt.y + 18, sz.cx, sz.cy, main, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (g_tpHwnd) { ShowWindow(g_tpHwnd, SW_SHOW); SetFocus(g_tpHwnd); }
 }
 
