@@ -8,6 +8,9 @@ fmdv*.exe
 *.png
 !docs/*.png
 
+# Local scratch builds for manual testing (not part of the repo)
+/test-builds/
+
 # OS / OneDrive cruft
 Thumbs.db
 desktop.ini
