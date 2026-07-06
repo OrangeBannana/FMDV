@@ -133,6 +133,62 @@ Record:
 - Median and p95 for viewport paint.
 - Notes on whether the app was warm or cold.
 
+## Phase 0.5: Decide the Core String Type
+
+Resolve this before extracting anything in Phase 1. It touches the parser's core
+type and every signature you are about to move, so deciding late means editing
+the same code twice.
+
+The current code is built on `std::wstring`. On Windows `wchar_t` is 16-bit, so
+`std::wstring` is effectively UTF-16 and the parser's code-unit arithmetic
+(`.compare(pos, n, ...)`, `wcslen`, per-character loops, surrogate handling)
+assumes 16-bit units. On macOS and Linux `wchar_t` is 32-bit, so the identical
+`std::wstring` silently becomes UTF-32: double the memory, and every hand-off to
+CoreText (which takes UTF-16 `unichar` or UTF-8) becomes a re-encode. Code that
+assumed 16-bit code units breaks quietly rather than failing to compile.
+
+Pick one core string type and use it everywhere in `core/`:
+
+- `std::u16string` / `char16_t` — least churn from today's UTF-16 assumptions,
+  and maps directly to CoreText `unichar`. Recommended.
+- UTF-8 `std::string` — smallest and idiomatic on macOS, but requires reworking
+  the parser's index arithmetic and converting to UTF-16 at the CoreText edge.
+
+Define neutral aliases in `core/` and forbid `std::wstring` below the frontend
+layer:
+
+```cpp
+using Str = std::u16string;        // core string type
+using StrView = std::u16string_view;
+```
+
+Frontends convert at their own boundary: Win32 reinterprets UTF-16 to/from
+`wchar_t`; macOS bridges `Str` to `NSString`/`CFString`; the CLI reads and
+writes UTF-8. The Phase 2 platform-neutral types below use `Str`, never
+`std::wstring`.
+
+### Phase 0.5 Acceptance Criteria
+
+- The core string type is chosen and documented before Phase 1 extraction.
+- `core/` contains no `wchar_t` or `std::wstring`.
+- Parser output is byte-for-byte equivalent for existing fixtures after the type
+  migration (compare via `--parse-dump`).
+
+## Build System and CI
+
+The repo builds only through `build.ps1` (MinGW) and CI runs only on
+`windows-latest`. A shared core plus a CLI and two frontends needs portable build
+tooling and a macOS runner before Phase 3, not after.
+
+- Introduce CMake alongside `build.ps1` when the core is extracted (Phase 1).
+  Targets: `core` (static lib), `fmdv-cli`, `fmdv-win32`, `fmdv-macos`. Keep
+  `build.ps1` as a thin wrapper so the existing Windows workflow and flags are
+  unchanged.
+- Add a `macos-latest` CI job that builds `core` and `fmdv-cli` and runs the
+  parser/benchmark checks headlessly.
+- Keep the Windows job as the release gate; the existing headless `--dump` PNG
+  and `--parse-dump` checks stay the correctness baseline.
+
 ## Phase 1: Separate the Core Without Changing Behavior
 
 After baseline timing is recorded, move reusable code out of the Win32 app. Keep
@@ -214,7 +270,7 @@ struct FontSpec {
 
 struct TextRun {
     RectF rect;
-    std::wstring text;
+    Str text;                 // core string type from Phase 0.5, not std::wstring
     FontSpec font;
     Color color;
     bool spaceBefore;
@@ -225,7 +281,7 @@ struct DrawCommand {
     RectF rect;
     Color color;
     FontSpec font;
-    std::wstring text;
+    Str text;
 };
 ```
 
@@ -234,10 +290,10 @@ Introduce two interfaces:
 ```cpp
 class TextMeasurer {
 public:
-    virtual double width(const FontSpec& font, std::wstring_view text) = 0;
+    virtual double width(const FontSpec& font, StrView text) = 0;
     virtual double height(const FontSpec& font) = 0;
-    virtual int charAtX(const FontSpec& font, std::wstring_view text, double x) = 0;
-    virtual double xAtChar(const FontSpec& font, std::wstring_view text, int ch) = 0;
+    virtual int charAtX(const FontSpec& font, StrView text, double x) = 0;
+    virtual double xAtChar(const FontSpec& font, StrView text, int ch) = 0;
 };
 
 class Painter {
@@ -246,16 +302,37 @@ public:
     virtual void frameRect(RectF rect, Color color) = 0;
     virtual void line(double x1, double y1, double x2, double y2, Color color) = 0;
     virtual void text(double x, double y, const FontSpec& font,
-                      Color color, std::wstring_view text) = 0;
+                      Color color, StrView text) = 0;
 };
 ```
 
 Windows gets a `GdiTextMeasurer` and `GdiPainter`. macOS gets a
 `CoreTextMeasurer` and `CoreGraphicsPainter`.
 
+Do this in two steps so Windows never changes behavior and any regression is
+caught immediately:
+
+- **Step 2a — extract measurement.** Route all text metrics through
+  `TextMeasurer`. On Windows, `GdiTextMeasurer` wraps the exact same
+  `GetTextExtentPoint32W` calls the layout uses today, so pixels must not move.
+  Prove it with the existing headless `--dump` PNG diff before continuing.
+- **Step 2b — extract painting.** Route all drawing through `Painter`
+  (`GdiPainter` on Windows). Re-run the PNG diff and `--bench-render`.
+
+The layout code currently measures text inline while it lays out (single pass,
+`HDC`-driven in `render.cpp`); threading a `TextMeasurer` through that pass and
+reworking the `HFONT`-keyed font cache is the largest chunk of this phase.
+Budget for it.
+
+Cross-platform layout fixtures need tolerance, not an exact match: parser output
+can be byte-identical while CoreText and GDI choose different wrap points, line
+counts, and `content_height` (which feeds scrolling). Compare structure and
+allow small metric deltas; do not assert pixel-identical macOS output.
+
 ### Phase 2 Acceptance Criteria
 
 - Windows screenshots and headless dumps remain visually equivalent.
+- Step 2a and Step 2b each pass the `--dump` PNG diff before the next begins.
 - Selection hit testing still works.
 - `--bench-render` output stays comparable to Phase 0 and Phase 1.
 - The layout library compiles on macOS before any AppKit UI is written.
@@ -336,6 +413,10 @@ Editor implementation:
 - Create it lazily when the user toggles split editor.
 - Reuse core edit helpers for autocomplete, table insertion, and list
   continuation.
+- The ghost-text autocomplete overlay is drawn outside the text buffer on
+  Windows; `NSTextView` has no equivalent primitive, so re-implement the overlay
+  against its layout manager rather than expecting a direct port. Also account
+  for LF (macOS) vs CRLF (Win32 EDIT control) and the different undo model.
 - Use native macOS shortcuts:
   - Command-E or Command-Option-E for edit toggle, depending on menu conflicts
   - Command-S save
@@ -398,6 +479,8 @@ Interpretation rules:
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
 | Core split regresses Windows startup | High | Measure before and after every phase; keep Windows shell behavior unchanged during Phase 1. |
+| Core string type (`wchar_t` is 16-bit on Windows, 32-bit elsewhere) | High | Decide the core string type in Phase 0.5; forbid `std::wstring` in `core/`; verify parser output is unchanged after migration. |
+| macOS editor integration diverges from Win32 | High | Reuse the core edit-decision helpers, but treat `NSTextView` integration (LF vs CRLF, undo model, ghost-text overlay) as a separate rewrite, not a port. |
 | CoreText wrapping differs from GDI | Medium | Use platform-neutral layout tests plus visual fixture dumps; allow small text metric differences but preserve structure. |
 | macOS text rendering starts slower than expected | Medium | Cache fonts, lazy-create editor, avoid SwiftUI/WebView, benchmark layer-backed vs non-layer-backed views. |
 | Cross-platform layout abstraction becomes too generic | Medium | Abstract only measurement and painting; keep FMDV's document/display-list model simple. |
@@ -407,22 +490,29 @@ Interpretation rules:
 ## Recommended Milestones
 
 1. `bench/logging`: add unified benchmark logging and capture Windows baseline.
-2. `core/parser`: move parser/document model and keep Windows green.
-3. `core/edit-helpers`: extract autocomplete, list continuation, and table
+2. `core/string-type`: choose the core string type (Phase 0.5) and migrate the
+   parser/model off `std::wstring`.
+3. `build/cmake`: add CMake targets and a `macos-latest` CI runner alongside
+   `build.ps1`.
+4. `core/parser`: move parser/document model and keep Windows green.
+5. `core/edit-helpers`: extract autocomplete, list continuation, and table
    generation.
-4. `core/releases`: extract version comparison and release JSON parsing.
-5. `core/layout`: introduce platform-neutral draw commands and GDI adapters.
-6. `cli`: add parse and benchmark commands.
-7. `macos/skeleton`: AppKit window, file open, parse, first paint.
-8. `macos/render`: CoreText/CoreGraphics renderer and fixture comparisons.
-9. `macos/interactions`: scrolling, selection/copy, links, dark mode, zoom.
-10. `macos/editor`: lazy split editor, save, autocomplete, table picker.
-11. `compare`: publish Windows vs macOS timing summary.
+6. `core/releases`: extract version comparison and release JSON parsing.
+7. `core/layout`: introduce platform-neutral draw commands and GDI adapters
+   (Step 2a measurement, then Step 2b painting).
+8. `cli`: add parse and benchmark commands.
+9. `macos/skeleton`: AppKit window, file open, parse, first paint.
+10. `macos/render`: CoreText/CoreGraphics renderer and fixture comparisons.
+11. `macos/interactions`: scrolling, selection/copy, links, dark mode, zoom.
+12. `macos/editor`: lazy split editor, save, autocomplete, table picker.
+13. `compare`: publish Windows vs macOS timing summary.
 
 ## Definition of Done
 
 The macOS port should be considered viable when:
 
+- The shared `core/` builds on Windows and macOS from one CMake configuration
+  with no `std::wstring` below the frontend layer.
 - Windows timing after refactor is within the agreed regression budget.
 - macOS first-paint timing is measured and competitive with Windows on similar
   hardware, or any difference is explained by OS/window-server behavior.
