@@ -728,9 +728,8 @@ static LRESULT CALLBACK EditSubProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 // A small popup grid: arrow keys size the table (1..TP_HARD_MAX cols/rows),
 // Enter inserts a markdown table skeleton at the caret, Esc cancels. The grid
 // starts showing TP_MAX (8x8) cells; pushing past that boundary grows the
-// visible grid (and the popup window) one cell at a time, up to TP_HARD_MAX.
-// The grid only grows during a session (never shrinks back) — same as the
-// insert-table picker in Word/Sheets — and resets to TP_MAX on next open.
+// visible grid (and the popup window) to fit, up to TP_HARD_MAX, and shrinks
+// back down (never below TP_MAX) as the selection shrinks again.
 
 static HWND g_tpHwnd = nullptr;
 static int g_tpCols = 2, g_tpRows = 3;
@@ -782,18 +781,23 @@ static LRESULT CALLBACK TablePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             case VK_ESCAPE: CloseTablePicker(); return 0;
             default: return 0;
         }
-        // grow (never shrink) the visible grid to cover the current selection
-        bool grew = false;
-        if (g_tpCols > g_tpVisCols) { g_tpVisCols = g_tpCols; grew = true; }
-        if (g_tpRows > g_tpVisRows) { g_tpVisRows = g_tpRows; grew = true; }
-        if (grew) {
-            SIZE sz = TpWindowSize(g_tpVisCols, g_tpVisRows);
-            // top-left stays put (near the caret) — only extend right/down
-            SetWindowPos(hwnd, nullptr, 0, 0, sz.cx, sz.cy, SWP_NOMOVE | SWP_NOZORDER);
+        // resize the visible grid to fit the current selection (at least
+        // TP_MAX) — tracks the selection both growing and shrinking
+        {
+            int newVisCols = g_tpCols > TP_MAX ? g_tpCols : TP_MAX;
+            int newVisRows = g_tpRows > TP_MAX ? g_tpRows : TP_MAX;
+            if (newVisCols != g_tpVisCols || newVisRows != g_tpVisRows) {
+                g_tpVisCols = newVisCols; g_tpVisRows = newVisRows;
+                SIZE sz = TpWindowSize(g_tpVisCols, g_tpVisRows);
+                // top-left stays put (near the caret) — only the right/bottom edge moves
+                SetWindowPos(hwnd, nullptr, 0, 0, sz.cx, sz.cy, SWP_NOMOVE | SWP_NOZORDER);
+            }
         }
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
+    case WM_ERASEBKGND:
+        return 1; // WM_PAINT fills the whole client area; skip the default erase (was flickering white on resize)
     case WM_KILLFOCUS:
         CloseTablePicker();
         return 0;
