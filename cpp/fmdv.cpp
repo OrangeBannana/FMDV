@@ -908,9 +908,16 @@ static void StartUpdateCheck(bool autoInstall) {
 
 static HWND g_upHwnd = nullptr;
 static int g_upSel = 0;
+static int g_upConfirmIdx = -1; // index awaiting a second Enter to confirm a no-updater downgrade
 
 static void CloseUpdatePicker() {
     if (g_upHwnd) { HWND h = g_upHwnd; g_upHwnd = nullptr; DestroyWindow(h); }
+}
+
+// Releases older than this predate Ctrl+U: installing one strands the user
+// with no in-app way back up, so the picker requires a confirming second Enter.
+static bool PredatesUpdater(const std::wstring& tag) {
+    return CompareVersions(tag, FMDV_UPDATER_MIN_WSTR) < 0;
 }
 
 static int UpRows() { return (int)g_releases.size() < 8 ? (int)g_releases.size() : 8; }
@@ -922,11 +929,18 @@ static std::string Narrow(const std::wstring& w) {
     return s;
 }
 
-static void PickerInstallSelected() {
-    if (g_installRunning) return;
-    if (g_upSel < 0 || g_upSel >= (int)g_releases.size()) return;
+// Returns true if the install proceeded (or was armed as a pending confirm).
+static bool PickerInstallSelected() {
+    if (g_installRunning) return false;
+    if (g_upSel < 0 || g_upSel >= (int)g_releases.size()) return false;
     const ReleaseInfo& r = g_releases[g_upSel];
-    if (r.exeUrl.empty()) return;
+    if (r.exeUrl.empty()) return false;
+
+    if (PredatesUpdater(r.tag) && g_upConfirmIdx != g_upSel) {
+        g_upConfirmIdx = g_upSel; // arm; a second Enter on the same row confirms
+        return true;              // repaint to show the confirmation prompt
+    }
+    g_upConfirmIdx = -1;
 
     // pin semantics: anything but the newest installable pins that tag
     const ReleaseInfo* newest = NewestInstallable();
@@ -945,21 +959,25 @@ static void PickerInstallSelected() {
     HANDLE h = CreateThread(nullptr, 0, InstallThread, nullptr, 0, nullptr);
     if (h) CloseHandle(h); else g_installRunning = false;
     if (g_upHwnd) InvalidateRect(g_upHwnd, nullptr, FALSE);
+    return true;
 }
 
 static LRESULT CALLBACK UpdatePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_KEYDOWN:
         switch (wp) {
-            case VK_DOWN: if (g_upSel + 1 < UpRows()) g_upSel++; break;
-            case VK_UP:   if (g_upSel > 0) g_upSel--; break;
+            case VK_DOWN: if (g_upSel + 1 < UpRows()) { g_upSel++; g_upConfirmIdx = -1; } break;
+            case VK_UP:   if (g_upSel > 0) { g_upSel--; g_upConfirmIdx = -1; } break;
             case VK_RETURN: PickerInstallSelected(); break;
             case 'A': // toggle auto-update (clears a pin)
                 g_prefs.updateMode = (g_prefs.updateMode == UPDATE_AUTO) ? UPDATE_NOTIFY : UPDATE_AUTO;
                 g_prefs.pinTag.clear();
                 SavePrefs(g_prefs);
                 break;
-            case VK_ESCAPE: CloseUpdatePicker(); return 0;
+            case VK_ESCAPE:
+                if (g_upConfirmIdx >= 0) { g_upConfirmIdx = -1; break; } // cancel the pending confirm first
+                CloseUpdatePicker();
+                return 0;
             default: return 0;
         }
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -1022,8 +1040,11 @@ static LRESULT CALLBACK UpdatePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
 
         // status footer
         y = rc.bottom - row;
-        SetTextColor(hdc, th.text2);
+        bool confirming = (g_upConfirmIdx == g_upSel && g_upConfirmIdx >= 0 &&
+                           g_upConfirmIdx < (int)g_releases.size());
+        SetTextColor(hdc, confirming ? th.link : th.text2);
         const wchar_t* foot = g_installRunning ? L"installing…"
+                            : confirming ? L"no updater in that release — Enter again to confirm"
                             : L"↑↓ select · Enter install · Esc close";
         TextOutW(hdc, pad, y, foot, (int)wcslen(foot));
 
@@ -1052,10 +1073,11 @@ static void ShowUpdatePicker(HWND main) {
     }
     if (!g_relFetched && !g_fetchRunning) StartUpdateCheck(false);
     g_upSel = 0;
+    g_upConfirmIdx = -1;
     for (int i = 0; i < (int)g_releases.size() && i < 8; i++)
         if (CompareVersions(g_releases[i].tag, CurrentVersion()) == 0) { g_upSel = i; break; }
 
-    int w = MulDiv(340, g_dpi, 96);
+    int w = MulDiv(400, g_dpi, 96);
     int h = MulDiv(12 * 2 + 24 * 3, g_dpi, 96) + MulDiv(24, g_dpi, 96) * (UpRows() > 0 ? UpRows() : 1);
     RECT mr; GetWindowRect(main, &mr);
     g_upHwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"FMDV_UpdatePicker", L"",

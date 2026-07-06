@@ -52,7 +52,7 @@ details, headless test/inspection flags, and source layout.
 ```powershell
 cd cpp
 .\build.ps1                            # -> cpp\fmdv.exe
-powershell -File tests\run-tests.ps1   # 51-check suite
+powershell -File tests\run-tests.ps1   # 53-check suite
 ```
 
 Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2

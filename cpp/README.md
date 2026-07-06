@@ -16,6 +16,8 @@ Custom markdown parser + GDI layout/renderer drawing directly to the window.
 - **Ctrl+U** — updates: list GitHub releases, install any version in-app
   (running exe is swapped; takes effect next launch). Modes: notify (default),
   auto-update, or pin a specific version. Check runs async after first paint.
+  Installing a release older than the one that introduced this feature
+  requires a confirming second Enter (that version has no way back in-app).
 - Scrolling: mouse wheel, scrollbar, PgUp/PgDn/Home/End/arrows/space.
 - Preferences (dark mode, split ratio, zoom, update mode/pin) saved to
   `%APPDATA%\fmdv\prefs.txt`.
@@ -47,7 +49,7 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 # FMDV_VERSION_OVERRIDE=<ver> makes the app report that version (test hook)
 ```
 
-`tests\run-tests.ps1` builds both configurations and runs 51 checks: parser,
+`tests\run-tests.ps1` builds both configurations and runs 53 checks: parser,
 rendering, stability, selection + clipboard, save round-trip, autocomplete,
 table picker, list continuation, updater.
 

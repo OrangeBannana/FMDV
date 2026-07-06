@@ -220,10 +220,20 @@ Check "version flag"           ($ver -match '^\d+\.\d+\.\d+$')
 
 $p = Launch $basic
 [T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]2011, [IntPtr]::Zero) | Out-Null  # ID_UPDATES
-Start-Sleep -Milliseconds 600
+Start-Sleep -Milliseconds 1500  # let the release fetch land so v1.0.0 is in the list
 $up = [T]::FindWindowW("FMDV_UpdatePicker", $null)
 Check "update picker opens"    ($up -ne [IntPtr]::Zero)
-if ($up -ne [IntPtr]::Zero) { [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x1B, [IntPtr]0) | Out-Null }  # Esc
+if ($up -ne [IntPtr]::Zero) {
+    # v1.0.0 predates the updater: first Enter must only arm a confirmation,
+    # not install (a real install would replace the exe this suite is running).
+    [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x0D, [IntPtr]0) | Out-Null
+    Start-Sleep -Milliseconds 200
+    Check "downgrade requires confirm (still open)" ([T]::FindWindowW("FMDV_UpdatePicker", $null) -ne [IntPtr]::Zero)
+    [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x1B, [IntPtr]0) | Out-Null  # Esc cancels the arm, not the picker
+    Start-Sleep -Milliseconds 200
+    Check "Esc cancels the arm (still open)" ([T]::FindWindowW("FMDV_UpdatePicker", $null) -ne [IntPtr]::Zero)
+    [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x1B, [IntPtr]0) | Out-Null  # Esc closes the picker
+}
 Start-Sleep -Milliseconds 250
 Check "update picker Esc closes" ([T]::FindWindowW("FMDV_UpdatePicker", $null) -eq [IntPtr]::Zero)
 if (-not $p.HasExited) { $p.Kill() }
