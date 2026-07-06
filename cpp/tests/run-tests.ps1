@@ -185,6 +185,36 @@ Check "table has separator"  ($tbl -match "\| --- \| --- \| --- \|")
 Check "table has body rows"  ((($tbl -split "`n") | Where-Object { $_ -match '^\|   \|' }).Count -ge 3)
 if (-not $p.HasExited) { $p.Kill() }
 
+Write-Host "`nTable resize (edit existing table):" -ForegroundColor Cyan
+$trFile = "$fix\tresize.md"
+$trText = "# Doc`r`n`r`n| A | B |`r`n| --- | --- |`r`n| x | **y** |`r`n| z | w |`r`n`r`nafter`r`n"
+Set-Content $trFile $trText -Encoding utf8 -NoNewline
+$p = Launch $trFile
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_EDIT, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 300
+$e = [T]::FindWindowExW($p.MainWindowHandle, [IntPtr]::Zero, "Edit", $null)
+$caret = $trText.IndexOf("**y**") + 1  # land inside the table's second column, second row
+[T]::SendInt($e, 0x00B1, [IntPtr]$caret, [IntPtr]$caret) | Out-Null  # EM_SETSEL
+Start-Sleep -Milliseconds 100
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]2010, [IntPtr]::Zero) | Out-Null  # ID_INSERT_TABLE
+Start-Sleep -Milliseconds 400
+$tp = [T]::FindWindowW("FMDV_TablePicker", $null)
+Check "resize picker opens on caret-in-table" ($tp -ne [IntPtr]::Zero)
+# grow 2x2 -> 3x3: one Right, one Down
+[T]::SendInt($tp, $WM_KEYDOWN, [IntPtr]0x27, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 80  # Right
+[T]::SendInt($tp, $WM_KEYDOWN, [IntPtr]0x28, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 80  # Down
+[T]::SendInt($tp, $WM_KEYDOWN, [IntPtr]0x0D, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 250 # Enter
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_SAVE, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 300
+$resized = Get-Content $trFile -Raw
+Check "resize preserved bold cell text"  ($resized -match '\*\*y\*\*')
+Check "resize preserved plain cell text" ($resized -match '\bx\b' -and $resized -match '\bz\b' -and $resized -match '\bw\b')
+Check "resize grew header to 3 columns" ($resized -match "Column 3")
+$pipeLines = ($resized -split "`n") | Where-Object { $_.TrimStart() -match '^\|' }
+Check "resize grew to exactly 3 body rows" ($pipeLines.Count -eq 5)  # header + separator + 3 body rows
+Check "resize kept surrounding content"  ($resized -match "# Doc" -and $resized -match "after")
+if (-not $p.HasExited) { $p.Kill() }
+
 Write-Host "`nList continuation + Tab:" -ForegroundColor Cyan
 # token 'TAB'/'ENTER' send KEYDOWN+CHAR (as TranslateMessage would); ints are WM_CHAR
 function Seq($tokens) {

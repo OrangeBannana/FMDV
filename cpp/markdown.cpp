@@ -166,6 +166,8 @@ static std::vector<std::wstring> splitCells(const std::wstring& line) {
     return cells;
 }
 
+std::vector<std::wstring> SplitTableCells(const std::wstring& line) { return splitCells(line); }
+
 static bool isTableSeparator(const std::wstring& line, std::vector<int>* aligns) {
     std::wstring t = trim(line);
     if (t.find(L'|') == std::wstring::npos && t.find(L'-') == std::wstring::npos) return false;
@@ -288,6 +290,7 @@ Document ParseMarkdown(const std::wstring& text) {
             std::vector<int> aligns;
             if (isTableSeparator(lines[i+1], &aligns)) {
                 flushParagraph(para);
+                int startLine = (int)i;
                 Block b; b.type = BlockType::Table; b.aligns = aligns;
                 auto hdr = splitCells(t);
                 for (auto& h : hdr) { TableCell c; c.runs = ParseInline(h); b.headers.push_back(std::move(c)); }
@@ -301,6 +304,8 @@ Document ParseMarkdown(const std::wstring& text) {
                     b.rows.push_back(std::move(row));
                     i++;
                 }
+                b.srcStartLine = startLine;
+                b.srcEndLine = (int)i - 1;
                 doc.blocks.push_back(std::move(b));
                 continue;
             }

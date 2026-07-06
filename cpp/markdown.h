@@ -37,6 +37,11 @@ struct Block {
     std::vector<TableCell> headers;       // table header cells
     std::vector<TableRow> rows;           // table body rows
     std::vector<int> aligns;              // table column alignments
+    // 0-based source line range (inclusive), Table blocks only (-1 = unset).
+    // Lets editor features rewrite a table's markdown in place without
+    // re-parsing pipe syntax ad hoc (see fmdv.cpp's table-resize picker).
+    int srcStartLine = -1;
+    int srcEndLine = -1;
 };
 
 struct Document {
@@ -48,3 +53,9 @@ Document ParseMarkdown(const std::wstring& text);
 
 // Parse a single line of inline markdown into styled runs.
 std::vector<InlineRun> ParseInline(const std::wstring& text);
+
+// Split a raw table row/header line on unescaped '|' into trimmed cell text
+// (no inline parsing — markdown syntax in a cell is left intact). Exposed so
+// editor features can rewrite a table's source without losing formatting
+// that ParseInline would have already converted into InlineRun style flags.
+std::vector<std::wstring> SplitTableCells(const std::wstring& line);
