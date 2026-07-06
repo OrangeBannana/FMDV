@@ -11,6 +11,8 @@ struct Theme {
     COLORREF link;      // link text
     COLORREF codeText;  // monospace text
     COLORREF sel;       // text-selection highlight
+    COLORREF findHi;    // find-in-doc: other matches
+    COLORREF findCur;   // find-in-doc: current match
 };
 
 inline Theme LightTheme() {
@@ -24,6 +26,8 @@ inline Theme LightTheme() {
         RGB(0x09, 0x69, 0xda), // link
         RGB(0x24, 0x29, 0x2f), // codeText
         RGB(0xae, 0xd4, 0xfb), // sel
+        RGB(0xff, 0xe6, 0x9c), // findHi
+        RGB(0xff, 0xb7, 0x4d), // findCur
     };
 }
 
@@ -38,5 +42,7 @@ inline Theme DarkTheme() {
         RGB(0x58, 0xa6, 0xff), // link
         RGB(0xe6, 0xed, 0xf3), // codeText
         RGB(0x26, 0x4f, 0x78), // sel
+        RGB(0x6b, 0x5a, 0x1f), // findHi
+        RGB(0xa9, 0x74, 0x1f), // findCur
     };
 }

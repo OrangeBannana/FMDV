@@ -587,7 +587,8 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
 // ---------------- paint (cull cached list to viewport + selection) ----------------
 
 void PaintDocument(HDC hdc, int scrollY, int clientW, int clientH, const Theme& th,
-                   const Selection* sel, const std::vector<TextFrag>& frags) {
+                   const Selection* sel, const std::vector<TextFrag>& frags,
+                   const std::vector<FindMatch>* findMatches, int currentMatch) {
     (void)clientW;
     int top = scrollY, bot = scrollY + clientH;
     auto vis = [&](int t, int b) { return b >= top && t <= bot; };
@@ -611,6 +612,25 @@ void PaintDocument(HDC hdc, int scrollY, int clientW, int clientH, const Theme& 
             else                   FillRect(hdc, &rc, br);
             DeleteObject(br);
         }
+    }
+
+    // phase 1b: find-in-doc match highlights (behind text, drawn before
+    // selection so an active selection still shows on top if they overlap)
+    if (findMatches && !findMatches->empty()) {
+        HBRUSH hbAll = CreateSolidBrush(th.findHi);
+        HBRUSH hbCur = CreateSolidBrush(th.findCur);
+        for (size_t i = 0; i < findMatches->size(); i++) {
+            const FindMatch& m = (*findMatches)[i];
+            if (m.frag < 0 || m.frag >= (int)frags.size()) continue;
+            const TextFrag& f = frags[m.frag];
+            if (!vis(f.rc.top, f.rc.bottom)) continue;
+            int hx0 = FragXAtChar(hdc, f, m.chStart);
+            int hx1 = FragXAtChar(hdc, f, m.chEnd);
+            if (hx1 <= hx0) continue;
+            RECT hr{ hx0, f.rc.top - scrollY, hx1, f.rc.bottom - scrollY };
+            FillRect(hdc, &hr, (int)i == currentMatch ? hbCur : hbAll);
+        }
+        DeleteObject(hbAll); DeleteObject(hbCur);
     }
 
     // phase 2: selection highlight (behind text)

@@ -27,6 +27,12 @@ struct TextFrag {
 struct SelPoint { int frag = -1; int ch = 0; };
 struct Selection { SelPoint a, b; bool active = false; };
 
+// A find-in-doc match: a character range within one TextFrag. Matches don't
+// span frag boundaries (a search straddling a formatting change, e.g. bold ->
+// plain mid-match, won't be found) — same tradeoff as everything else in this
+// renderer that treats a frag as the atomic unit of text (selection, copy).
+struct FindMatch { int frag; int chStart; int chEnd; };
+
 // Character/x mapping within a fragment (font selected internally).
 // x is in buffer coords; returns a char index into f.text [0..len].
 int FragCharAtX(HDC hdc, const TextFrag& f, int x);
@@ -51,8 +57,12 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
 
 // Paint the cached display list, culled to the viewport [scrollY, scrollY+clientH],
 // plus the current selection highlight. Cheap enough to call every frame/scroll.
+// `findMatches`/`currentMatch`, if given, draw find-in-doc highlights (all
+// matches lightly, the current one emphasized) behind the text, same as
+// selection.
 void PaintDocument(HDC hdc, int scrollY, int clientW, int clientH, const Theme& th,
-                   const Selection* sel, const std::vector<TextFrag>& frags);
+                   const Selection* sel, const std::vector<TextFrag>& frags,
+                   const std::vector<FindMatch>* findMatches = nullptr, int currentMatch = -1);
 
 // Free cached GDI font objects (call at exit).
 void FreeFontCache();

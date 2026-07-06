@@ -217,10 +217,19 @@ static const int TOC_ROW_H = 26, TOC_PAD_TOP = 12, TOC_PAD_X = 12, TOC_INDENT = 
 static int g_tocHoverIdx = -1;
 static bool g_tocTrackingLeave = false;    // TrackMouseEvent armed for WM_MOUSELEAVE
 
+// --- find in doc (Ctrl+F) ---
+static HWND g_findHwnd = nullptr;
+static HWND g_findEdit = nullptr;
+static HBRUSH g_findBrush = nullptr;
+static std::vector<FindMatch> g_findMatches;
+static int g_findCurrent = -1;
+static const int FIND_ID = 1002;
+
 // command IDs (driven by the accelerator table so they work even while typing)
 enum { ID_EDIT_TOGGLE = 2001, ID_DARK = 2002, ID_SAVE = 2003, ID_SAVE_CLOSE = 2004,
        ID_ZOOM_IN = 2005, ID_ZOOM_OUT = 2006, ID_ZOOM_RESET = 2007, ID_COPY = 2008,
-       ID_SELECT_ALL = 2009, ID_INSERT_TABLE = 2010, ID_UPDATES = 2011, ID_TOC = 2012 };
+       ID_SELECT_ALL = 2009, ID_INSERT_TABLE = 2010, ID_UPDATES = 2011, ID_TOC = 2012,
+       ID_FIND = 2013 };
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -229,6 +238,7 @@ enum { ID_EDIT_TOGGLE = 2001, ID_DARK = 2002, ID_SAVE = 2003, ID_SAVE_CLOSE = 20
 // forward declarations (used by helpers defined above their definitions)
 static int PreviewLeft();
 static void UpdateLayout(HWND hwnd, bool redrawScrollbar = true);
+static void RebuildFindMatches();
 
 // zoom / DPI
 static int g_zoomPct = 100;
@@ -468,6 +478,8 @@ static void UpdateLayout(HWND hwnd, bool redrawScrollbar) {
         int docY = (i < g_blockTops.size()) ? g_blockTops[i] : 0;
         g_toc.push_back(TocHeading{ b.level, text, docY });
     }
+
+    if (g_findHwnd) RebuildFindMatches(); // frag indices are stale after relayout
 
     if (g_scrollY > MaxScroll()) g_scrollY = MaxScroll();
 
@@ -1285,6 +1297,177 @@ static void ToggleEditor(HWND hwnd) {
     }
 }
 
+// ---------------- find in doc (Ctrl+F) ----------------
+//
+// A small popup (like the table/update pickers) hosting a native single-line
+// EDIT control. Typing rebuilds matches against g_frags (the same flattened
+// text model selection/copy already use); Enter/Shift+Enter step through
+// them, scrolling the preview to keep the current match in view. Highlights
+// are drawn by PaintDocument itself (phase 1b, behind text) so they stay
+// correct through scrolling without any extra bookkeeping here.
+
+static void CloseFindBar() {
+    if (g_findHwnd) { HWND h = g_findHwnd; g_findHwnd = nullptr; g_findEdit = nullptr; DestroyWindow(h); }
+    if (g_findBrush) { DeleteObject(g_findBrush); g_findBrush = nullptr; }
+    if (!g_findMatches.empty() || g_findCurrent != -1) {
+        g_findMatches.clear();
+        g_findCurrent = -1;
+        if (g_mainHwnd) InvalidateRect(g_mainHwnd, nullptr, FALSE);
+    }
+    if (g_mainHwnd) SetFocus(g_editing ? g_hEdit : g_mainHwnd);
+}
+
+static std::wstring LowerCopy(const std::wstring& s) {
+    std::wstring r = s;
+    for (auto& c : r) c = towlower(c);
+    return r;
+}
+
+// Rebuild g_findMatches from the find box's current text against g_frags.
+// Matches don't span frag boundaries — see the FindMatch comment in render.h.
+static void RebuildFindMatches() {
+    g_findMatches.clear();
+    g_findCurrent = -1;
+    if (!g_findEdit) return;
+    int len = GetWindowTextLengthW(g_findEdit);
+    if (len > 0) {
+        std::wstring q(len + 1, L'\0'); GetWindowTextW(g_findEdit, &q[0], len + 1); q.resize(len);
+        std::wstring qLower = LowerCopy(q);
+        if (!qLower.empty()) {
+            for (int fi = 0; fi < (int)g_frags.size(); fi++) {
+                std::wstring low = LowerCopy(g_frags[fi].text);
+                size_t pos = 0;
+                while ((pos = low.find(qLower, pos)) != std::wstring::npos) {
+                    g_findMatches.push_back(FindMatch{ fi, (int)pos, (int)(pos + qLower.size()) });
+                    pos += qLower.size();
+                }
+            }
+        }
+    }
+    if (!g_findMatches.empty()) g_findCurrent = 0;
+}
+
+// Scroll the preview so the given match's frag is comfortably in view.
+static void ScrollToMatch(int idx) {
+    if (idx < 0 || idx >= (int)g_findMatches.size() || !g_mainHwnd) return;
+    int fragIdx = g_findMatches[idx].frag;
+    if (fragIdx < 0 || fragIdx >= (int)g_frags.size()) return;
+    int target = g_frags[fragIdx].rc.top - g_clientH / 3;
+    ScrollTo(g_mainHwnd, target);
+}
+
+static void FindStep(int dir) {
+    if (g_findMatches.empty() || !g_mainHwnd) return;
+    int n = (int)g_findMatches.size();
+    g_findCurrent = ((g_findCurrent + dir) % n + n) % n;
+    ScrollToMatch(g_findCurrent);
+    InvalidateRect(g_mainHwnd, nullptr, FALSE);
+    if (g_findHwnd) InvalidateRect(g_findHwnd, nullptr, FALSE); // match-count label
+}
+
+static LRESULT CALLBACK FindEditSubProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                        UINT_PTR, DWORD_PTR) {
+    switch (msg) {
+    case WM_KEYDOWN:
+        if (wp == VK_RETURN) { FindStep(GetKeyState(VK_SHIFT) < 0 ? -1 : 1); return 0; }
+        if (wp == VK_ESCAPE) { CloseFindBar(); return 0; }
+        break;
+    case WM_KILLFOCUS:
+        // losing focus to something other than the find bar itself closes it
+        // (same click-away-dismisses convention as the table/update pickers)
+        if ((HWND)wp != g_findHwnd) CloseFindBar();
+        break;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+static LRESULT CALLBACK FindBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_COMMAND:
+        if (HIWORD(wp) == EN_CHANGE && LOWORD(wp) == FIND_ID) {
+            RebuildFindMatches();
+            ScrollToMatch(g_findCurrent);
+            if (g_mainHwnd) InvalidateRect(g_mainHwnd, nullptr, FALSE);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        return 0;
+    case WM_CTLCOLOREDIT: {
+        HDC dc = (HDC)wp;
+        Theme th = g_dark ? DarkTheme() : LightTheme();
+        SetTextColor(dc, th.text);
+        SetBkColor(dc, th.bg);
+        if (!g_findBrush) g_findBrush = CreateSolidBrush(th.bg);
+        return (LRESULT)g_findBrush;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+        Theme th = g_dark ? DarkTheme() : LightTheme();
+        HBRUSH bg = CreateSolidBrush(th.bg); FillRect(hdc, &rc, bg); DeleteObject(bg);
+
+        wchar_t buf[64];
+        if (g_findMatches.empty()) {
+            int len = g_findEdit ? GetWindowTextLengthW(g_findEdit) : 0;
+            wcscpy_s(buf, 64, len > 0 ? L"no matches" : L"");
+        } else {
+            _snwprintf_s(buf, 64, _TRUNCATE, L"%d of %zu", g_findCurrent + 1, g_findMatches.size());
+        }
+        HFONT f = CreateFontW(-MulDiv(13, g_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        HFONT of = (HFONT)SelectObject(hdc, f);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, th.text2);
+        RECT statusRc{ rc.right - MulDiv(96, g_dpi, 96), 0, rc.right - MulDiv(8, g_dpi, 96), rc.bottom };
+        DrawTextW(hdc, buf, (int)wcslen(buf), &statusRc, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
+        SelectObject(hdc, of); DeleteObject(f);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_CLOSE:
+        CloseFindBar();
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static void ShowFindBar(HWND main) {
+    if (g_findHwnd) { // already open: select-all + refocus, like browser Ctrl+F
+        SendMessageW(g_findEdit, EM_SETSEL, 0, -1);
+        SetFocus(g_findEdit);
+        return;
+    }
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSEXW wc = {}; wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = FindBarProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"FMDV_FindBar";
+        RegisterClassExW(&wc);
+        reg = true;
+    }
+    int w = MulDiv(300, g_dpi, 96), h = MulDiv(34, g_dpi, 96);
+    RECT mr; GetWindowRect(main, &mr);
+    g_findHwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"FMDV_FindBar", L"",
+        WS_POPUP | WS_BORDER, mr.right - w - MulDiv(24, g_dpi, 96), mr.top + MulDiv(40, g_dpi, 96),
+        w, h, main, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!g_findHwnd) return;
+
+    int pad = MulDiv(6, g_dpi, 96);
+    int editW = w - MulDiv(110, g_dpi, 96);
+    g_findEdit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        pad, pad, editW, h - 2 * pad, g_findHwnd, (HMENU)(INT_PTR)FIND_ID,
+        GetModuleHandleW(nullptr), nullptr);
+    HFONT ef = CreateFontW(-MulDiv(14, g_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                           DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    SendMessageW(g_findEdit, WM_SETFONT, (WPARAM)ef, TRUE);
+    SetWindowSubclass(g_findEdit, FindEditSubProc, 1, 0);
+
+    ShowWindow(g_findHwnd, SW_SHOW);
+    SetFocus(g_findEdit);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_ERASEBKGND:
@@ -1305,7 +1488,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         FillRect(mem, &prc, bg);
         DeleteObject(bg);
 
-        PaintDocument(mem, g_scrollY, pw, h, g_theme, &g_sel, g_frags);
+        PaintDocument(mem, g_scrollY, pw, h, g_theme, &g_sel, g_frags,
+                      g_findHwnd ? &g_findMatches : nullptr, g_findCurrent);
         BitBlt(hdc, previewLeft, 0, pw, h, mem, 0, 0, SRCCOPY);
 
         // divider bar
@@ -1436,10 +1620,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g_prefs.dark = g_dark;
                 SavePrefs(g_prefs);
                 if (g_editBrush) { DeleteObject(g_editBrush); g_editBrush = nullptr; }
+                if (g_findBrush) { DeleteObject(g_findBrush); g_findBrush = nullptr; }
                 ApplyTitleBar(hwnd);
                 UpdateLayout(hwnd); // colors are baked into the cached display list
                 InvalidateRect(hwnd, nullptr, TRUE);
                 if (g_hEdit) InvalidateRect(g_hEdit, nullptr, TRUE);
+                if (g_findHwnd) InvalidateRect(g_findHwnd, nullptr, TRUE);
                 return 0;
             case ID_SAVE:       if (g_editing) SaveToFile(); return 0;
             case ID_SAVE_CLOSE: if (g_editing) { SaveToFile(); ToggleEditor(hwnd); } return 0;
@@ -1455,6 +1641,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 UpdateLayout(hwnd);
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
+            case ID_FIND:         ShowFindBar(hwnd); return 0;
         }
         return 0;
     }
@@ -1946,6 +2133,7 @@ static int Run(int argc, wchar_t** argv) {
         { FCONTROL | FVIRTKEY, 'T',          ID_INSERT_TABLE },
         { FCONTROL | FVIRTKEY, 'U',          ID_UPDATES },
         { (BYTE)(FCONTROL | FSHIFT | FVIRTKEY), 'O', ID_TOC },
+        { FCONTROL | FVIRTKEY, 'F',          ID_FIND },
     };
     HACCEL hAccel = CreateAcceleratorTableW(accels, (int)(sizeof(accels)/sizeof(accels[0])));
 

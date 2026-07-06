@@ -27,6 +27,11 @@ Custom markdown parser + GDI layout/renderer drawing directly to the window.
   doc); click an entry to scroll there. Coexists with the split editor (a
   third pane to the left of it). No independent scrolling in v1 — entries
   past the window height are clipped rather than scrollable.
+- **Ctrl+F** — find in doc: a small search box highlights every match (current
+  one emphasized), Enter/Shift+Enter step forward/backward with wraparound,
+  Esc closes. Matches don't span a formatting-change boundary within a line
+  (e.g. bold -> plain mid-match won't be found) — same frag-is-atomic
+  tradeoff selection/copy already make.
 - Scrolling: mouse wheel, scrollbar, PgUp/PgDn/Home/End/arrows/space.
 - Preferences (dark mode, split ratio, zoom, update mode/pin) saved to
   `%APPDATA%\fmdv\prefs.txt`.
@@ -58,9 +63,10 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 # FMDV_VERSION_OVERRIDE=<ver> makes the app report that version (test hook)
 ```
 
-`tests\run-tests.ps1` builds both configurations and runs 65 checks: parser,
-rendering, stability, TOC sidebar, selection + clipboard, save round-trip,
-autocomplete, table picker (insert + resize), list continuation, updater.
+`tests\run-tests.ps1` builds both configurations and runs 71 checks: parser,
+rendering, stability, TOC sidebar, find in doc, selection + clipboard,
+save round-trip, autocomplete, table picker (insert + resize), list
+continuation, updater.
 
 ## Set as default app for .md
 1. Right-click any `.md` → **Open with → Choose another app**
