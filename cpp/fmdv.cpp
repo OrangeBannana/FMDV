@@ -21,6 +21,10 @@
 #ifndef DWMWA_TRANSITIONS_FORCEDISABLED
 #define DWMWA_TRANSITIONS_FORCEDISABLED 3
 #endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#define DWMWCP_ROUND 2
+#endif
 
 static double g_freq = 0.0;
 static LARGE_INTEGER g_start;
@@ -1371,11 +1375,27 @@ static LRESULT CALLBACK FindEditSubProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     case WM_KEYDOWN:
         if (wp == VK_RETURN) { FindStep(GetKeyState(VK_SHIFT) < 0 ? -1 : 1); return 0; }
         if (wp == VK_ESCAPE) { CloseFindBar(); return 0; }
+        if (GetKeyState(VK_CONTROL) < 0 && wp == 'A') { // EDIT has no built-in Ctrl+A
+            SendMessageW(hwnd, EM_SETSEL, 0, -1);
+            return 0;
+        }
+        // Up/Down/PgUp/PgDn scroll the document — a single-line EDIT doesn't
+        // use them for anything, unlike Home/End (caret move) or Space (a
+        // valid search character), which stay native. Otherwise there'd be
+        // no way to scroll without clicking out of the box first.
+        if (wp == VK_UP)    { ScrollTo(g_mainHwnd, g_scrollY - 40); return 0; }
+        if (wp == VK_DOWN)  { ScrollTo(g_mainHwnd, g_scrollY + 40); return 0; }
+        if (wp == VK_PRIOR) { ScrollTo(g_mainHwnd, g_scrollY - (g_clientH - 40)); return 0; }
+        if (wp == VK_NEXT)  { ScrollTo(g_mainHwnd, g_scrollY + (g_clientH - 40)); return 0; }
         break;
+    case WM_MOUSEWHEEL: // forward so the doc scrolls even while the box has focus
+        if (g_mainHwnd) PostMessageW(g_mainHwnd, WM_MOUSEWHEEL, wp, lp);
+        return 0;
     case WM_KILLFOCUS:
-        // losing focus to something other than the find bar itself closes it
-        // (same click-away-dismisses convention as the table/update pickers)
-        if ((HWND)wp != g_findHwnd) CloseFindBar();
+        // Close on focus loss to anything except the find bar itself or the
+        // main window — clicking/selecting in the doc shouldn't dismiss find
+        // (matches browser Ctrl+F convention), only clicking fully away does.
+        if ((HWND)wp != g_findHwnd && (HWND)wp != g_mainHwnd) CloseFindBar();
         break;
     }
     return DefSubclassProc(hwnd, msg, wp, lp);
@@ -1383,6 +1403,8 @@ static LRESULT CALLBACK FindEditSubProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
 static LRESULT CALLBACK FindBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_ERASEBKGND:
+        return 1; // WM_PAINT fills the themed background; skip the default white erase
     case WM_COMMAND:
         if (HIWORD(wp) == EN_CHANGE && LOWORD(wp) == FIND_ID) {
             RebuildFindMatches();
@@ -1453,6 +1475,8 @@ static void ShowFindBar(HWND main) {
         WS_POPUP | WS_BORDER, mr.right - w - MulDiv(24, g_dpi, 96), mr.top + MulDiv(40, g_dpi, 96),
         w, h, main, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!g_findHwnd) return;
+    DWORD corner = DWMWCP_ROUND;
+    DwmSetWindowAttribute(g_findHwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
 
     int pad = MulDiv(6, g_dpi, 96);
     int editW = w - MulDiv(110, g_dpi, 96);
@@ -1690,7 +1714,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // which meant a quick double-tap while dismissing an overlay
             // (first press closes the overlay, second reaches this handler)
             // silently quit the app.
-            case VK_ESCAPE: return 0;
+            case VK_ESCAPE:
+                if (g_findHwnd) CloseFindBar(); // belt-and-suspenders: should already be
+                return 0;                       // closed via its own subclass handler
             case VK_UP:     ScrollTo(hwnd, g_scrollY - 40); return 0;
             case VK_DOWN:   ScrollTo(hwnd, g_scrollY + 40); return 0;
             case VK_PRIOR:  ScrollTo(hwnd, g_scrollY - (g_clientH - 40)); return 0; // PgUp
