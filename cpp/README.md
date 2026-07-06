@@ -8,7 +8,9 @@ Custom markdown parser + GDI layout/renderer drawing directly to the window.
 ## Features
 - GitHub-style rendering: headings, bold/italic/strikethrough, inline + fenced
   code, blockquotes, bullet/ordered/nested/task lists, tables with column
-  alignment, horizontal rules, links, images (alt text).
+  alignment, horizontal rules, links, images (alt text). Table columns size to
+  content (proportional to the widest cell) and wrap instead of overflowing
+  when the pane is too narrow to fit everything.
 - **Ctrl+E** — toggle split editor (monospace source left, live preview right);
   drag the divider to resize.
 - **Ctrl+T** — insert a table via a grid picker (grows past 8x8 on demand, up
@@ -52,7 +54,7 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 # FMDV_VERSION_OVERRIDE=<ver> makes the app report that version (test hook)
 ```
 
-`tests\run-tests.ps1` builds both configurations and runs 59 checks: parser,
+`tests\run-tests.ps1` builds both configurations and runs 61 checks: parser,
 rendering, stability, selection + clipboard, save round-trip, autocomplete,
 table picker (insert + resize), list continuation, updater.
 

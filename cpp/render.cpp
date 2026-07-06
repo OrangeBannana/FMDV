@@ -303,6 +303,36 @@ void hline(Ctx&, int l, int r, int y, COLORREF c) {
     emitRect(l, y, r - l, 1, c);
 }
 
+// Greedy word-wrap of plain text to fit maxWidth. No mid-word breaking (matches
+// layoutWords' paragraph wrapping, which also never splits a word).
+std::vector<std::wstring> WrapCellText(HDC hdc, HFONT f, const std::wstring& text, int maxWidth) {
+    std::vector<std::wstring> lines;
+    std::vector<std::wstring> words; std::wstring cur;
+    for (wchar_t c : text) {
+        if (c == L' ' || c == L'\t') { if (!cur.empty()) { words.push_back(cur); cur.clear(); } }
+        else cur += c;
+    }
+    if (!cur.empty()) words.push_back(cur);
+    if (words.empty()) { lines.push_back(L""); return lines; }
+
+    int spaceW = TextW(hdc, f, L" ");
+    std::wstring line = words[0];
+    int lineW = TextW(hdc, f, line);
+    for (size_t i = 1; i < words.size(); i++) {
+        int wW = TextW(hdc, f, words[i]);
+        if (lineW + spaceW + wW <= maxWidth) {
+            line += L" " + words[i];
+            lineW += spaceW + wW;
+        } else {
+            lines.push_back(line);
+            line = words[i];
+            lineW = wW;
+        }
+    }
+    lines.push_back(line);
+    return lines;
+}
+
 } // namespace
 
 // ---------------- layout (build cached display list) ----------------
@@ -414,46 +444,128 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
             int cols = (int)b.headers.size();
             if (cols == 0) { break; }
             int avail = cx.contentRight - cx.contentLeft;
-            int colW = avail / cols;
             HFONT bf = GetFont(F_Body, false, false);
+            HFONT bfBold = GetFont(F_Body, true, false);
             int fh = FontHeight(hdc, bf);
-            int rowH = fh + S(14);
-            int tableTop = y;
-            // header background
-            emitRect(cx.contentLeft, y, colW * cols, rowH, th.bg2);
-            auto drawCell = [&](const std::vector<InlineRun>& runs, int cidx, int ry, bool bold) {
-                HFONT f = GetFont(F_Body, bold, false);
-                std::wstring s; for (auto& r : runs) s += r.text;
-                int cx0 = cx.contentLeft + cidx * colW + S(8);
-                int align = (cidx < (int)b.aligns.size()) ? b.aligns[cidx] : AlignLeft;
-                int tw = TextW(hdc, f, s);
-                int tx = cx0;
-                if (align == AlignCenter) tx = cx.contentLeft + cidx * colW + (colW - tw)/2;
-                else if (align == AlignRight) tx = cx.contentLeft + (cidx+1)*colW - S(8) - tw;
-                // route through emitRun so cells are selectable; spaceBefore on non-first
-                // columns gives a separator when copied
-                emitRun(cx, tx, ry + S(7), tw, fh, s, f, th.text, cidx > 0);
+            int cellPadX = S(8), cellPadY = S(7), lineGap = S(4), minColW = S(60);
+
+            auto cellText = [](const std::vector<InlineRun>& runs) {
+                std::wstring s; for (auto& r : runs) s += r.text; return s;
             };
-            for (int c = 0; c < cols; c++) drawCell(b.headers[c].runs, c, y, true);
-            y += rowH;
+
+            // 1. natural (unwrapped) content width per column, from header + all rows
+            std::vector<int> naturalPad(cols);
+            for (int c = 0; c < cols; c++) naturalPad[c] = TextW(hdc, bfBold, cellText(b.headers[c].runs)) + 2 * cellPadX;
+            for (auto& row : b.rows)
+                for (int c = 0; c < cols && c < (int)row.cells.size(); c++) {
+                    int w = TextW(hdc, bf, cellText(row.cells[c].runs)) + 2 * cellPadX;
+                    if (w > naturalPad[c]) naturalPad[c] = w;
+                }
+
+            // 2. column widths: stretch proportionally to fill available width when
+            // content fits; otherwise shrink proportionally (floor at minColW) and
+            // wrap cell text that no longer fits.
+            long long totalNatural = 0; for (int w : naturalPad) totalNatural += w;
+            if (totalNatural < 1) totalNatural = 1;
+            std::vector<int> colW(cols);
+            if (totalNatural <= avail) {
+                int surplus = avail - (int)totalNatural, used = 0;
+                for (int c = 0; c < cols; c++) {
+                    int share = (c == cols - 1) ? (surplus - used)
+                                                 : (int)(surplus * (long long)naturalPad[c] / totalNatural);
+                    used += share;
+                    colW[c] = naturalPad[c] + share;
+                }
+            } else {
+                // Shrink proportionally, but a naive single pass can push several
+                // columns below minColW and, once floored, their combined width can
+                // exceed avail (the exact overflow this feature exists to prevent).
+                // Iteratively floor columns that would go below minColW and
+                // redistribute the remaining width among the rest (same idea as
+                // CSS flexbox min-width negotiation) so the total never exceeds avail.
+                std::vector<bool> floored(cols, false);
+                int remainingAvail = avail;
+                long long remainingNatural = totalNatural;
+                for (int iter = 0; iter < cols; iter++) {
+                    bool changed = false;
+                    for (int c = 0; c < cols; c++) {
+                        if (floored[c]) continue;
+                        int w = (remainingNatural > 0)
+                            ? (int)((long long)naturalPad[c] * remainingAvail / remainingNatural)
+                            : minColW;
+                        if (w < minColW) {
+                            floored[c] = true;
+                            colW[c] = minColW;
+                            remainingAvail -= minColW;
+                            remainingNatural -= naturalPad[c];
+                            changed = true;
+                        }
+                    }
+                    if (!changed) break;
+                }
+                for (int c = 0; c < cols; c++)
+                    if (!floored[c])
+                        colW[c] = (remainingNatural > 0)
+                            ? (int)((long long)naturalPad[c] * remainingAvail / remainingNatural)
+                            : minColW;
+            }
+            std::vector<int> colX(cols + 1); colX[0] = cx.contentLeft;
+            for (int c = 0; c < cols; c++) colX[c+1] = colX[c] + colW[c];
+
+            // 3. wrap a row's cells to their column width; row height follows the tallest cell
+            auto wrapRow = [&](const std::vector<TableCell>& cells, HFONT f,
+                               std::vector<std::vector<std::wstring>>& outLines) {
+                int lineCount = 1;
+                outLines.assign(cols, {});
+                for (int c = 0; c < cols; c++) {
+                    std::wstring s = (c < (int)cells.size()) ? cellText(cells[c].runs) : L"";
+                    int maxW = colW[c] - 2 * cellPadX;
+                    if (maxW < S(10)) maxW = S(10);
+                    outLines[c] = WrapCellText(hdc, f, s, maxW);
+                    if ((int)outLines[c].size() > lineCount) lineCount = (int)outLines[c].size();
+                }
+                return lineCount;
+            };
+            auto drawRow = [&](std::vector<std::vector<std::wstring>>& linesPerCol, int lineCount,
+                               int ry, bool bold, bool stripe) {
+                int rh = lineCount * fh + (lineCount - 1) * lineGap + 2 * cellPadY;
+                if (stripe) emitRect(cx.contentLeft, ry, colX[cols] - cx.contentLeft, rh, th.bg2);
+                HFONT f = bold ? bfBold : bf;
+                for (int c = 0; c < cols; c++) {
+                    int align = (c < (int)b.aligns.size()) ? b.aligns[c] : AlignLeft;
+                    for (int li = 0; li < (int)linesPerCol[c].size(); li++) {
+                        const std::wstring& s = linesPerCol[c][li];
+                        int tw = TextW(hdc, f, s);
+                        int tx = colX[c] + cellPadX;
+                        if (align == AlignCenter) tx = colX[c] + (colW[c] - tw) / 2;
+                        else if (align == AlignRight) tx = colX[c+1] - cellPadX - tw;
+                        // route through emitRun so cells are selectable; spaceBefore
+                        // separates columns on copy, wrapped continuation lines get
+                        // their own row (CopySelection inserts \n on a rc.top change)
+                        emitRun(cx, tx, ry + cellPadY + li * (fh + lineGap), tw, fh, s, f, th.text, c > 0 && li == 0);
+                    }
+                }
+                return rh;
+            };
+
+            int tableTop = y;
+            std::vector<std::vector<std::wstring>> hdrLines;
+            int hdrLineCount = wrapRow(b.headers, bfBold, hdrLines);
+            y += drawRow(hdrLines, hdrLineCount, y, true, true);
+
+            std::vector<int> rowYs{ tableTop, y };
             for (size_t ri = 0; ri < b.rows.size(); ri++) {
-                if (ri % 2 == 1) emitRect(cx.contentLeft, y, colW * cols, rowH, th.bg2);
-                const auto& row = b.rows[ri];
-                for (int c = 0; c < cols && c < (int)row.cells.size(); c++)
-                    drawCell(row.cells[c].runs, c, y, false);
-                y += rowH;
+                std::vector<std::vector<std::wstring>> lines;
+                int lc = wrapRow(b.rows[ri].cells, bf, lines);
+                y += drawRow(lines, lc, y, false, (ri % 2 == 1));
+                rowYs.push_back(y);
             }
-            // grid lines
             int tableBottom = y;
-            for (int c = 0; c <= cols; c++) {
-                int gx = cx.contentLeft + c * colW;
-                emitRect(gx, tableTop, 1, tableBottom - tableTop, th.border);
-            }
-            for (int r = 0; r <= (int)b.rows.size() + 1; r++) {
-                int gy = tableTop + r * rowH;
-                if (gy > tableBottom) break;
-                hline(cx, cx.contentLeft, cx.contentLeft + colW*cols, gy, th.border);
-            }
+
+            // grid lines
+            for (int c = 0; c <= cols; c++) emitRect(colX[c], tableTop, 1, tableBottom - tableTop, th.border);
+            for (int ry : rowYs) hline(cx, cx.contentLeft, colX[cols], ry, th.border);
+
             y = tableBottom + S(16);
             break;
         }
