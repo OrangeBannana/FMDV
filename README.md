@@ -58,9 +58,9 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 directory, or pass `-MinGW <path>` to `build.ps1`.
 
 ## History
-Originally a Go + WebView2 prototype (kept in
-[`legacy/webview2/`](legacy/webview2/)); rewritten in C++/Win32/GDI to
-eliminate browser-engine startup cost.
+Originally a Go + WebView2 prototype
+([`6fdb3e4`](../../commit/6fdb3e46eb6233c7e1192207154f7ea6a09b25a8));
+rewritten in C++/Win32/GDI to eliminate browser-engine startup cost.
 
 ## License
 [MIT](LICENSE)
