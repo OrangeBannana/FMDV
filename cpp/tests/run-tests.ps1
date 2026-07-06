@@ -224,8 +224,14 @@ Start-Sleep -Milliseconds 1500  # let the release fetch land so v1.0.0 is in the
 $up = [T]::FindWindowW("FMDV_UpdatePicker", $null)
 Check "update picker opens"    ($up -ne [IntPtr]::Zero)
 if ($up -ne [IntPtr]::Zero) {
-    # v1.0.0 predates the updater: first Enter must only arm a confirmation,
-    # not install (a real install would replace the exe this suite is running).
+    # The picker defaults to selecting whichever row matches the running
+    # version, which isn't necessarily the oldest release. Force selection to
+    # the last (oldest) row — the releases API returns newest-first, so this
+    # is always a release that predates the updater, regardless of how many
+    # newer releases exist by the time this runs.
+    for ($i = 0; $i -lt 10; $i++) { [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x28, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 25 }
+    # first Enter on that row must only arm a confirmation, not install (a
+    # real install would replace the exe this suite is running).
     [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x0D, [IntPtr]0) | Out-Null
     Start-Sleep -Milliseconds 200
     Check "downgrade requires confirm (still open)" ([T]::FindWindowW("FMDV_UpdatePicker", $null) -ne [IntPtr]::Zero)
