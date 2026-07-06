@@ -1,0 +1,436 @@
+# macOS Implementation Guide
+
+This guide describes how to get FMDV running on macOS with a GUI while
+preserving the repo's current priorities: fast first paint, native rendering,
+small artifacts, minimal runtime dependencies, and strong headless tests.
+
+The recommended path is a shared C++ core with native frontends:
+
+```text
+core/
+  parser, document model, edit helpers, platform-neutral layout data
+
+frontends/win32/
+  current Win32/GDI app, adapted to call the shared core
+
+frontends/macos/
+  AppKit shell, custom NSView preview, CoreText/CoreGraphics rendering
+
+frontends/cli/
+  parse, render, timing, and automation entry points
+```
+
+Do not start by writing the macOS UI. Start by measuring the current Windows
+implementation, then separate the reusable core without changing behavior, then
+measure again. That gives the macOS port a performance target and catches any
+regression introduced by the refactor.
+
+## Goals
+
+- Preserve or improve current first-paint behavior on Windows.
+- Make the parser and shared behaviors buildable on Windows and macOS.
+- Add a macOS GUI that feels native and opens quickly.
+- Add a CLI mainly for tests, timing, and programmatic use.
+- Collect comparable render/startup data before and after each major phase.
+- Avoid browser engines, long-running backend processes, and heavyweight
+  cross-platform runtimes unless a later benchmark proves they are worth it.
+
+## Non-Goals
+
+- Do not rewrite the app in SwiftUI, Electron, Tauri, Qt, or another framework
+  as the first macOS attempt.
+- Do not add a separate backend service. The shared core should be a library,
+  not a daemon.
+- Do not chase feature expansion during the port. Preserve existing behavior
+  first: open file, render preview, scroll, split editor, save, theme, links,
+  selection/copy, live reload, update flow.
+
+## Phase 0: Add Timing and Logging First
+
+Timing must be improved before any refactor. The current code has useful pieces:
+`FMDV_TIMING=1` records startup marks, and `--benchpaint` measures layout and
+culled paint cost in the debug build. Those should become one repeatable
+benchmark surface with structured logs.
+
+Add a benchmark/logging layer with these properties:
+
+- One environment variable for the output path: `FMDV_BENCH_LOG`.
+- One optional run label: `FMDV_BENCH_LABEL`.
+- CSV or JSON Lines output, appended per run.
+- Monotonic timestamps and durations.
+- Same event names across Windows, CLI, and macOS.
+- No network work, update checks, or optional UI creation before the first-paint
+  timing mark.
+- A default output path under the repo when run from tests, such as
+  `bench/results/windows-baseline.csv`.
+
+Recommended event fields:
+
+```text
+timestamp,platform,frontend,build,commit,label,file,theme,width,height,
+event,duration_ms,blocks,content_height,notes
+```
+
+Recommended timing events:
+
+```text
+process_start
+args_parsed
+prefs_loaded
+file_read
+parsed
+window_created
+first_layout_start
+first_layout_done
+window_shown
+first_paint
+layout_once
+paint_viewport_avg
+scroll_paint_avg
+editor_toggle_first_paint
+edit_reparse_layout
+```
+
+Add command-line benchmark modes:
+
+```powershell
+# Windows examples
+$env:FMDV_BENCH_LOG = "bench\results\windows-baseline.csv"
+$env:FMDV_BENCH_LABEL = "pre-core-split"
+.\cpp\fmdv_dbg.exe ..\test.md --bench-startup --width 900 --height 700
+.\cpp\fmdv_dbg.exe ..\test.md --bench-render --width 900 --viewport 700 --scroll-runs 200
+.\cpp\fmdv_dbg.exe ..\cpp\tests\stress.md --bench-render --width 1000 --viewport 800 --scroll-runs 200
+```
+
+The existing GUI timing path can keep using `QueryPerformanceCounter` on
+Windows. The macOS implementation should use `mach_absolute_time`,
+`clock_gettime`, or `std::chrono::steady_clock`, but the log schema should stay
+the same.
+
+### Phase 0 Acceptance Criteria
+
+- CI can run parser and render benchmarks without a visible desktop.
+- Local full tests can still drive the live Windows UI.
+- Benchmark files are deterministic enough to compare medians.
+- Results include at least 10 runs for each scenario before refactor work.
+- The initial Windows baseline is committed as a small markdown summary, not as
+  a giant raw data dump.
+
+Recommended summary file:
+
+```text
+bench/results/README.md
+```
+
+Record:
+
+- Machine and OS version.
+- Compiler/toolchain.
+- Commit hash.
+- Build type.
+- Median and p95 for first paint.
+- Median and p95 for first layout.
+- Median and p95 for viewport paint.
+- Notes on whether the app was warm or cold.
+
+## Phase 1: Separate the Core Without Changing Behavior
+
+After baseline timing is recorded, move reusable code out of the Win32 app. Keep
+the Windows app behavior identical at this stage.
+
+Proposed structure:
+
+```text
+core/
+  markdown.h
+  markdown.cpp
+  document.h
+  edit_assist.h
+  edit_assist.cpp
+  release_info.h
+  release_info.cpp
+  text_io.h
+  text_io.cpp
+
+frontends/win32/
+  fmdv.cpp
+  render_gdi.h
+  render_gdi.cpp
+  prefs_win32.cpp
+  updater_win32.cpp
+  fmdv.rc
+  fmdv.ico
+
+frontends/cli/
+  fmdv_cli.cpp
+
+bench/
+  results/
+  fixtures/
+```
+
+Move in small steps:
+
+1. Move the markdown parser and document model into `core/`.
+2. Extract UTF-8 read/write and LF normalization into `core/text_io.*`, with
+   platform-specific filesystem wrappers where needed.
+3. Extract pure editor helpers:
+   - autocomplete suggestion calculation
+   - list continuation decision
+   - table markdown generation
+4. Extract release JSON parsing and version comparison.
+5. Leave GDI rendering in Windows until the parser/editor/helper extraction is
+   green.
+6. Re-run the full Windows test suite and the benchmark suite.
+
+### Phase 1 Acceptance Criteria
+
+- Windows release and debug builds still pass.
+- Full Windows test suite still passes.
+- The first-paint median does not regress materially. A practical initial budget
+  is less than 5 percent regression, or less than 5 ms absolute regression,
+  whichever is larger.
+- Parser output is byte-for-byte equivalent for existing test fixtures.
+- Benchmark summary is updated with `post-core-split` data.
+
+## Phase 2: Make Layout Platform-Neutral
+
+The current renderer is fast, but the layout API is tied to GDI types. To share
+layout behavior with macOS, split layout from platform drawing and measurement.
+
+Introduce platform-neutral types:
+
+```cpp
+struct Color { uint8_t r, g, b, a; };
+struct RectF { double x, y, w, h; };
+enum class FontRole { Body, Mono, H1, H2, H3, H4, H5, H6 };
+
+struct FontSpec {
+    FontRole role;
+    bool bold;
+    bool italic;
+    double px;
+};
+
+struct TextRun {
+    RectF rect;
+    std::wstring text;
+    FontSpec font;
+    Color color;
+    bool spaceBefore;
+};
+
+struct DrawCommand {
+    enum Kind { Rect, Frame, Line, Text } kind;
+    RectF rect;
+    Color color;
+    FontSpec font;
+    std::wstring text;
+};
+```
+
+Introduce two interfaces:
+
+```cpp
+class TextMeasurer {
+public:
+    virtual double width(const FontSpec& font, std::wstring_view text) = 0;
+    virtual double height(const FontSpec& font) = 0;
+    virtual int charAtX(const FontSpec& font, std::wstring_view text, double x) = 0;
+    virtual double xAtChar(const FontSpec& font, std::wstring_view text, int ch) = 0;
+};
+
+class Painter {
+public:
+    virtual void fillRect(RectF rect, Color color) = 0;
+    virtual void frameRect(RectF rect, Color color) = 0;
+    virtual void line(double x1, double y1, double x2, double y2, Color color) = 0;
+    virtual void text(double x, double y, const FontSpec& font,
+                      Color color, std::wstring_view text) = 0;
+};
+```
+
+Windows gets a `GdiTextMeasurer` and `GdiPainter`. macOS gets a
+`CoreTextMeasurer` and `CoreGraphicsPainter`.
+
+### Phase 2 Acceptance Criteria
+
+- Windows screenshots and headless dumps remain visually equivalent.
+- Selection hit testing still works.
+- `--bench-render` output stays comparable to Phase 0 and Phase 1.
+- The layout library compiles on macOS before any AppKit UI is written.
+
+## Phase 3: Add the CLI
+
+The CLI is not the main product, but it is important for tests and automation.
+It should be the first non-Windows consumer of `core/`.
+
+Suggested commands:
+
+```text
+fmdv-cli parse file.md
+fmdv-cli suggest --line "**"
+fmdv-cli table --cols 3 --rows 4
+fmdv-cli bench-parse file.md --runs 100
+fmdv-cli bench-layout file.md --width 900 --runs 50
+```
+
+Later, after the macOS renderer exists:
+
+```text
+fmdv-cli render file.md --out out.png --width 900 --theme dark
+```
+
+### Phase 3 Acceptance Criteria
+
+- CLI builds on macOS and Windows.
+- Parser tests can run through the CLI.
+- Benchmark logs from the CLI use the same schema as the GUI apps.
+
+## Phase 4: Build the macOS AppKit GUI
+
+Start with a minimal Objective-C++ AppKit app, not SwiftUI. The goal is fastest
+first useful paint with direct access to the C++ core.
+
+Recommended files:
+
+```text
+frontends/macos/
+  main.mm
+  FMDVAppDelegate.mm
+  FMDVWindowController.mm
+  FMDVPreviewView.mm
+  FMDVEditorController.mm
+  CoreTextMeasurer.mm
+  CoreGraphicsPainter.mm
+  PrefsMac.mm
+  UpdaterMac.mm
+```
+
+Initial window path:
+
+1. Parse command-line file argument.
+2. Read file and parse markdown.
+3. Create `NSApplication`.
+4. Create `NSWindow`.
+5. Create one custom `NSView` for preview.
+6. Layout once for the view width.
+7. Show the window and force the first draw.
+8. Record `first_paint`.
+9. Only then create optional menus, schedule update checks, or initialize editor
+   structures.
+
+Preview implementation:
+
+- `FMDVPreviewView : NSView`
+- Draw cached display commands in `drawRect:`.
+- Use CoreGraphics for fills, rules, frames, and selection highlights.
+- Use CoreText for text measurement and drawing.
+- Use `NSScrollView` or a lightweight custom scroll path. Start with
+  `NSScrollView` unless measurement proves it is too slow.
+- Use layer backing only if it improves measured first paint or scroll paint.
+
+Editor implementation:
+
+- Use `NSTextView` for the source editor.
+- Create it lazily when the user toggles split editor.
+- Reuse core edit helpers for autocomplete, table insertion, and list
+  continuation.
+- Use native macOS shortcuts:
+  - Command-E or Command-Option-E for edit toggle, depending on menu conflicts
+  - Command-S save
+  - Command-Shift-S save and close editor
+  - Command-plus/minus/0 zoom
+  - Command-U update picker if it does not conflict with expected text behavior
+
+macOS platform APIs:
+
+- Preferences: `NSUserDefaults` or `~/Library/Application Support/FMDV/prefs.txt`.
+- Links: `NSWorkspace openURL:`.
+- File watching: `dispatch_source` or FSEvents.
+- Clipboard: `NSPasteboard`.
+- Update checks: `URLSession` after first paint.
+- Packaging: `.app` bundle first; signing/notarization later.
+
+### Phase 4 Acceptance Criteria
+
+- App opens a markdown file from Finder or command line.
+- First-paint timing is recorded with the shared schema.
+- Preview renders the same fixtures as Windows.
+- Scroll paint benchmark is recorded.
+- Dark mode and zoom work.
+- Link hit testing and selection/copy work before editor polish begins.
+
+## Phase 5: Compare Windows and macOS
+
+After the macOS preview is working, run the same fixtures on both platforms.
+Keep hardware notes explicit because Windows and macOS will often run on
+different machines.
+
+Minimum comparison matrix:
+
+```text
+platform,frontend,file,width,height,theme,runs,first_paint_median_ms,
+first_paint_p95_ms,layout_median_ms,viewport_paint_median_ms,
+scroll_paint_median_ms
+```
+
+Scenarios:
+
+- Empty file.
+- `test.md`.
+- Current README.
+- `cpp/tests/stress.md`.
+- Large generated markdown file with thousands of blocks.
+- Split editor first open.
+- Live edit reparse/layout after one keystroke.
+
+Interpretation rules:
+
+- Compare first useful paint, not just process start.
+- Report cold and warm separately.
+- Treat update checks and optional editor initialization as post-paint work.
+- Compare medians first, p95 second.
+- Do not optimize macOS with a different feature set than Windows.
+
+## Risk Register
+
+| Risk | Impact | Mitigation |
+| --- | --- | --- |
+| Core split regresses Windows startup | High | Measure before and after every phase; keep Windows shell behavior unchanged during Phase 1. |
+| CoreText wrapping differs from GDI | Medium | Use platform-neutral layout tests plus visual fixture dumps; allow small text metric differences but preserve structure. |
+| macOS text rendering starts slower than expected | Medium | Cache fonts, lazy-create editor, avoid SwiftUI/WebView, benchmark layer-backed vs non-layer-backed views. |
+| Cross-platform layout abstraction becomes too generic | Medium | Abstract only measurement and painting; keep FMDV's document/display-list model simple. |
+| Update mechanism differs by platform | Low | Share release parsing/version compare; keep install/swap platform-specific. |
+| CLI grows into a second product | Low | Keep CLI focused on tests, automation, and benchmarks. |
+
+## Recommended Milestones
+
+1. `bench/logging`: add unified benchmark logging and capture Windows baseline.
+2. `core/parser`: move parser/document model and keep Windows green.
+3. `core/edit-helpers`: extract autocomplete, list continuation, and table
+   generation.
+4. `core/releases`: extract version comparison and release JSON parsing.
+5. `core/layout`: introduce platform-neutral draw commands and GDI adapters.
+6. `cli`: add parse and benchmark commands.
+7. `macos/skeleton`: AppKit window, file open, parse, first paint.
+8. `macos/render`: CoreText/CoreGraphics renderer and fixture comparisons.
+9. `macos/interactions`: scrolling, selection/copy, links, dark mode, zoom.
+10. `macos/editor`: lazy split editor, save, autocomplete, table picker.
+11. `compare`: publish Windows vs macOS timing summary.
+
+## Definition of Done
+
+The macOS port should be considered viable when:
+
+- Windows timing after refactor is within the agreed regression budget.
+- macOS first-paint timing is measured and competitive with Windows on similar
+  hardware, or any difference is explained by OS/window-server behavior.
+- The macOS app can open, render, scroll, edit, save, and copy from common
+  markdown files.
+- The CLI can run parser and layout benchmarks on both platforms.
+- The repo has a repeatable benchmark summary showing:
+  - Windows baseline before core split.
+  - Windows after core split.
+  - macOS AppKit/CoreText preview.
+  - Windows versus macOS comparison notes.
