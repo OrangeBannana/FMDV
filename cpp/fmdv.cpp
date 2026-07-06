@@ -214,6 +214,8 @@ static bool g_showToc = false;
 static std::vector<TocHeading> g_toc;
 static std::vector<int> g_blockTops;      // doc-space y per g_doc.blocks[i], from LayoutDocument
 static const int TOC_ROW_H = 26, TOC_PAD_TOP = 12, TOC_PAD_X = 12, TOC_INDENT = 12;
+static int g_tocHoverIdx = -1;
+static bool g_tocTrackingLeave = false;    // TrackMouseEvent armed for WM_MOUSELEAVE
 
 // command IDs (driven by the accelerator table so they work even while typing)
 enum { ID_EDIT_TOGGLE = 2001, ID_DARK = 2002, ID_SAVE = 2003, ID_SAVE_CLOSE = 2004,
@@ -1329,6 +1331,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             IntersectClipRect(hdc, 0, 0, tw, h);
             HFONT tf = CreateFontW(-MulDiv(13, g_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0,
                                    DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+            HFONT tfHover = CreateFontW(-MulDiv(13, g_dpi, 96), 0, 0, 0, FW_NORMAL, TRUE, 0, 0,
+                                        DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
             HFONT tof = (HFONT)SelectObject(hdc, tf);
             SetBkMode(hdc, TRANSPARENT);
             int rowH = MulDiv(TOC_ROW_H, g_dpi, 96);
@@ -1336,15 +1340,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int padX = MulDiv(TOC_PAD_X, g_dpi, 96);
             int indent = MulDiv(TOC_INDENT, g_dpi, 96);
             int ty = padTop;
-            for (auto& t : g_toc) {
-                SetTextColor(hdc, t.level <= 2 ? g_theme.text : g_theme.text2);
+            for (int ti = 0; ti < (int)g_toc.size(); ti++) {
+                const TocHeading& t = g_toc[ti];
+                bool hover = (ti == g_tocHoverIdx);
+                SelectObject(hdc, hover ? tfHover : tf);
+                SetTextColor(hdc, hover ? g_theme.link : (t.level <= 2 ? g_theme.text : g_theme.text2));
                 int tx = padX + (t.level - 1) * indent;
                 RECT cell{ tx, ty, tw - padX, ty + rowH };
                 DrawTextW(hdc, t.text.c_str(), (int)t.text.size(), &cell,
                           DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
                 ty += rowH;
             }
-            SelectObject(hdc, tof); DeleteObject(tf);
+            SelectObject(hdc, tof); DeleteObject(tf); DeleteObject(tfHover);
             RestoreDC(hdc, clipId);
         }
 
@@ -1557,6 +1564,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_MOUSEMOVE:
+        if (g_showToc) {
+            int x = GET_X_LPARAM(lp), yy = GET_Y_LPARAM(lp);
+            int newHover = -1;
+            if (x < TocW()) {
+                if (!g_tocTrackingLeave) {
+                    TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
+                    TrackMouseEvent(&tme);
+                    g_tocTrackingLeave = true;
+                }
+                int rowH = MulDiv(TOC_ROW_H, g_dpi, 96), padTop = MulDiv(TOC_PAD_TOP, g_dpi, 96);
+                int idx = (yy - padTop) / rowH;
+                if (idx >= 0 && idx < (int)g_toc.size()) newHover = idx;
+            }
+            if (newHover != g_tocHoverIdx) { g_tocHoverIdx = newHover; InvalidateRect(hwnd, nullptr, FALSE); }
+        }
         if (g_dragging) {
             g_splitX = GET_X_LPARAM(lp);
             ClampSplit();
@@ -1586,6 +1608,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        break;
+
+    case WM_MOUSELEAVE:
+        g_tocTrackingLeave = false;
+        if (g_tocHoverIdx != -1) { g_tocHoverIdx = -1; InvalidateRect(hwnd, nullptr, FALSE); }
         break;
 
     case WM_LBUTTONUP:
