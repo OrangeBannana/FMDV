@@ -1,17 +1,17 @@
 # FMDV — Fast MD Viewer
 
-A lightning-fast native Windows markdown viewer/editor. Double-click a `.md` file
-and the window is up in ~40–55 ms — no browser engine, no Electron. A custom
-markdown parser + a hand-written Win32/GDI layout & rendering engine.
+Native Windows markdown viewer/editor. Custom parser + Win32/GDI layout and
+rendering. No browser engine.
 
-- **~40–55 ms** cold first-paint (vs 250–500 ms for a WebView2 build)
-- **~417 KB** single self-contained exe, no DLLs to ship
-- Cached layout + viewport culling → scrolling stays ~1.5 ms even on huge docs
+- **~40–55 ms** cold first-paint (WebView2 equivalent: 250–500 ms)
+- **~400 KB** single static exe, no runtime dependencies
+- Layout is cached and painting is culled to the viewport: scroll repaints stay
+  ~1.5 ms regardless of document size
 
 ![FMDV rendering a markdown file](docs/screenshot-light.png)
 
 <details>
-<summary>More screenshots: <b>dark mode</b> · <b>split editor</b></summary>
+<summary>Dark mode · split editor</summary>
 
 ![Dark mode](docs/screenshot-dark.png)
 
@@ -20,47 +20,47 @@ markdown parser + a hand-written Win32/GDI layout & rendering engine.
 </details>
 
 ## Run
-Download `fmdv.exe` from the [latest release](../../releases/latest), or build it
-from source (see below):
+Download `fmdv.exe` from the [latest release](../../releases/latest), or build
+from source (below):
 
 ```
 fmdv.exe path\to\file.md
 ```
 
-To make it your default `.md` handler: right-click a `.md` file → *Open with* →
-*Choose another app* → browse to `fmdv.exe` → *Always*. (Move the exe somewhere
-stable first, e.g. `%LOCALAPPDATA%\Programs\FMDV\`, so the association survives.)
+Default `.md` handler: right-click a `.md` file → *Open with* → *Choose another
+app* → browse to `fmdv.exe` → *Always*. Put the exe somewhere stable first
+(e.g. `%LOCALAPPDATA%\Programs\FMDV\`) so the association survives.
 
 ## Features
-- GitHub-style rendering: headings, bold/italic/strikethrough, inline + fenced code,
-  blockquotes, bullet/ordered/nested lists, task lists, tables (with alignment),
+- GitHub-style rendering: headings, bold/italic/strikethrough, inline + fenced
+  code, blockquotes, bullet/ordered/nested/task lists, tables with alignment,
   rules, links, images (alt text). Light + dark themes.
-- **Ctrl+E** split editor with live preview · **Ctrl+D** dark mode · **Ctrl+S** save
-  (`Ctrl+Shift+S` save & close) · **Ctrl+±/0** and Ctrl+scroll zoom.
+- **Ctrl+E** split editor with live preview · **Ctrl+D** dark mode · **Ctrl+S**
+  save (`Ctrl+Shift+S` save & close) · **Ctrl+±/0** and Ctrl+scroll zoom.
 - Text selection + copy in the preview (double-click word, triple-click line, Ctrl+A).
 - Clickable links, live reload on external file change, per-monitor DPI.
-- Editor niceties: markdown autocomplete (ghost text, Tab to accept), list
-  continuation on Enter, and a **Ctrl+T** table grid-picker.
+- Editor: markdown autocomplete (ghost text, Tab commits), list continuation on
+  Enter, **Ctrl+T** table insert.
 
 ## Source & build
-The app lives in [`cpp/`](cpp/). See [cpp/README.md](cpp/README.md) for the build
-(portable MinGW-w64, `cpp\build.ps1`), the headless test/inspection flags, and
-[cpp/ISSUES.md](cpp/ISSUES.md) for the full development log and roadmap.
+The app is in [`cpp/`](cpp/) — see [cpp/README.md](cpp/README.md) for build
+details, headless test/inspection flags, and source layout.
+[cpp/ISSUES.md](cpp/ISSUES.md) is the development log.
 
 ```powershell
 cd cpp
-.\build.ps1                       # -> cpp\fmdv.exe
+.\build.ps1                            # -> cpp\fmdv.exe
 powershell -File tests\run-tests.ps1   # 47-check suite
 ```
 
-> **Toolchain note:** requires MinGW-w64 (GCC, UCRT — e.g. [winlibs](https://winlibs.com/)
-> or MSYS2's `ucrt64`). Either have `g++` on `PATH`, set `FMDV_MINGW` to the
-> toolchain's `bin` directory, or pass `-MinGW <path>` to `build.ps1`.
+Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
+`ucrt64`): have `g++` on `PATH`, set `FMDV_MINGW` to the toolchain's `bin`
+directory, or pass `-MinGW <path>` to `build.ps1`.
 
 ## History
-Started as a Go + WebView2 prototype (now in [`legacy/webview2/`](legacy/webview2/)),
-then rewritten from scratch in C++/Win32/GDI for the speed. The git history
-reflects that pivot.
+Originally a Go + WebView2 prototype (kept in
+[`legacy/webview2/`](legacy/webview2/)); rewritten in C++/Win32/GDI to
+eliminate browser-engine startup cost.
 
 ## License
 [MIT](LICENSE)

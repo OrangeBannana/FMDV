@@ -25,7 +25,7 @@ def hello():
 
 - [x] Build the app
 - [ ] Set as default for .md files
-- [ ] Enjoy fast markdown viewing
+- [ ] Verify dark mode
 
 > This is a blockquote with some text inside it.
 

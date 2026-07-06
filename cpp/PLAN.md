@@ -1,10 +1,8 @@
 # FMDV — Native C++ / Win32 GDI Rewrite
 
-> **Historical design document** written before the rewrite started, kept for
-> context. A few details drifted during implementation: layout lives in
-> `render.cpp` (there is no separate `layout.cpp`), and prefs are a plain-text
-> `prefs.txt` rather than JSON. See `README.md` for the current state and
-> `ISSUES.md` for the development log.
+> **Historical design document**, pre-implementation. Known drift: layout lives
+> in `render.cpp` (no separate `layout.cpp`); prefs are plain-text `prefs.txt`,
+> not JSON. Current state: `README.md`. Development log: `ISSUES.md`.
 
 ## Goal
 A `.md` viewer that opens **near-instantly** (target: window visible in <30ms cold,
