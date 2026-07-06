@@ -13,8 +13,14 @@ Custom markdown parser + GDI layout/renderer drawing directly to the window.
   drag the divider to resize.
 - **Ctrl+D** — toggle dark mode (persists).
 - **Ctrl+S** — save. **Ctrl+Shift+S** — save and close editor.
+- **Ctrl+U** — updates: list GitHub releases, install any version in-app
+  (running exe is swapped; takes effect next launch). Modes: notify (default),
+  auto-update, or pin a specific version. Check runs async after first paint.
+  Installing a release older than the one that introduced this feature
+  requires a confirming second Enter (that version has no way back in-app).
 - Scrolling: mouse wheel, scrollbar, PgUp/PgDn/Home/End/arrows/space.
-- Preferences (dark mode, split ratio, zoom) saved to `%APPDATA%\fmdv\prefs.txt`.
+- Preferences (dark mode, split ratio, zoom, update mode/pin) saved to
+  `%APPDATA%\fmdv\prefs.txt`.
 
 ## Build
 Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
@@ -36,11 +42,16 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 .\fmdv_dbg.exe file.md --parse-dump
 # Capture the live window (incl. editor) via PrintWindow:
 .\tests\capture.ps1 -Exe .\fmdv.exe -File ..\test.md -Out shot.png -Command 2001
+# Updater (debug build): offline unit checks / live API / real download+swap
+.\fmdv_dbg.exe --test-updater
+.\fmdv_dbg.exe --check-updates
+.\fmdv_dbg.exe --install-tag v1.0.0
+# FMDV_VERSION_OVERRIDE=<ver> makes the app report that version (test hook)
 ```
 
-`tests\run-tests.ps1` builds both configurations and runs 47 checks: parser,
+`tests\run-tests.ps1` builds both configurations and runs 53 checks: parser,
 rendering, stability, selection + clipboard, save round-trip, autocomplete,
-table picker, list continuation.
+table picker, list continuation, updater.
 
 ## Set as default app for .md
 1. Right-click any `.md` → **Open with → Choose another app**

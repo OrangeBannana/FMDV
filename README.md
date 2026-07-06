@@ -41,6 +41,8 @@ app* → browse to `fmdv.exe` → *Always*. Put the exe somewhere stable first
 - Clickable links, live reload on external file change, per-monitor DPI.
 - Editor: markdown autocomplete (ghost text, Tab commits), list continuation on
   Enter, **Ctrl+T** table insert.
+- **Ctrl+U** in-app updates from GitHub Releases: notify (default), auto-update,
+  or pin any version — including downgrades.
 
 ## Source & build
 The app is in [`cpp/`](cpp/) — see [cpp/README.md](cpp/README.md) for build
@@ -50,7 +52,7 @@ details, headless test/inspection flags, and source layout.
 ```powershell
 cd cpp
 .\build.ps1                            # -> cpp\fmdv.exe
-powershell -File tests\run-tests.ps1   # 47-check suite
+powershell -File tests\run-tests.ps1   # 53-check suite
 ```
 
 Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2

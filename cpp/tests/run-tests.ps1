@@ -212,6 +212,32 @@ Check "empty item ends list"   ((Seq @(45,32,97,'ENTER','ENTER')) -eq "- a")
 Check "Tab inserts tab (no ghost)" ((Seq @(120,'TAB',121)) -eq "x`ty")
 Check "Tab commits ghost (no tab char)" ((Seq @(42,42,'TAB')) -eq "****")
 
+Write-Host "`nUpdater:" -ForegroundColor Cyan
+$ut = & $dbg --test-updater 2>&1 | Out-String
+Check "updater unit checks"    ($LASTEXITCODE -eq 0 -and $ut -match "0 failures")
+$ver = (& $dbg --version | Out-String).Trim()
+Check "version flag"           ($ver -match '^\d+\.\d+\.\d+$')
+
+$p = Launch $basic
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]2011, [IntPtr]::Zero) | Out-Null  # ID_UPDATES
+Start-Sleep -Milliseconds 1500  # let the release fetch land so v1.0.0 is in the list
+$up = [T]::FindWindowW("FMDV_UpdatePicker", $null)
+Check "update picker opens"    ($up -ne [IntPtr]::Zero)
+if ($up -ne [IntPtr]::Zero) {
+    # v1.0.0 predates the updater: first Enter must only arm a confirmation,
+    # not install (a real install would replace the exe this suite is running).
+    [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x0D, [IntPtr]0) | Out-Null
+    Start-Sleep -Milliseconds 200
+    Check "downgrade requires confirm (still open)" ([T]::FindWindowW("FMDV_UpdatePicker", $null) -ne [IntPtr]::Zero)
+    [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x1B, [IntPtr]0) | Out-Null  # Esc cancels the arm, not the picker
+    Start-Sleep -Milliseconds 200
+    Check "Esc cancels the arm (still open)" ([T]::FindWindowW("FMDV_UpdatePicker", $null) -ne [IntPtr]::Zero)
+    [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x1B, [IntPtr]0) | Out-Null  # Esc closes the picker
+}
+Start-Sleep -Milliseconds 250
+Check "update picker Esc closes" ([T]::FindWindowW("FMDV_UpdatePicker", $null) -eq [IntPtr]::Zero)
+if (-not $p.HasExited) { $p.Kill() }
+
 # ---- summary ----
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host ("  {0} passed, {1} failed" -f $script:pass, $script:fail) -ForegroundColor ($(if($script:fail){"Red"}else{"Green"}))

@@ -1,11 +1,12 @@
 #include <windows.h>
+#include "version.h"
 
 // Application icon (id 1 so Windows uses it for the exe + window)
 1 ICON "fmdv.ico"
 
 1 VERSIONINFO
-FILEVERSION     1,0,0,0
-PRODUCTVERSION  1,0,0,0
+FILEVERSION     FMDV_VERSION_RC
+PRODUCTVERSION  FMDV_VERSION_RC
 FILEOS          VOS_NT_WINDOWS32
 FILETYPE        VFT_APP
 BEGIN
@@ -15,11 +16,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName",      "FMDV"
       VALUE "FileDescription",  "Fast MD Viewer"
-      VALUE "FileVersion",      "1.0.0.0"
+      VALUE "FileVersion",      FMDV_VERSION_STR
       VALUE "InternalName",     "fmdv"
       VALUE "OriginalFilename", "fmdv.exe"
       VALUE "ProductName",      "FMDV - Fast MD Viewer"
-      VALUE "ProductVersion",   "1.0.0.0"
+      VALUE "ProductVersion",   FMDV_VERSION_STR
     END
   END
   BLOCK "VarFileInfo"

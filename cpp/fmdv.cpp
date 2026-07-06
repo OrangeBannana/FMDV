@@ -15,6 +15,8 @@
 #include "markdown.h"
 #include "render.h"
 #include "prefs.h"
+#include "updater.h"
+#include "version.h"
 
 #ifndef DWMWA_TRANSITIONS_FORCEDISABLED
 #define DWMWA_TRANSITIONS_FORCEDISABLED 3
@@ -209,7 +211,7 @@ static const int MIN_PANE = 160;
 // command IDs (driven by the accelerator table so they work even while typing)
 enum { ID_EDIT_TOGGLE = 2001, ID_DARK = 2002, ID_SAVE = 2003, ID_SAVE_CLOSE = 2004,
        ID_ZOOM_IN = 2005, ID_ZOOM_OUT = 2006, ID_ZOOM_RESET = 2007, ID_COPY = 2008,
-       ID_SELECT_ALL = 2009, ID_INSERT_TABLE = 2010 };
+       ID_SELECT_ALL = 2009, ID_INSERT_TABLE = 2010, ID_UPDATES = 2011 };
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -825,6 +827,265 @@ static void ShowTablePicker(HWND main) {
     if (g_tpHwnd) { ShowWindow(g_tpHwnd, SW_SHOW); SetFocus(g_tpHwnd); }
 }
 
+// ---------------- in-app updates (Ctrl+U) ----------------
+//
+// A one-shot timer 2.5s after first paint starts a worker thread that fetches
+// the release list (WinHTTP; never on the startup path). Modes (prefs):
+//   notify - banner when a newer release exists, install from the picker
+//   auto   - download + swap in the background, takes effect next launch
+//   pin    - stay on a chosen tag; no startup check
+// The picker lists all releases; Enter installs the selection. Picking any
+// version other than the newest pins it; picking the newest clears the pin.
+
+static const UINT_PTR UPDATE_TIMER = 3;
+static const UINT WM_APP_UPDATE = WM_APP + 1;
+enum { UPD_CHECK_DONE = 1, UPD_INSTALL_OK = 2, UPD_INSTALL_FAIL = 3 };
+
+static HWND g_mainHwnd = nullptr;
+static CRITICAL_SECTION g_updLock;          // guards g_relPending
+static std::vector<ReleaseInfo> g_relPending; // worker output
+static std::vector<ReleaseInfo> g_releases;   // UI copy (main thread only)
+static bool g_relFetched = false, g_relFailed = false;
+static bool g_fetchRunning = false, g_installRunning = false;
+static std::wstring g_banner;               // status bar text; empty = hidden
+static std::wstring g_installTag;           // tag being installed (main sets, banner reads)
+static std::wstring g_installUrl;           // url for InstallThread (main sets before spawn)
+
+static int BannerH() { return g_banner.empty() ? 0 : MulDiv(28, g_dpi, 96); }
+
+static void SetBanner(HWND hwnd, const std::wstring& text) {
+    g_banner = text;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// newest release that has an fmdv.exe asset (API order isn't trusted)
+static const ReleaseInfo* NewestInstallable() {
+    const ReleaseInfo* best = nullptr;
+    for (const auto& r : g_releases) {
+        if (r.exeUrl.empty()) continue;
+        if (!best || CompareVersions(r.tag, best->tag) > 0) best = &r;
+    }
+    return best;
+}
+
+static DWORD WINAPI CheckThread(LPVOID autoInstall) {
+    std::vector<ReleaseInfo> rel;
+    bool ok = FetchReleases(rel);
+    EnterCriticalSection(&g_updLock);
+    g_relPending = rel;
+    LeaveCriticalSection(&g_updLock);
+    PostMessageW(g_mainHwnd, WM_APP_UPDATE, UPD_CHECK_DONE, ok ? 0 : 1);
+    if (ok && autoInstall) {
+        // install the newest exe-bearing release if it's newer than us
+        const ReleaseInfo* best = nullptr;
+        for (const auto& r : rel) {
+            if (r.exeUrl.empty()) continue;
+            if (!best || CompareVersions(r.tag, best->tag) > 0) best = &r;
+        }
+        if (best && CompareVersions(best->tag, CurrentVersion()) > 0) {
+            g_installTag = best->tag;
+            bool ins = DownloadAndInstall(best->exeUrl);
+            PostMessageW(g_mainHwnd, WM_APP_UPDATE, ins ? UPD_INSTALL_OK : UPD_INSTALL_FAIL, 0);
+        }
+    }
+    return 0;
+}
+
+static DWORD WINAPI InstallThread(LPVOID) {
+    bool ok = DownloadAndInstall(g_installUrl);
+    PostMessageW(g_mainHwnd, WM_APP_UPDATE, ok ? UPD_INSTALL_OK : UPD_INSTALL_FAIL, 0);
+    return 0;
+}
+
+static void StartUpdateCheck(bool autoInstall) {
+    if (g_fetchRunning) return;
+    g_fetchRunning = true;
+    HANDLE h = CreateThread(nullptr, 0, CheckThread, autoInstall ? (LPVOID)1 : nullptr, 0, nullptr);
+    if (h) CloseHandle(h); else g_fetchRunning = false;
+}
+
+// ---- update picker popup ----
+
+static HWND g_upHwnd = nullptr;
+static int g_upSel = 0;
+static int g_upConfirmIdx = -1; // index awaiting a second Enter to confirm a no-updater downgrade
+
+static void CloseUpdatePicker() {
+    if (g_upHwnd) { HWND h = g_upHwnd; g_upHwnd = nullptr; DestroyWindow(h); }
+}
+
+// Releases older than this predate Ctrl+U: installing one strands the user
+// with no in-app way back up, so the picker requires a confirming second Enter.
+static bool PredatesUpdater(const std::wstring& tag) {
+    return CompareVersions(tag, FMDV_UPDATER_MIN_WSTR) < 0;
+}
+
+static int UpRows() { return (int)g_releases.size() < 8 ? (int)g_releases.size() : 8; }
+
+static std::string Narrow(const std::wstring& w) {
+    int need = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(need, '\0');
+    if (need) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], need, nullptr, nullptr);
+    return s;
+}
+
+// Returns true if the install proceeded (or was armed as a pending confirm).
+static bool PickerInstallSelected() {
+    if (g_installRunning) return false;
+    if (g_upSel < 0 || g_upSel >= (int)g_releases.size()) return false;
+    const ReleaseInfo& r = g_releases[g_upSel];
+    if (r.exeUrl.empty()) return false;
+
+    if (PredatesUpdater(r.tag) && g_upConfirmIdx != g_upSel) {
+        g_upConfirmIdx = g_upSel; // arm; a second Enter on the same row confirms
+        return true;              // repaint to show the confirmation prompt
+    }
+    g_upConfirmIdx = -1;
+
+    // pin semantics: anything but the newest installable pins that tag
+    const ReleaseInfo* newest = NewestInstallable();
+    if (newest && CompareVersions(r.tag, newest->tag) < 0) {
+        g_prefs.updateMode = UPDATE_PIN;
+        g_prefs.pinTag = Narrow(r.tag);
+    } else if (g_prefs.updateMode == UPDATE_PIN) {
+        g_prefs.updateMode = UPDATE_NOTIFY;
+        g_prefs.pinTag.clear();
+    }
+    SavePrefs(g_prefs);
+
+    g_installTag = r.tag;
+    g_installUrl = r.exeUrl;
+    g_installRunning = true;
+    HANDLE h = CreateThread(nullptr, 0, InstallThread, nullptr, 0, nullptr);
+    if (h) CloseHandle(h); else g_installRunning = false;
+    if (g_upHwnd) InvalidateRect(g_upHwnd, nullptr, FALSE);
+    return true;
+}
+
+static LRESULT CALLBACK UpdatePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_KEYDOWN:
+        switch (wp) {
+            case VK_DOWN: if (g_upSel + 1 < UpRows()) { g_upSel++; g_upConfirmIdx = -1; } break;
+            case VK_UP:   if (g_upSel > 0) { g_upSel--; g_upConfirmIdx = -1; } break;
+            case VK_RETURN: PickerInstallSelected(); break;
+            case 'A': // toggle auto-update (clears a pin)
+                g_prefs.updateMode = (g_prefs.updateMode == UPDATE_AUTO) ? UPDATE_NOTIFY : UPDATE_AUTO;
+                g_prefs.pinTag.clear();
+                SavePrefs(g_prefs);
+                break;
+            case VK_ESCAPE:
+                if (g_upConfirmIdx >= 0) { g_upConfirmIdx = -1; break; } // cancel the pending confirm first
+                CloseUpdatePicker();
+                return 0;
+            default: return 0;
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    case WM_KILLFOCUS:
+        CloseUpdatePicker();
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+        Theme th = g_dark ? DarkTheme() : LightTheme();
+        HBRUSH bg = CreateSolidBrush(th.bg); FillRect(hdc, &rc, bg); DeleteObject(bg);
+
+        HFONT f = CreateFontW(-MulDiv(13, g_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        HFONT of = (HFONT)SelectObject(hdc, f);
+        SetBkMode(hdc, TRANSPARENT);
+
+        int pad = MulDiv(12, g_dpi, 96), row = MulDiv(24, g_dpi, 96), y = pad;
+        wchar_t buf[160];
+
+        SetTextColor(hdc, th.text);
+        _snwprintf_s(buf, 160, _TRUNCATE, L"FMDV %ls — releases", CurrentVersion().c_str());
+        TextOutW(hdc, pad, y, buf, (int)wcslen(buf)); y += row;
+
+        SetTextColor(hdc, th.text2);
+        if (g_prefs.updateMode == UPDATE_PIN)
+            _snwprintf_s(buf, 160, _TRUNCATE, L"pinned to %hs   ·   [A] auto-update: off",
+                         g_prefs.pinTag.c_str());
+        else
+            _snwprintf_s(buf, 160, _TRUNCATE, L"[A] auto-update: %ls",
+                         g_prefs.updateMode == UPDATE_AUTO ? L"on" : L"off");
+        TextOutW(hdc, pad, y, buf, (int)wcslen(buf)); y += row;
+
+        if (!g_relFetched) {
+            SetTextColor(hdc, th.text2);
+            const wchar_t* s = g_relFailed ? L"couldn't reach GitHub" : L"checking…";
+            TextOutW(hdc, pad, y, s, (int)wcslen(s));
+        } else if (g_releases.empty()) {
+            SetTextColor(hdc, th.text2);
+            TextOutW(hdc, pad, y, L"no releases found", 17);
+        } else {
+            const ReleaseInfo* newest = NewestInstallable();
+            for (int i = 0; i < UpRows(); i++, y += row) {
+                const ReleaseInfo& r = g_releases[i];
+                if (i == g_upSel) {
+                    RECT sel{ pad / 2, y - 2, rc.right - pad / 2, y + row - 4 };
+                    HBRUSH sb = CreateSolidBrush(th.sel);
+                    FillRect(hdc, &sel, sb); DeleteObject(sb);
+                }
+                bool cur = CompareVersions(r.tag, CurrentVersion()) == 0;
+                _snwprintf_s(buf, 160, _TRUNCATE, L"%ls%ls%ls%ls", r.tag.c_str(),
+                             (newest && &r == newest) ? L"  · latest" : L"",
+                             cur ? L"  · current" : L"",
+                             r.exeUrl.empty() ? L"  · no exe" : L"");
+                SetTextColor(hdc, r.exeUrl.empty() ? th.text2 : th.text);
+                TextOutW(hdc, pad, y, buf, (int)wcslen(buf));
+            }
+        }
+
+        // status footer
+        y = rc.bottom - row;
+        bool confirming = (g_upConfirmIdx == g_upSel && g_upConfirmIdx >= 0 &&
+                           g_upConfirmIdx < (int)g_releases.size());
+        SetTextColor(hdc, confirming ? th.link : th.text2);
+        const wchar_t* foot = g_installRunning ? L"installing…"
+                            : confirming ? L"no updater in that release — Enter again to confirm"
+                            : L"↑↓ select · Enter install · Esc close";
+        TextOutW(hdc, pad, y, foot, (int)wcslen(foot));
+
+        SelectObject(hdc, of); DeleteObject(f);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_CLOSE:
+        CloseUpdatePicker();
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static void ShowUpdatePicker(HWND main) {
+    if (g_upHwnd) { CloseUpdatePicker(); return; } // Ctrl+U toggles
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSEXW wc = {}; wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = UpdatePickerProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"FMDV_UpdatePicker";
+        RegisterClassExW(&wc);
+        reg = true;
+    }
+    if (!g_relFetched && !g_fetchRunning) StartUpdateCheck(false);
+    g_upSel = 0;
+    g_upConfirmIdx = -1;
+    for (int i = 0; i < (int)g_releases.size() && i < 8; i++)
+        if (CompareVersions(g_releases[i].tag, CurrentVersion()) == 0) { g_upSel = i; break; }
+
+    int w = MulDiv(400, g_dpi, 96);
+    int h = MulDiv(12 * 2 + 24 * 3, g_dpi, 96) + MulDiv(24, g_dpi, 96) * (UpRows() > 0 ? UpRows() : 1);
+    RECT mr; GetWindowRect(main, &mr);
+    g_upHwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"FMDV_UpdatePicker", L"",
+        WS_POPUP | WS_BORDER, mr.right - w - MulDiv(48, g_dpi, 96), mr.top + MulDiv(64, g_dpi, 96),
+        w, h, main, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (g_upHwnd) { ShowWindow(g_upHwnd, SW_SHOW); SetFocus(g_upHwnd); }
+}
+
 static void EnsureEditControl(HWND hwnd) {
     if (g_hEdit) return;
     g_hEdit = CreateWindowExW(
@@ -898,6 +1159,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DeleteObject(db);
         }
 
+        // update banner: overlay strip across the top (no relayout)
+        if (!g_banner.empty()) {
+            int bh = BannerH();
+            RECT br{ 0, 0, g_clientW, bh };
+            HBRUSH bb = CreateSolidBrush(g_theme.bg2);
+            FillRect(hdc, &br, bb); DeleteObject(bb);
+            RECT bl{ 0, bh - 1, g_clientW, bh };
+            HBRUSH lb = CreateSolidBrush(g_theme.border);
+            FillRect(hdc, &bl, lb); DeleteObject(lb);
+            HFONT bf = CreateFontW(-MulDiv(13, g_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                                   DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+            HFONT obf = (HFONT)SelectObject(hdc, bf);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, g_theme.link);
+            TextOutW(hdc, MulDiv(12, g_dpi, 96), MulDiv(6, g_dpi, 96),
+                     g_banner.c_str(), (int)g_banner.size());
+            SelectObject(hdc, obf); DeleteObject(bf);
+        }
+
         EndPaint(hwnd, &ps);
         static bool firstPaintDone = false;
         if (!firstPaintDone) { firstPaintDone = true; Timing("first-paint"); FlushTiming(); }
@@ -969,6 +1249,39 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             case ID_COPY:       CopySelection(hwnd); return 0;
             case ID_SELECT_ALL: SelectAll(hwnd); return 0;
             case ID_INSERT_TABLE: ShowTablePicker(hwnd); return 0;
+            case ID_UPDATES:      ShowUpdatePicker(hwnd); return 0;
+        }
+        return 0;
+    }
+
+    case WM_APP_UPDATE: {
+        if (wp == UPD_CHECK_DONE) {
+            g_fetchRunning = false;
+            EnterCriticalSection(&g_updLock);
+            g_releases.swap(g_relPending);
+            LeaveCriticalSection(&g_updLock);
+            g_relFetched = (lp == 0);
+            g_relFailed = (lp != 0);
+            if (g_relFetched && g_prefs.updateMode == UPDATE_NOTIFY) {
+                const ReleaseInfo* nw = NewestInstallable();
+                if (nw && CompareVersions(nw->tag, CurrentVersion()) > 0)
+                    SetBanner(hwnd, nw->tag + L" available — Ctrl+U to update");
+            }
+            if (g_upHwnd) { // resize to fit the arrived list, keep top-right anchor
+                RECT wr; GetWindowRect(g_upHwnd, &wr);
+                int w = wr.right - wr.left;
+                int h = MulDiv(12 * 2 + 24 * 3, g_dpi, 96) + MulDiv(24, g_dpi, 96) * (UpRows() > 0 ? UpRows() : 1);
+                SetWindowPos(g_upHwnd, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                InvalidateRect(g_upHwnd, nullptr, TRUE);
+            }
+        } else if (wp == UPD_INSTALL_OK) {
+            g_installRunning = false;
+            SetBanner(hwnd, g_installTag + L" installed — takes effect on next launch");
+            if (g_upHwnd) InvalidateRect(g_upHwnd, nullptr, TRUE);
+        } else if (wp == UPD_INSTALL_FAIL) {
+            g_installRunning = false;
+            SetBanner(hwnd, L"update failed — check github.com/OrangeBannana/FMDV/releases");
+            if (g_upHwnd) InvalidateRect(g_upHwnd, nullptr, TRUE);
         }
         return 0;
     }
@@ -1133,6 +1446,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        if (wp == UPDATE_TIMER) { // one-shot, 2.5s after first paint
+            KillTimer(hwnd, UPDATE_TIMER);
+            CleanupOldExe();
+            if (g_prefs.updateMode != UPDATE_PIN)
+                StartUpdateCheck(g_prefs.updateMode == UPDATE_AUTO);
+            return 0;
+        }
         if (wp == WATCH_TIMER && !g_editing && !g_filePath.empty()) {
             FILETIME ft = FileMtime(g_filePath);
             if ((ft.dwLowDateTime || ft.dwHighDateTime) && CompareFileTime(&ft, &g_fileTime) != 0) {
@@ -1196,6 +1516,65 @@ static int Run(int argc, wchar_t** argv) {
         if (g_filePath.empty()) g_filePath = argv[i];
     }
     Timing("args-parsed");
+
+#ifdef FMDV_CONSOLE
+    // updater test/inspection flags (debug build)
+    for (int i = 1; i < argc; i++) {
+        if (wcscmp(argv[i], L"--version") == 0) {
+            wprintf(L"%ls\n", CurrentVersion().c_str());
+            return 0;
+        }
+        if (wcscmp(argv[i], L"--test-updater") == 0) {
+            int fails = 0;
+            auto chk = [&](const char* name, bool ok) {
+                wprintf(L"%hs  %hs\n", ok ? "OK  " : "FAIL", name);
+                if (!ok) fails++;
+            };
+            chk("vercmp equal ignores v", CompareVersions(L"v1.0.0", L"1.0.0") == 0);
+            chk("vercmp 1.10 > 1.9",      CompareVersions(L"v1.10.0", L"v1.9.9") > 0);
+            chk("vercmp 0.9 < 1.0",       CompareVersions(L"0.9", L"1.0") < 0);
+            chk("vercmp 1.0.1 > 1.0",     CompareVersions(L"1.0.1", L"1.0") > 0);
+            chk("vercmp 1.0 == 1.0.0",    CompareVersions(L"1.0", L"1.0.0") == 0);
+            const char* sample =
+                "[{\"tag_name\":\"v1.1.0\",\"assets\":["
+                "{\"name\":\"notes.txt\",\"browser_download_url\":\"https://x/y/notes.txt\"},"
+                "{\"name\":\"fmdv.exe\",\"browser_download_url\":\"https://x/v1.1.0/fmdv.exe\"}]},"
+                "{\"tag_name\":\"v1.0.0\",\"assets\":[]}]";
+            std::vector<ReleaseInfo> rel;
+            bool p = ParseReleasesJson(sample, rel);
+            chk("parse: two releases",   p && rel.size() == 2);
+            chk("parse: tags",           rel.size() == 2 && rel[0].tag == L"v1.1.0" && rel[1].tag == L"v1.0.0");
+            chk("parse: exe url",        rel.size() == 2 && rel[0].exeUrl == L"https://x/v1.1.0/fmdv.exe");
+            chk("parse: no-asset empty", rel.size() == 2 && rel[1].exeUrl.empty());
+            wprintf(L"%d failures\n", fails);
+            return fails;
+        }
+        if (wcscmp(argv[i], L"--check-updates") == 0) {
+            std::vector<ReleaseInfo> rel;
+            if (!FetchReleases(rel)) { wprintf(L"fetch FAILED\n"); return 2; }
+            std::wstring cur = CurrentVersion();
+            wprintf(L"current %ls\n", cur.c_str());
+            for (auto& r : rel)
+                wprintf(L"%ls  exe=%ls  %ls\n", r.tag.c_str(),
+                        r.exeUrl.empty() ? L"no" : L"yes",
+                        CompareVersions(r.tag, cur) > 0 ? L"NEWER" : L"");
+            return 0;
+        }
+        if (wcscmp(argv[i], L"--install-tag") == 0 && i + 1 < argc) {
+            std::vector<ReleaseInfo> rel;
+            if (!FetchReleases(rel)) { wprintf(L"fetch FAILED\n"); return 2; }
+            for (auto& r : rel) {
+                if (r.tag == argv[i + 1] && !r.exeUrl.empty()) {
+                    bool ok = DownloadAndInstall(r.exeUrl);
+                    wprintf(L"install %ls: %hs\n", r.tag.c_str(), ok ? "OK" : "FAILED");
+                    return ok ? 0 : 2;
+                }
+            }
+            wprintf(L"tag not found or has no exe asset\n");
+            return 2;
+        }
+    }
+#endif
 
     // Read + parse the file
     std::wstring text;
@@ -1295,6 +1674,9 @@ static int Run(int argc, wchar_t** argv) {
     ApplyTitleBar(hwnd);
     g_fileTime = FileMtime(g_filePath);
     SetTimer(hwnd, WATCH_TIMER, 500, nullptr);
+    InitializeCriticalSection(&g_updLock);
+    g_mainHwnd = hwnd;
+    SetTimer(hwnd, UPDATE_TIMER, 2500, nullptr); // update check runs well after first paint
 
     ShowWindow(hwnd, SW_SHOWNA);   // no-activate show: paints fast (activation handshake is the slow part)
     Timing("showwindow");
@@ -1317,6 +1699,7 @@ static int Run(int argc, wchar_t** argv) {
         { FCONTROL | FVIRTKEY, VK_SUBTRACT,  ID_ZOOM_OUT },
         { FCONTROL | FVIRTKEY, '0',          ID_ZOOM_RESET },
         { FCONTROL | FVIRTKEY, 'T',          ID_INSERT_TABLE },
+        { FCONTROL | FVIRTKEY, 'U',          ID_UPDATES },
     };
     HACCEL hAccel = CreateAcceleratorTableW(accels, (int)(sizeof(accels)/sizeof(accels[0])));
 
