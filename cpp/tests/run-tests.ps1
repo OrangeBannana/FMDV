@@ -212,6 +212,22 @@ Check "empty item ends list"   ((Seq @(45,32,97,'ENTER','ENTER')) -eq "- a")
 Check "Tab inserts tab (no ghost)" ((Seq @(120,'TAB',121)) -eq "x`ty")
 Check "Tab commits ghost (no tab char)" ((Seq @(42,42,'TAB')) -eq "****")
 
+Write-Host "`nUpdater:" -ForegroundColor Cyan
+$ut = & $dbg --test-updater 2>&1 | Out-String
+Check "updater unit checks"    ($LASTEXITCODE -eq 0 -and $ut -match "0 failures")
+$ver = (& $dbg --version | Out-String).Trim()
+Check "version flag"           ($ver -match '^\d+\.\d+\.\d+$')
+
+$p = Launch $basic
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]2011, [IntPtr]::Zero) | Out-Null  # ID_UPDATES
+Start-Sleep -Milliseconds 600
+$up = [T]::FindWindowW("FMDV_UpdatePicker", $null)
+Check "update picker opens"    ($up -ne [IntPtr]::Zero)
+if ($up -ne [IntPtr]::Zero) { [T]::SendInt($up, $WM_KEYDOWN, [IntPtr]0x1B, [IntPtr]0) | Out-Null }  # Esc
+Start-Sleep -Milliseconds 250
+Check "update picker Esc closes" ([T]::FindWindowW("FMDV_UpdatePicker", $null) -eq [IntPtr]::Zero)
+if (-not $p.HasExited) { $p.Kill() }
+
 # ---- summary ----
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host ("  {0} passed, {1} failed" -f $script:pass, $script:fail) -ForegroundColor ($(if($script:fail){"Red"}else{"Green"}))

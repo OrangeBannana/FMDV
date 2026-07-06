@@ -25,15 +25,22 @@ Prefs LoadPrefs() {
 
     char line[256];
     while (fgets(line, sizeof(line), f)) {
-        char key[64]; int val = 0;
-        if (sscanf(line, "%63[^=]=%d", key, &val) == 2) {
-            std::string k(key);
-            if (k == "dark") p.dark = (val != 0);
-            else if (k == "split") p.splitPct = val;
-            else if (k == "zoom") p.zoomPct = val;
+        char key[64], val[128];
+        if (sscanf(line, "%63[^=]=%127[^\r\n]", key, val) == 2) {
+            std::string k(key), v(val);
+            if (k == "dark") p.dark = (atoi(val) != 0);
+            else if (k == "split") p.splitPct = atoi(val);
+            else if (k == "zoom") p.zoomPct = atoi(val);
+            else if (k == "update") {
+                if (v == "auto") p.updateMode = UPDATE_AUTO;
+                else if (v == "pin") p.updateMode = UPDATE_PIN;
+                else p.updateMode = UPDATE_NOTIFY;
+            }
+            else if (k == "pin") p.pinTag = v;
         }
     }
     fclose(f);
+    if (p.updateMode == UPDATE_PIN && p.pinTag.empty()) p.updateMode = UPDATE_NOTIFY;
     return p;
 }
 
@@ -45,5 +52,8 @@ void SavePrefs(const Prefs& p) {
     fprintf(f, "dark=%d\n", p.dark ? 1 : 0);
     fprintf(f, "split=%d\n", p.splitPct);
     fprintf(f, "zoom=%d\n", p.zoomPct);
+    fprintf(f, "update=%s\n", p.updateMode == UPDATE_AUTO ? "auto"
+                            : p.updateMode == UPDATE_PIN  ? "pin" : "notify");
+    if (!p.pinTag.empty()) fprintf(f, "pin=%s\n", p.pinTag.c_str());
     fclose(f);
 }

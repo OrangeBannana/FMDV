@@ -19,11 +19,11 @@ try {
 & windres fmdv.rc -O coff -o fmdv_res.o
 if ($LASTEXITCODE -ne 0) { Write-Host "windres FAILED"; exit 1 }
 
-$srcs = @("fmdv.cpp", "markdown.cpp", "render.cpp", "prefs.cpp")
+$srcs = @("fmdv.cpp", "markdown.cpp", "render.cpp", "prefs.cpp", "updater.cpp")
 
 $common = @(
     "-municode", "-std=c++17", "-Wall", "-Wextra",
-    "-lgdi32", "-lgdiplus", "-lcomctl32", "-luser32", "-lshell32", "-lole32", "-ldwmapi"
+    "-lgdi32", "-lgdiplus", "-lcomctl32", "-luser32", "-lshell32", "-lole32", "-ldwmapi", "-lwinhttp"
 )
 
 if ($Debug) {
