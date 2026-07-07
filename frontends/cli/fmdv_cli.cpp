@@ -20,6 +20,7 @@
 #include "markdown.h"
 #include "edit_assist.h"
 #include "release_info.h"
+#include "layout.h"
 #include "str.h"
 #include "bench_log.h"
 
@@ -268,6 +269,37 @@ static int cmdVercmp(const char* a, const char* b) {
     return 0;
 }
 
+// Approximate metrics so the platform-neutral layout engine can be exercised
+// without a real font system. The macOS frontend supplies a CoreText measurer.
+struct StubMeasurer : fmdv::TextMeasurer {
+    double textWidth(const fmdv::FontSpec& f, StrView s) override { return s.size() * f.px * 0.55; }
+    double lineHeight(const fmdv::FontSpec& f) override { return f.px * 1.4; }
+    double ascent(const fmdv::FontSpec& f) override { return f.px * 1.1; }
+};
+
+static int cmdLayout(const char* path) {
+    std::string utf8;
+    if (!readFileUtf8(path, utf8)) {
+        std::fprintf(stderr, "fmdv-cli: cannot read %s\n", path);
+        return 1;
+    }
+    Document doc = ParseMarkdown(loadDoc(utf8));
+    StubMeasurer tm;
+    fmdv::LayoutResult r = fmdv::LayoutDocument(doc, 900, fmdv::LightLayoutTheme(), tm);
+    int text = 0, fill = 0, frame = 0, line = 0;
+    for (const auto& c : r.cmds) {
+        switch (c.kind) {
+            case fmdv::DrawCommand::Text:      text++;  break;
+            case fmdv::DrawCommand::FillRect:  fill++;  break;
+            case fmdv::DrawCommand::FrameRect: frame++; break;
+            case fmdv::DrawCommand::Line:      line++;  break;
+        }
+    }
+    std::printf("blocks=%zu commands=%zu text=%d fill=%d frame=%d line=%d links=%zu content_height=%.1f\n",
+                doc.blocks.size(), r.cmds.size(), text, fill, frame, line, r.links.size(), r.contentHeight);
+    return 0;
+}
+
 static int usage() {
     std::fprintf(stderr,
         "fmdv-cli — FMDV command-line frontend\n\n"
@@ -277,7 +309,8 @@ static int usage() {
         "  fmdv-cli suggest --line \"<text>\"           autocomplete for a line\n"
         "  fmdv-cli table --cols N --rows M           markdown for a table\n"
         "  fmdv-cli releases <releases.json>          parse a GitHub releases payload\n"
-        "  fmdv-cli vercmp <a> <b>                    compare versions (-1/0/1)\n\n"
+        "  fmdv-cli vercmp <a> <b>                    compare versions (-1/0/1)\n"
+        "  fmdv-cli layout <file.md>                  lay out (stub metrics) + dump stats\n\n"
         "Env:\n"
         "  FMDV_BENCH_LOG    CSV path; benchmark rows are appended when set\n"
         "  FMDV_BENCH_LABEL  optional run label recorded in each row\n");
@@ -323,6 +356,10 @@ int main(int argc, char** argv) {
     if (std::strcmp(cmd, "vercmp") == 0) {
         if (argc < 4) return usage();
         return cmdVercmp(argv[2], argv[3]);
+    }
+    if (std::strcmp(cmd, "layout") == 0) {
+        if (argc < 3) return usage();
+        return cmdLayout(argv[2]);
     }
     if (std::strcmp(cmd, "--help") == 0 || std::strcmp(cmd, "-h") == 0) {
         usage();

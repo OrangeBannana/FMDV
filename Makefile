@@ -15,8 +15,8 @@ COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null)
 INCLUDES := -Icore
 DEFS     := -DFMDV_COMMIT=\"$(COMMIT)\" -DFMDV_BUILD=\"release\"
 
-CLI_SRCS := frontends/cli/fmdv_cli.cpp core/str.cpp core/markdown.cpp core/edit_assist.cpp core/release_info.cpp
-CLI_DEPS := core/str.h core/markdown.h core/edit_assist.h core/release_info.h core/bench_log.h
+CLI_SRCS := frontends/cli/fmdv_cli.cpp core/str.cpp core/markdown.cpp core/edit_assist.cpp core/release_info.cpp core/layout.cpp
+CLI_DEPS := core/str.h core/markdown.h core/edit_assist.h core/release_info.h core/layout.h core/bench_log.h
 CLI_BIN  := build/fmdv-cli
 
 .PHONY: cli check clean
