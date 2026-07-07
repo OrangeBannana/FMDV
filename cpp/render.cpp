@@ -338,10 +338,12 @@ std::vector<std::wstring> WrapCellText(HDC hdc, HFONT f, const std::wstring& tex
 // ---------------- layout (build cached display list) ----------------
 
 int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
-                   std::vector<LinkHit>* links, std::vector<TextFrag>* frags) {
+                   std::vector<LinkHit>* links, std::vector<TextFrag>* frags,
+                   std::vector<int>* blockTops) {
     g_cmds.clear();
     if (links) links->clear();
     if (frags) frags->clear();
+    if (blockTops) blockTops->clear();
 
     Ctx cx;
     cx.hdc = hdc;
@@ -356,6 +358,7 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
 
     for (size_t bi = 0; bi < doc.blocks.size(); bi++) {
         const Block& b = doc.blocks[bi];
+        if (blockTops) blockTops->push_back(y);
         // maintain ordered-list counter
         if (b.type == BlockType::ListItem && b.ordered) {
             const Block* prev = (bi > 0) ? &doc.blocks[bi-1] : nullptr;

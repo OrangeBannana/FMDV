@@ -42,8 +42,12 @@ int FragXAtChar(HDC hdc, const TextFrag& f, int ch);
 // Appends link hit-rects to `links` and selectable text runs to `frags` (both
 // in document space). Returns total content height. Call when content/width/
 // zoom/theme changes — NOT on every scroll.
+// `blockTops`, if non-null, is filled with one entry per doc.blocks[i]: the
+// document-space y coordinate that block starts at. Used by the TOC sidebar
+// to scroll to a heading without re-measuring the whole document.
 int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
-                   std::vector<LinkHit>* links, std::vector<TextFrag>* frags);
+                   std::vector<LinkHit>* links, std::vector<TextFrag>* frags,
+                   std::vector<int>* blockTops = nullptr);
 
 // Paint the cached display list, culled to the viewport [scrollY, scrollY+clientH],
 // plus the current selection highlight. Cheap enough to call every frame/scroll.

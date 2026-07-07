@@ -208,10 +208,19 @@ static const int DIVIDER_W = 5;
 static const int EDIT_ID = 1001;
 static const int MIN_PANE = 160;
 
+// --- table of contents sidebar ---
+struct TocHeading { int level; std::wstring text; int docY; };
+static bool g_showToc = false;
+static std::vector<TocHeading> g_toc;
+static std::vector<int> g_blockTops;      // doc-space y per g_doc.blocks[i], from LayoutDocument
+static const int TOC_ROW_H = 26, TOC_PAD_TOP = 12, TOC_PAD_X = 12, TOC_INDENT = 12;
+static int g_tocHoverIdx = -1;
+static bool g_tocTrackingLeave = false;    // TrackMouseEvent armed for WM_MOUSELEAVE
+
 // command IDs (driven by the accelerator table so they work even while typing)
 enum { ID_EDIT_TOGGLE = 2001, ID_DARK = 2002, ID_SAVE = 2003, ID_SAVE_CLOSE = 2004,
        ID_ZOOM_IN = 2005, ID_ZOOM_OUT = 2006, ID_ZOOM_RESET = 2007, ID_COPY = 2008,
-       ID_SELECT_ALL = 2009, ID_INSERT_TABLE = 2010, ID_UPDATES = 2011 };
+       ID_SELECT_ALL = 2009, ID_INSERT_TABLE = 2010, ID_UPDATES = 2011, ID_TOC = 2012 };
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -406,11 +415,12 @@ static void ApplyZoom(HWND hwnd, int pct) {
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
-static int PreviewLeft() { return g_editing ? g_splitX + DIVIDER_W : 0; }
+static int TocW() { return g_showToc ? MulDiv(220, g_dpi, 96) : 0; }
+static int PreviewLeft() { return g_editing ? g_splitX + DIVIDER_W : TocW(); }
 static int PreviewWidth() { int w = g_clientW - PreviewLeft(); return w > 0 ? w : 0; }
 
 static void ClampSplit() {
-    if (g_splitX < MIN_PANE) g_splitX = MIN_PANE;
+    if (g_splitX < TocW() + MIN_PANE) g_splitX = TocW() + MIN_PANE;
     if (g_splitX > g_clientW - MIN_PANE) g_splitX = g_clientW - MIN_PANE;
     if (g_splitX < 0) g_splitX = 0;
 }
@@ -424,9 +434,12 @@ static int MaxScroll() {
 static void PositionEdit() {
     if (!g_hEdit) return;
     if (g_editing) {
-        MoveWindow(g_hEdit, 0, 0, g_splitX, g_clientH, TRUE);
-        // inset the text with a little breathing room (left/top padding)
-        RECT fr{ 14, 12, g_splitX - 8, g_clientH };
+        int left = TocW();
+        MoveWindow(g_hEdit, left, 0, g_splitX - left, g_clientH, TRUE);
+        // inset the text with a little breathing room (left/top padding);
+        // EM_SETRECT is control-relative, not parent-relative — the control's
+        // own origin already moved to `left` via MoveWindow above
+        RECT fr{ 14, 12, (g_splitX - left) - 8, g_clientH };
         SendMessageW(g_hEdit, EM_SETRECT, 0, (LPARAM)&fr);
         ShowWindow(g_hEdit, SW_SHOW);
     } else {
@@ -444,8 +457,17 @@ static void UpdateLayout(HWND hwnd, bool redrawScrollbar) {
     g_sel.active = false; // re-layout invalidates fragment indices
     if (g_editing) { ClampSplit(); PositionEdit(); }
     HDC dc = GetDC(hwnd);
-    g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags);
+    g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags, &g_blockTops);
     ReleaseDC(hwnd, dc);
+
+    g_toc.clear();
+    for (size_t i = 0; i < g_doc.blocks.size(); i++) {
+        const Block& b = g_doc.blocks[i];
+        if (b.type != BlockType::Heading) continue;
+        std::wstring text; for (auto& r : b.runs) text += r.text;
+        int docY = (i < g_blockTops.size()) ? g_blockTops[i] : 0;
+        g_toc.push_back(TocHeading{ b.level, text, docY });
+    }
 
     if (g_scrollY > MaxScroll()) g_scrollY = MaxScroll();
 
@@ -1294,6 +1316,45 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DeleteObject(db);
         }
 
+        // table of contents sidebar (headings, click to jump — no independent
+        // scroll in v1: entries past the window height are simply clipped)
+        if (g_showToc) {
+            int tw = TocW();
+            RECT trc{ 0, 0, tw, h };
+            HBRUSH tbg = CreateSolidBrush(g_theme.bg2);
+            FillRect(hdc, &trc, tbg); DeleteObject(tbg);
+            RECT tborder{ tw - 1, 0, tw, h };
+            HBRUSH tbd = CreateSolidBrush(g_theme.border);
+            FillRect(hdc, &tborder, tbd); DeleteObject(tbd);
+
+            int clipId = SaveDC(hdc);
+            IntersectClipRect(hdc, 0, 0, tw, h);
+            HFONT tf = CreateFontW(-MulDiv(13, g_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                                   DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+            HFONT tfHover = CreateFontW(-MulDiv(13, g_dpi, 96), 0, 0, 0, FW_NORMAL, TRUE, 0, 0,
+                                        DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+            HFONT tof = (HFONT)SelectObject(hdc, tf);
+            SetBkMode(hdc, TRANSPARENT);
+            int rowH = MulDiv(TOC_ROW_H, g_dpi, 96);
+            int padTop = MulDiv(TOC_PAD_TOP, g_dpi, 96);
+            int padX = MulDiv(TOC_PAD_X, g_dpi, 96);
+            int indent = MulDiv(TOC_INDENT, g_dpi, 96);
+            int ty = padTop;
+            for (int ti = 0; ti < (int)g_toc.size(); ti++) {
+                const TocHeading& t = g_toc[ti];
+                bool hover = (ti == g_tocHoverIdx);
+                SelectObject(hdc, hover ? tfHover : tf);
+                SetTextColor(hdc, hover ? g_theme.link : (t.level <= 2 ? g_theme.text : g_theme.text2));
+                int tx = padX + (t.level - 1) * indent;
+                RECT cell{ tx, ty, tw - padX, ty + rowH };
+                DrawTextW(hdc, t.text.c_str(), (int)t.text.size(), &cell,
+                          DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
+                ty += rowH;
+            }
+            SelectObject(hdc, tof); DeleteObject(tf); DeleteObject(tfHover);
+            RestoreDC(hdc, clipId);
+        }
+
         // update banner: overlay strip across the top (no relayout)
         if (!g_banner.empty()) {
             int bh = BannerH();
@@ -1389,6 +1450,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             case ID_SELECT_ALL: SelectAll(hwnd); return 0;
             case ID_INSERT_TABLE: ShowTablePicker(hwnd); return 0;
             case ID_UPDATES:      ShowUpdatePicker(hwnd); return 0;
+            case ID_TOC:
+                g_showToc = !g_showToc;
+                UpdateLayout(hwnd);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
         }
         return 0;
     }
@@ -1458,6 +1524,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_LBUTTONDOWN: {
         int x = GET_X_LPARAM(lp), yy = GET_Y_LPARAM(lp);
+        if (g_showToc && x < TocW()) {
+            int rowH = MulDiv(TOC_ROW_H, g_dpi, 96), padTop = MulDiv(TOC_PAD_TOP, g_dpi, 96);
+            int idx = (yy - padTop) / rowH;
+            if (idx >= 0 && idx < (int)g_toc.size()) ScrollTo(hwnd, g_toc[idx].docY);
+            return 0;
+        }
         if (g_editing && x >= g_splitX - 3 && x <= g_splitX + DIVIDER_W + 3) {
             g_dragging = true;
             SetCapture(hwnd);
@@ -1492,6 +1564,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_MOUSEMOVE:
+        if (g_showToc) {
+            int x = GET_X_LPARAM(lp), yy = GET_Y_LPARAM(lp);
+            int newHover = -1;
+            if (x < TocW()) {
+                if (!g_tocTrackingLeave) {
+                    TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
+                    TrackMouseEvent(&tme);
+                    g_tocTrackingLeave = true;
+                }
+                int rowH = MulDiv(TOC_ROW_H, g_dpi, 96), padTop = MulDiv(TOC_PAD_TOP, g_dpi, 96);
+                int idx = (yy - padTop) / rowH;
+                if (idx >= 0 && idx < (int)g_toc.size()) newHover = idx;
+            }
+            if (newHover != g_tocHoverIdx) { g_tocHoverIdx = newHover; InvalidateRect(hwnd, nullptr, FALSE); }
+        }
         if (g_dragging) {
             g_splitX = GET_X_LPARAM(lp);
             ClampSplit();
@@ -1523,6 +1610,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
 
+    case WM_MOUSELEAVE:
+        g_tocTrackingLeave = false;
+        if (g_tocHoverIdx != -1) { g_tocHoverIdx = -1; InvalidateRect(hwnd, nullptr, FALSE); }
+        break;
+
     case WM_LBUTTONUP:
         if (g_dragging) {
             g_dragging = false;
@@ -1550,6 +1642,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SETCURSOR:
         if (LOWORD(lp) == HTCLIENT) {
             POINT pt; GetCursorPos(&pt); ScreenToClient(hwnd, &pt);
+            if (g_showToc && pt.x < TocW()) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
             if (g_editing && pt.x >= g_splitX - 3 && pt.x <= g_splitX + DIVIDER_W + 3) {
                 SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
                 return TRUE;
@@ -1849,6 +1945,7 @@ static int Run(int argc, wchar_t** argv) {
         { FCONTROL | FVIRTKEY, '0',          ID_ZOOM_RESET },
         { FCONTROL | FVIRTKEY, 'T',          ID_INSERT_TABLE },
         { FCONTROL | FVIRTKEY, 'U',          ID_UPDATES },
+        { (BYTE)(FCONTROL | FSHIFT | FVIRTKEY), 'O', ID_TOC },
     };
     HACCEL hAccel = CreateAcceleratorTableW(accels, (int)(sizeof(accels)/sizeof(accels[0])));
 

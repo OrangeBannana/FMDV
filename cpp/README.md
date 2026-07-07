@@ -23,6 +23,10 @@ Custom markdown parser + GDI layout/renderer drawing directly to the window.
   auto-update, or pin a specific version. Check runs async after first paint.
   Installing a release older than the one that introduced this feature
   requires a confirming second Enter (that version has no way back in-app).
+- **Ctrl+Shift+O** — table of contents sidebar (headings from the current
+  doc); click an entry to scroll there. Coexists with the split editor (a
+  third pane to the left of it). No independent scrolling in v1 — entries
+  past the window height are clipped rather than scrollable.
 - Scrolling: mouse wheel, scrollbar, PgUp/PgDn/Home/End/arrows/space.
 - Preferences (dark mode, split ratio, zoom, update mode/pin) saved to
   `%APPDATA%\fmdv\prefs.txt`.
@@ -54,9 +58,9 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 # FMDV_VERSION_OVERRIDE=<ver> makes the app report that version (test hook)
 ```
 
-`tests\run-tests.ps1` builds both configurations and runs 61 checks: parser,
-rendering, stability, selection + clipboard, save round-trip, autocomplete,
-table picker (insert + resize), list continuation, updater.
+`tests\run-tests.ps1` builds both configurations and runs 65 checks: parser,
+rendering, stability, TOC sidebar, selection + clipboard, save round-trip,
+autocomplete, table picker (insert + resize), list continuation, updater.
 
 ## Set as default app for .md
 1. Right-click any `.md` → **Open with → Choose another app**

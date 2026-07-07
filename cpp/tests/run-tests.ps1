@@ -17,7 +17,9 @@ public class T {
   [DllImport("user32.dll",EntryPoint="SendMessageW")] public static extern IntPtr SendInt(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowExW(IntPtr p, IntPtr c, string cls, string win);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string win);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
 }
+public struct RECT { public int Left, Top, Right, Bottom; }
 "@
 $WM_COMMAND=0x0111; $WM_SETTEXT=0x000C; $WM_CHAR=0x0102; $WM_KEYDOWN=0x0100; $VK_TAB=0x09
 $ID_EDIT=2001; $ID_SAVE=2003; $ID_COPY=2008; $ID_SELALL=2009
@@ -120,6 +122,25 @@ Check "render table (shrink + wrap)" ((Test-Path "$fix\tblnarrow.png") -and (Get
 Write-Host "`nLaunch / stability:" -ForegroundColor Cyan
 $p = Launch $basic
 Check "window stays open"  (-not $p.HasExited)
+
+Write-Host "`nTable of contents sidebar:" -ForegroundColor Cyan
+$ID_TOC = 2012
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_TOC, [IntPtr]::Zero) | Out-Null  # show
+Start-Sleep -Milliseconds 200
+Check "TOC toggle on: window stable"  (-not $p.HasExited)
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_EDIT, [IntPtr]::Zero) | Out-Null   # + editor (3-pane layout)
+Start-Sleep -Milliseconds 300
+Check "TOC + editor: window stable"    (-not $p.HasExited)
+$edit = [T]::FindWindowExW($p.MainWindowHandle, [IntPtr]::Zero, "Edit", $null)
+$rc = New-Object RECT
+[T]::GetWindowRect($edit, [ref]$rc) | Out-Null
+Check "TOC + editor: editor pane visible" (($rc.Right - $rc.Left) -gt 20)
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_EDIT, [IntPtr]::Zero) | Out-Null   # close editor
+Start-Sleep -Milliseconds 200
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_TOC, [IntPtr]::Zero) | Out-Null    # hide
+Start-Sleep -Milliseconds 200
+Check "TOC toggle off: window stable" (-not $p.HasExited)
+if (-not $p.HasExited) { $p.Kill() }
 
 Write-Host "`nSelection + copy (all block types):" -ForegroundColor Cyan
 [T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_SELALL, [IntPtr]::Zero) | Out-Null
