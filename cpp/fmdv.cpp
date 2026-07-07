@@ -14,6 +14,7 @@
 #include <vector>
 #include "theme.h"
 #include "markdown.h"
+#include "edit_assist.h"
 #include "render.h"
 #include "prefs.h"
 #include "updater.h"
@@ -753,52 +754,8 @@ static int g_ghostCaret = 0;       // caret offset into the suggestion after com
 static HFONT g_ghostFont = nullptr;
 static int g_editMarginX = 14;     // must match PositionEdit's EM_SETRECT left inset
 
-struct Sugg { std::wstring text; int caret; };
-
-// Given the current line text up to the caret, return a completion suggestion.
-// `caret` is where the caret lands (offset into text) after Tab-commit.
-static Sugg SuggestClose(const std::wstring& line) {
-    auto endsWith = [&](const wchar_t* d) {
-        size_t n = wcslen(d);
-        return line.size() >= n && line.compare(line.size() - n, n, d) == 0;
-    };
-    auto count = [&](const std::wstring& d) {
-        int c = 0; size_t p = 0;
-        while ((p = line.find(d, p)) != std::wstring::npos) { c++; p += d.size(); }
-        return c;
-    };
-    auto countCh = [&](wchar_t ch) { int c = 0; for (wchar_t x : line) if (x == ch) c++; return c; };
-
-    // fenced code block: only right after typing the opening ``` (no lang yet).
-    // close on its own line, caret on the blank middle line.
-    {
-        std::wstring t = line; size_t i = 0; while (i < t.size() && (t[i]==L' '||t[i]==L'\t')) i++;
-        if (t.substr(i) == L"```") return { L"\n\n```", 1 };
-    }
-    if (endsWith(L"**") && !endsWith(L"***") && (count(L"**") % 2)) return { L"**", 0 };
-    if (endsWith(L"__") && (count(L"__") % 2)) return { L"__", 0 };
-    if (endsWith(L"~~") && (count(L"~~") % 2)) return { L"~~", 0 };
-    if (endsWith(L"``") && !endsWith(L"```") && (count(L"``") % 2)) return { L"``", 0 };
-    if (endsWith(L"`") && !endsWith(L"``") && (count(L"`") % 2)) return { L"`", 0 };
-    if (endsWith(L"*") && !endsWith(L"**") && (countCh(L'*') % 2)) return { L"*", 0 };
-    if (endsWith(L"(") && (countCh(L'(') > countCh(L')'))) return { L")", 0 };
-    if (endsWith(L"[")) {
-        // context split: checkbox after a list marker, else a link
-        std::wstring rest = line.substr(0, line.size() - 1); // drop trailing '['
-        size_t i = 0; while (i < rest.size() && (rest[i]==L' '||rest[i]==L'\t')) i++;
-        bool listStart = false;
-        if (i < rest.size()) {
-            size_t j = i;
-            if (rest[j]==L'-'||rest[j]==L'*'||rest[j]==L'+') j++;
-            else { size_t d=j; while (d<rest.size() && iswdigit(rest[d])) d++; if (d>j && d<rest.size() && rest[d]==L'.') j=d+1; else j=rest.size()+1; }
-            if (j <= rest.size() && j < rest.size() && rest[j]==L' ') { listStart = (j+1 == rest.size()); }
-        }
-        if (listStart) return { L" ] ", 3 };          // "- [ ] |" checkbox, caret after
-        int ob = countCh(L'['), cb = countCh(L']');
-        if (ob > cb) return { L"]()", 0 };             // "[|]()" link, caret inside brackets
-    }
-    return {};
-}
+// The suggestion logic lives in core/edit_assist.h (fmdv::SuggestClose) so the
+// CLI and macOS frontends share it. This file keeps only the Win32 glue below.
 
 // Recompute the ghost suggestion from the editor's current caret + line.
 static void UpdateGhost() {
@@ -819,7 +776,7 @@ static void UpdateGhost() {
             if (atLineEnd) {
                 int ls = caret;
                 while (ls > 0 && text[ls-1] != L'\n') ls--;
-                Sugg sg = SuggestClose(text.substr(ls, caret - ls));
+                fmdv::Suggestion sg = fmdv::SuggestClose(text.substr(ls, caret - ls));
                 g_ghost = sg.text; g_ghostCaret = sg.caret;
             }
         }
@@ -868,37 +825,17 @@ static bool HandleListEnter() {
     int caret = (int)e;
     if (caret > (int)text.size()) return false;
     int ls = caret; while (ls > 0 && text[ls-1] != L'\n') ls--;
-    std::wstring line = text.substr(ls, caret - ls);
 
-    size_t i = 0; while (i < line.size() && (line[i]==L' '||line[i]==L'\t')) i++;
-    std::wstring indent = line.substr(0, i);
-    std::wstring marker, rest;
-
-    if (i < line.size() && (line[i]==L'-'||line[i]==L'*'||line[i]==L'+')
-        && i+1 < line.size() && line[i+1]==L' ') {
-        wchar_t bullet = line[i]; size_t after = i + 2;
-        if (line.compare(after, 4, L"[ ] ") == 0 || line.compare(after, 4, L"[x] ") == 0 ||
-            line.compare(after, 4, L"[X] ") == 0) {
-            marker = std::wstring(1, bullet) + L" [ ] "; rest = line.substr(after + 4);
-        } else {
-            marker = std::wstring(1, bullet) + L" "; rest = line.substr(after);
-        }
-    } else if (i < line.size() && iswdigit(line[i])) {
-        size_t d = i; while (d < line.size() && iswdigit(line[d])) d++;
-        if (d < line.size() && line[d]==L'.' && d+1 < line.size() && line[d+1]==L' ') {
-            int num = _wtoi(line.substr(i, d - i).c_str());
-            marker = std::to_wstring(num + 1) + L". "; rest = line.substr(d + 2);
-        } else return false;
-    } else return false;
-
-    std::wstring trimmed = rest;
-    while (!trimmed.empty() && (trimmed.back()==L' '||trimmed.back()==L'\t')) trimmed.pop_back();
-    if (trimmed.empty()) { // empty item -> end the list (clear the marker)
+    // Decision (which marker to continue, or to end the list) is shared core;
+    // the frontend applies it to the edit control (CRLF line endings).
+    fmdv::ListEnter le = fmdv::DecideListEnter(text.substr(ls, caret - ls));
+    if (!le.handled) return false;
+    if (le.endList) { // empty item -> clear the marker
         SendMessageW(g_hEdit, EM_SETSEL, ls, caret);
         SendMessageW(g_hEdit, EM_REPLACESEL, TRUE, (LPARAM)L"");
         return true;
     }
-    std::wstring ins = L"\r\n" + indent + marker;
+    std::wstring ins = L"\r\n" + le.continuation;
     SendMessageW(g_hEdit, EM_SETSEL, caret, caret);
     SendMessageW(g_hEdit, EM_REPLACESEL, TRUE, (LPARAM)ins.c_str());
     return true;
@@ -992,15 +929,9 @@ static void InsertTableMarkdown(int cols, int rows) {
     int len = GetWindowTextLengthW(g_hEdit);
     std::wstring all(len + 1, L'\0'); GetWindowTextW(g_hEdit, &all[0], len + 1); all.resize(len);
     if (e > 0 && e <= (DWORD)all.size() && all[e-1] != L'\n') t += L"\r\n";
-    t += L"|";
-    for (int c = 0; c < cols; c++) t += L" Column " + std::to_wstring(c + 1) + L" |";
-    t += L"\r\n|";
-    for (int c = 0; c < cols; c++) t += L" --- |";
-    t += L"\r\n";
-    for (int r = 0; r < rows; r++) {
-        t += L"|";
-        for (int c = 0; c < cols; c++) t += L"   |";
-        t += L"\r\n";
+    // Core builds the table with LF; the edit control wants CRLF.
+    for (wchar_t c : fmdv::MakeTableMarkdown(cols, rows)) {
+        if (c == L'\n') t += L"\r\n"; else t += c;
     }
     SendMessageW(g_hEdit, EM_REPLACESEL, TRUE, (LPARAM)t.c_str());
 }

@@ -14,6 +14,7 @@
 // can be diffed for byte-for-byte parser equivalence across platforms.
 
 #include "markdown.h"
+#include "edit_assist.h"
 #include "bench_log.h"
 
 #include <algorithm>
@@ -294,12 +295,38 @@ static int cmdBenchParse(const char* path, int runs) {
     return 0;
 }
 
+// Render a suggestion/continuation string on one line, showing '\n' as "\\n"
+// so multi-line results stay greppable in tests and shells.
+static std::string escapeNl(const std::wstring& w) {
+    std::string u = wToUtf8(w);
+    std::string o;
+    for (char c : u) {
+        if (c == '\n') o += "\\n";
+        else o += c;
+    }
+    return o;
+}
+
+static int cmdSuggest(const std::string& line) {
+    fmdv::Suggestion sg = fmdv::SuggestClose(utf8ToW(line));
+    std::printf("caret=%d text=%s\n", sg.caret, escapeNl(sg.text).c_str());
+    return 0;
+}
+
+static int cmdTable(int cols, int rows) {
+    std::string out = wToUtf8(fmdv::MakeTableMarkdown(cols, rows));
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    return 0;
+}
+
 static int usage() {
     std::fprintf(stderr,
         "fmdv-cli — FMDV command-line frontend\n\n"
         "Usage:\n"
         "  fmdv-cli parse <file.md>                   dump the parsed Document model\n"
-        "  fmdv-cli bench-parse <file.md> [--runs N]  time parsing (default N=100)\n\n"
+        "  fmdv-cli bench-parse <file.md> [--runs N]  time parsing (default N=100)\n"
+        "  fmdv-cli suggest --line \"<text>\"           autocomplete for a line\n"
+        "  fmdv-cli table --cols N --rows M           markdown for a table\n\n"
         "Env:\n"
         "  FMDV_BENCH_LOG    CSV path; benchmark rows are appended when set\n"
         "  FMDV_BENCH_LABEL  optional run label recorded in each row\n");
@@ -321,6 +348,22 @@ int main(int argc, char** argv) {
             if (std::strcmp(argv[i], "--runs") == 0 && i + 1 < argc) runs = std::atoi(argv[++i]);
         }
         return cmdBenchParse(argv[2], runs);
+    }
+    if (std::strcmp(cmd, "suggest") == 0) {
+        const char* line = nullptr;
+        for (int i = 2; i < argc; i++) {
+            if (std::strcmp(argv[i], "--line") == 0 && i + 1 < argc) line = argv[++i];
+        }
+        if (!line) return usage();
+        return cmdSuggest(line);
+    }
+    if (std::strcmp(cmd, "table") == 0) {
+        int cols = 3, rows = 3;
+        for (int i = 2; i < argc; i++) {
+            if (std::strcmp(argv[i], "--cols") == 0 && i + 1 < argc) cols = std::atoi(argv[++i]);
+            else if (std::strcmp(argv[i], "--rows") == 0 && i + 1 < argc) rows = std::atoi(argv[++i]);
+        }
+        return cmdTable(cols, rows);
     }
     if (std::strcmp(cmd, "--help") == 0 || std::strcmp(cmd, "-h") == 0) {
         usage();

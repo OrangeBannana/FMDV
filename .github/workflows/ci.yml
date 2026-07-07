@@ -89,6 +89,8 @@ jobs:
           FMDV_BENCH_LOG=build/bench.csv FMDV_BENCH_LABEL=ci-macos \
             ./build/fmdv-cli bench-parse test.md --runs 50
           test -s build/bench.csv || { echo "bench log not written"; exit 1; }
+          test "$(./build/fmdv-cli suggest --line '**')" = "caret=0 text=**" || { echo "suggest failed"; exit 1; }
+          ./build/fmdv-cli table --cols 2 --rows 1 | grep -q '| Column 1 | Column 2 |' || { echo "table failed"; exit 1; }
           echo "macOS CLI checks OK"
 
   release:
