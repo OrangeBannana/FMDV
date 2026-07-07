@@ -551,6 +551,15 @@ Interpretation rules:
 
 ## Recommended Milestones
 
+> **Status.** Milestones 1–13 are implemented on the branch and green in CI
+> (Windows build + a `macos-latest` job that builds the CLI and the AppKit app
+> and renders fixtures). Two items remain for a Windows machine / interactive
+> Mac: capturing the Windows GUI benchmark baseline (milestone 13's `win32`
+> column), and migrating `render.cpp` onto the shared `core/layout` (milestone 7
+> currently backs the macOS frontend; Windows keeps its GDI renderer). The live
+> macOS window/editor interactions compile and launch without crashing but need
+> a hands-on pass on a Mac desktop (screen capture isn't available in CI).
+
 1. `bench/logging`: add unified benchmark logging and capture Windows baseline.
 2. `core/string-type`: choose the core string type (Phase 0.5) and migrate the
    parser/model off `std::wstring`.
