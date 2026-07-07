@@ -78,28 +78,19 @@ static CGColorRef cg(CGColorSpaceRef cs, Color c) {
     return CGColorCreate(cs, comps);
 }
 
-bool RenderMarkdownToPng(const Document& doc, double width, bool dark, const char* outPath) {
-    LayoutTheme th = dark ? DarkLayoutTheme() : LightLayoutTheme();
-    CoreTextMeasurer tm;
-    LayoutResult r = LayoutDocument(doc, width, th, tm);
-
-    int W = (int)std::ceil(width);
-    int H = (int)std::ceil(r.contentHeight);
-    if (H < 1) H = 1;
-
+void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
+                 const LayoutTheme& th, CoreTextMeasurer& tm) {
+    double H = height;
     CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    CGContextRef ctx = CGBitmapContextCreate(nullptr, W, H, 8, 0, cs,
-                                             kCGImageAlphaPremultipliedLast);
-    if (!ctx) { CGColorSpaceRelease(cs); return false; }
 
-    // background
+    // background (fills whatever region is being drawn: full bitmap or dirty rect)
     CGColorRef bg = cg(cs, th.bg);
     CGContextSetFillColorWithColor(ctx, bg);
-    CGContextFillRect(ctx, CGRectMake(0, 0, W, H));
+    CGContextFillRect(ctx, CGContextGetClipBoundingBox(ctx));
     CGColorRelease(bg);
 
     CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
-    auto flipY = [&](double docY) { return (double)H - docY; }; // top-left -> CG bottom-left
+    auto flipY = [&](double docY) { return H - docY; }; // top-left -> CG bottom-left
 
     for (const DrawCommand& c : r.cmds) {
         switch (c.kind) {
@@ -151,9 +142,27 @@ bool RenderMarkdownToPng(const Document& doc, double width, bool dark, const cha
         }
     }
 
+    CGColorSpaceRelease(cs);
+}
+
+bool RenderMarkdownToPng(const Document& doc, double width, bool dark, const char* outPath) {
+    LayoutTheme th = dark ? DarkLayoutTheme() : LightLayoutTheme();
+    CoreTextMeasurer tm;
+    LayoutResult r = LayoutDocument(doc, width, th, tm);
+
+    int W = (int)std::ceil(width);
+    int H = (int)std::ceil(r.contentHeight);
+    if (H < 1) H = 1;
+
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(nullptr, W, H, 8, 0, cs, kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return false;
+
+    PaintLayout(ctx, H, r, th, tm);
+
     CGImageRef img = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
-    CGColorSpaceRelease(cs);
     if (!img) return false;
 
     CFStringRef path = CFStringCreateWithCString(nullptr, outPath, kCFStringEncodingUTF8);

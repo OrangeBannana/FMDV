@@ -46,8 +46,9 @@ target_compile_definitions(fmdv-cli PRIVATE
 if(APPLE)
   add_executable(fmdv-macos
     frontends/macos/main.mm
+    frontends/macos/app.mm
     frontends/macos/mac_render.mm)
   target_link_libraries(fmdv-macos PRIVATE fmdv_core
-    "-framework CoreFoundation" "-framework CoreGraphics"
+    "-framework Cocoa" "-framework CoreGraphics"
     "-framework CoreText" "-framework ImageIO")
 endif()

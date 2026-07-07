@@ -33,6 +33,7 @@ static Str loadDoc(std::string u8) {
 static int usage() {
     std::fprintf(stderr,
         "fmdv-macos — FMDV macOS frontend\n\n"
+        "  fmdv-macos <file.md> [--dark]                 open in a window\n"
         "  fmdv-macos --dump <file.md> <out.png> [--width W] [--dark]\n");
     return 2;
 }
@@ -50,17 +51,22 @@ int main(int argc, char** argv) {
             width = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "--dark") == 0) {
             dark = true;
+        } else if (argv[i][0] != '-' && !file) {
+            file = argv[i];
         }
     }
-    if (!dump || !file || !out) return usage();
+    if (!file) return usage();
 
-    std::string u8;
-    if (!readFileUtf8(file, u8)) { std::fprintf(stderr, "fmdv-macos: cannot read %s\n", file); return 1; }
-    Document doc = ParseMarkdown(loadDoc(u8));
-    if (!fmdv::RenderMarkdownToPng(doc, width, dark, out)) {
-        std::fprintf(stderr, "fmdv-macos: render failed\n");
-        return 1;
+    if (dump) {
+        std::string u8;
+        if (!readFileUtf8(file, u8)) { std::fprintf(stderr, "fmdv-macos: cannot read %s\n", file); return 1; }
+        Document doc = ParseMarkdown(loadDoc(u8));
+        if (!out || !fmdv::RenderMarkdownToPng(doc, width, dark, out)) {
+            std::fprintf(stderr, "fmdv-macos: render failed\n");
+            return 1;
+        }
+        std::printf("wrote %s (%zu blocks, width %.0f%s)\n", out, doc.blocks.size(), width, dark ? ", dark" : "");
+        return 0;
     }
-    std::printf("wrote %s (%zu blocks, width %.0f%s)\n", out, doc.blocks.size(), width, dark ? ", dark" : "");
-    return 0;
+    return fmdv::RunApp(file, dark); // open the AppKit window
 }

@@ -21,7 +21,16 @@ private:
     std::map<long, CTFontRef> cache_;
 };
 
+// Paint a display list into a CGContext whose height is `height` px (document
+// space is top-left/y-down; this flips to CoreGraphics' bottom-left). Fills the
+// background first. Shared by the headless PNG path and the AppKit preview view.
+void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
+                 const LayoutTheme& th, CoreTextMeasurer& tm);
+
 // Render a laid-out document to a PNG at `outPath`. Returns false on failure.
 bool RenderMarkdownToPng(const Document& doc, double width, bool dark, const char* outPath);
+
+// Open the AppKit window showing `file` and run the app loop (app.mm).
+int RunApp(const char* file, bool dark);
 
 } // namespace fmdv
