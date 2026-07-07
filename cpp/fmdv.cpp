@@ -219,7 +219,7 @@ enum { ID_EDIT_TOGGLE = 2001, ID_DARK = 2002, ID_SAVE = 2003, ID_SAVE_CLOSE = 20
 
 // forward declarations (used by helpers defined above their definitions)
 static int PreviewLeft();
-static void UpdateLayout(HWND hwnd);
+static void UpdateLayout(HWND hwnd, bool redrawScrollbar = true);
 
 // zoom / DPI
 static int g_zoomPct = 100;
@@ -435,7 +435,10 @@ static void PositionEdit() {
 }
 
 // Recompute content height for the current preview width and update the scrollbar.
-static void UpdateLayout(HWND hwnd) {
+// redrawScrollbar=false skips the forced synchronous scrollbar repaint — used
+// while dragging the editor divider, which calls this on every WM_MOUSEMOVE
+// tick; forcing a redraw that often made the native scrollbar visibly flicker.
+static void UpdateLayout(HWND hwnd, bool redrawScrollbar) {
     RECT rc; GetClientRect(hwnd, &rc);
     g_clientW = rc.right; g_clientH = rc.bottom;
     g_sel.active = false; // re-layout invalidates fragment indices
@@ -453,7 +456,7 @@ static void UpdateLayout(HWND hwnd) {
     si.nMax = (g_contentH > 0) ? g_contentH - 1 : 0;
     si.nPage = g_clientH;
     si.nPos = g_scrollY;
-    SetScrollInfo(hwnd, SB_VERT, &si, TRUE);
+    SetScrollInfo(hwnd, SB_VERT, &si, redrawScrollbar);
 }
 
 static void ScrollTo(HWND hwnd, int y) {
@@ -1493,7 +1496,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_splitX = GET_X_LPARAM(lp);
             ClampSplit();
             PositionEdit();
-            UpdateLayout(hwnd);
+            UpdateLayout(hwnd, false);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -1525,6 +1528,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_dragging = false;
             ReleaseCapture();
             if (g_clientW > 0) { g_prefs.splitPct = g_splitX * 100 / g_clientW; SavePrefs(g_prefs); }
+            UpdateLayout(hwnd); // final pass: scrollbar was skipping redraws during the drag
+            InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
         if (GetCapture() == hwnd) {

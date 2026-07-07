@@ -102,6 +102,21 @@ Check "render dark png"    ((Test-Path "$fix\dark.png") -and (Get-Item "$fix\dar
 & $exe $basic --dump "$fix\scroll.png" --width 800 --viewport 400 --scroll 200 | Out-Null
 Check "render scrolled viewport" ((Test-Path "$fix\scroll.png") -and (Get-Item "$fix\scroll.png").Length -gt 1500)
 
+# content-aware table columns: mismatched column widths + a cell long enough to
+# need wrapping once the pane is narrow. Smoke test (exercises both the
+# stretch-to-fill and shrink-and-wrap code paths) rather than pixel-exact.
+$tblWrap = "$fix\tblwrap.md"
+@'
+| ID | Description | Notes |
+| --- | --- | --- |
+| 1 | A long description cell that should force this column wider than the others and wrap in a narrow pane | short |
+| 22 | Short | Also short |
+'@ | Set-Content $tblWrap -Encoding utf8
+& $exe $tblWrap --dump "$fix\tblwide.png" --width 900 | Out-Null
+Check "render table (fits, no wrap)" ((Test-Path "$fix\tblwide.png") -and (Get-Item "$fix\tblwide.png").Length -gt 2000)
+& $exe $tblWrap --dump "$fix\tblnarrow.png" --width 420 | Out-Null
+Check "render table (shrink + wrap)" ((Test-Path "$fix\tblnarrow.png") -and (Get-Item "$fix\tblnarrow.png").Length -gt 2000)
+
 Write-Host "`nLaunch / stability:" -ForegroundColor Cyan
 $p = Launch $basic
 Check "window stays open"  (-not $p.HasExited)
