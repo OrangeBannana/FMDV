@@ -12,11 +12,11 @@
 CXX      ?= c++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra
 COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null)
-INCLUDES := -Icpp -Icore
+INCLUDES := -Icore
 DEFS     := -DFMDV_COMMIT=\"$(COMMIT)\" -DFMDV_BUILD=\"release\"
 
-CLI_SRCS := frontends/cli/fmdv_cli.cpp cpp/markdown.cpp core/edit_assist.cpp core/release_info.cpp
-CLI_DEPS := core/bench_log.h core/edit_assist.h core/release_info.h cpp/markdown.h
+CLI_SRCS := frontends/cli/fmdv_cli.cpp core/markdown.cpp core/edit_assist.cpp core/release_info.cpp
+CLI_DEPS := core/markdown.h core/edit_assist.h core/release_info.h core/bench_log.h
 CLI_BIN  := build/fmdv-cli
 
 .PHONY: cli check clean
