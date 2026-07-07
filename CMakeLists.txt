@@ -42,4 +42,12 @@ target_compile_definitions(fmdv-cli PRIVATE
   FMDV_COMMIT="${FMDV_COMMIT}"
   FMDV_BUILD="cmake")
 
-# The macOS AppKit frontend (frontends/macos) is added here once it exists.
+# --- macOS frontend (headless CoreText/CoreGraphics renderer for now) ---
+if(APPLE)
+  add_executable(fmdv-macos
+    frontends/macos/main.mm
+    frontends/macos/mac_render.mm)
+  target_link_libraries(fmdv-macos PRIVATE fmdv_core
+    "-framework CoreFoundation" "-framework CoreGraphics"
+    "-framework CoreText" "-framework ImageIO")
+endif()

@@ -102,6 +102,15 @@ jobs:
           ./build/fmdv-cli layout test.md | grep -qE 'content_height=[1-9]' || { echo "layout failed"; exit 1; }
           echo "macOS CLI checks OK"
 
+      - name: Build + render macOS frontend (CoreText -> PNG)
+        run: |
+          make macos
+          ./build/fmdv-macos --dump test.md light.png --width 900
+          ./build/fmdv-macos --dump test.md dark.png --width 900 --dark
+          file light.png | grep -q 'PNG image data' || { echo "png not produced"; exit 1; }
+          test "$(stat -f%z light.png)" -gt 3000 || { echo "png too small"; exit 1; }
+          echo "macOS render OK"
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build

@@ -19,12 +19,24 @@ CLI_SRCS := frontends/cli/fmdv_cli.cpp core/str.cpp core/markdown.cpp core/edit_
 CLI_DEPS := core/str.h core/markdown.h core/edit_assist.h core/release_info.h core/layout.h core/bench_log.h
 CLI_BIN  := build/fmdv-cli
 
-.PHONY: cli check clean
+# macOS frontend (headless renderer for now): CoreText/CoreGraphics via .mm.
+MAC_SRCS := frontends/macos/main.mm frontends/macos/mac_render.mm core/str.cpp core/markdown.cpp core/layout.cpp
+MAC_DEPS := frontends/macos/mac_render.h core/layout.h core/markdown.h core/str.h
+MAC_FRAMEWORKS := -framework CoreFoundation -framework CoreGraphics -framework CoreText -framework ImageIO
+MAC_BIN  := build/fmdv-macos
+
+.PHONY: cli macos check clean
 cli: $(CLI_BIN)
 
 $(CLI_BIN): $(CLI_SRCS) $(CLI_DEPS)
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(DEFS) $(CLI_SRCS) -o $(CLI_BIN)
+
+macos: $(MAC_BIN)
+
+$(MAC_BIN): $(MAC_SRCS) $(MAC_DEPS)
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -ObjC++ $(INCLUDES) $(MAC_SRCS) $(MAC_FRAMEWORKS) -o $(MAC_BIN)
 
 check: cli
 	@echo "== parse test.md =="

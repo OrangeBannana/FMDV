@@ -22,7 +22,8 @@ namespace {
 const double PAD_X = 40, PAD_TOP = 32;
 
 FontSpec roleFont(FontRole role, bool bold, bool italic) {
-    return FontSpec{role, bold, italic, RoleSizePx(role)};
+    bool heading = role >= FontRole::H1 && role <= FontRole::H6;
+    return FontSpec{role, bold || heading, italic, RoleSizePx(role)};
 }
 
 struct Word {
