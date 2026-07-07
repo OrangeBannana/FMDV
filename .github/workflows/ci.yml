@@ -80,6 +80,12 @@ jobs:
       - name: Build CLI (clang)
         run: make cli
 
+      - name: Build via CMake
+        run: |
+          cmake -B build-cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cmake
+          ./build-cmake/fmdv-cli vercmp v1.10.0 v1.9.9 | grep -qx 1 || { echo "cmake build broken"; exit 1; }
+
       - name: Parser parity + bench smoke
         run: |
           out=$(./build/fmdv-cli parse test.md)
