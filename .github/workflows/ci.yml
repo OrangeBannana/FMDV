@@ -45,6 +45,13 @@ jobs:
           foreach ($f in 'light.png', 'dark.png', 'scroll.png') {
             if (-not (Test-Path $f) -or (Get-Item $f).Length -lt 1500) { throw "render failed: $f" }
           }
+          $env:FMDV_BENCH_LOG = "$env:RUNNER_TEMP\fmdv-bench.csv"
+          $env:FMDV_BENCH_LABEL = "ci-headless"
+          & .\cpp\fmdv_dbg.exe test.md --bench-render --width 900 --viewport 500 --scroll-runs 5 | Out-Null
+          $bench = Get-Content $env:FMDV_BENCH_LOG -Raw
+          foreach ($want in 'layout_once', 'paint_viewport_avg', 'scroll_paint_avg') {
+            if ($bench -notmatch $want) { throw "bench log missing: $want" }
+          }
           Write-Host "headless checks OK"
 
       # The full suite drives live windows (selection, clipboard, autocomplete).

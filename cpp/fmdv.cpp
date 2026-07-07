@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <climits>
+#include <cstring>
 #include <string>
 #include <vector>
 #include "theme.h"
@@ -199,6 +200,189 @@ static int g_scrollY = 0;
 static int g_contentH = 0;   // total laid-out document height
 static int g_clientH = 0;    // current client area height
 static int g_clientW = 0;
+
+// --- structured benchmark logging ---
+static bool g_benchEnabled = false;
+static bool g_benchStartup = false;
+static std::wstring g_benchLogPath;
+static std::string g_benchLabel;
+static std::string g_benchCommit;
+static int g_benchWindowW = 1100;
+static int g_benchWindowH = 800;
+static bool g_firstLayoutLogged = false;
+
+static std::string WideToUtf8(const std::wstring& w) {
+    int need = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(need, '\0');
+    if (need) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], need, nullptr, nullptr);
+    return s;
+}
+
+static std::string EnvUtf8(const wchar_t* name) {
+    wchar_t* value = _wgetenv(name);
+    return (value && value[0]) ? WideToUtf8(value) : std::string();
+}
+
+static std::string Csv(const std::string& s) {
+    bool quote = false;
+    for (char c : s) if (c == ',' || c == '"' || c == '\n' || c == '\r') { quote = true; break; }
+    if (!quote) return s;
+    std::string out = "\"";
+    for (char c : s) {
+        if (c == '"') out += "\"\"";
+        else out += c;
+    }
+    out += "\"";
+    return out;
+}
+
+static void EnsureParentDirs(const std::wstring& path) {
+    for (size_t i = 0; i < path.size(); i++) {
+        if (path[i] != L'\\' && path[i] != L'/') continue;
+        if (i == 0 || (i == 2 && path[1] == L':')) continue;
+        std::wstring dir = path.substr(0, i);
+        if (!dir.empty()) CreateDirectoryW(dir.c_str(), nullptr);
+    }
+}
+
+static bool FileIsEmptyOrMissing(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA fa = {};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa)) return true;
+    return fa.nFileSizeHigh == 0 && fa.nFileSizeLow == 0;
+}
+
+static std::string IsoUtcNow() {
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
+             (unsigned)st.wYear, (unsigned)st.wMonth, (unsigned)st.wDay,
+             (unsigned)st.wHour, (unsigned)st.wMinute, (unsigned)st.wSecond,
+             (unsigned)st.wMilliseconds);
+    return buf;
+}
+
+static void InitBenchLog(bool forceDefaultPath) {
+    wchar_t* path = _wgetenv(L"FMDV_BENCH_LOG");
+    if (path && path[0]) g_benchLogPath = path;
+    else if (forceDefaultPath) g_benchLogPath = L"bench\\results\\windows-baseline.csv";
+    if (g_benchLogPath.empty()) return;
+
+    g_benchEnabled = true;
+    g_benchLabel = EnvUtf8(L"FMDV_BENCH_LABEL");
+    g_benchCommit = EnvUtf8(L"FMDV_BENCH_COMMIT");
+    if (g_benchCommit.empty()) g_benchCommit = EnvUtf8(L"GITHUB_SHA");
+}
+
+static void BenchLog(const char* event, double durationMs, int width = 0, int height = 0,
+                     int contentH = -1, const char* notes = "") {
+    if (!g_benchEnabled) return;
+
+    EnsureParentDirs(g_benchLogPath);
+    bool needHeader = FileIsEmptyOrMissing(g_benchLogPath);
+    FILE* f = _wfopen(g_benchLogPath.c_str(), L"ab");
+    if (!f) return;
+    if (needHeader) {
+        fprintf(f, "timestamp,platform,frontend,build,commit,label,file,theme,width,height,event,duration_ms,blocks,content_height,notes\n");
+    }
+
+    const char* build =
+#ifdef FMDV_CONSOLE
+        "debug";
+#else
+        "release";
+#endif
+    int outW = width > 0 ? width : (g_clientW > 0 ? g_clientW : g_benchWindowW);
+    int outH = height > 0 ? height : (g_clientH > 0 ? g_clientH : g_benchWindowH);
+    int outContentH = contentH >= 0 ? contentH : g_contentH;
+
+    fprintf(f, "%s,windows,win32,%s,%s,%s,%s,%s,%d,%d,%s,%.3f,%zu,%d,%s\n",
+            Csv(IsoUtcNow()).c_str(),
+            Csv(build).c_str(),
+            Csv(g_benchCommit).c_str(),
+            Csv(g_benchLabel).c_str(),
+            Csv(WideToUtf8(g_filePath)).c_str(),
+            g_dark ? "dark" : "light",
+            outW,
+            outH,
+            Csv(event).c_str(),
+            durationMs,
+            g_doc.blocks.size(),
+            outContentH,
+            Csv(notes).c_str());
+    fclose(f);
+}
+
+#ifdef FMDV_CONSOLE
+static int RunBenchRender(int width, int viewportH, int scrollRuns) {
+    if (width <= 0) width = 1000;
+    if (viewportH <= 0) viewportH = 800;
+    if (scrollRuns <= 0) scrollRuns = 1;
+
+    SetFontQuality(ANTIALIASED_QUALITY);
+    Theme th = g_dark ? DarkTheme() : LightTheme();
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    if (!screen || !mem) {
+        if (mem) DeleteDC(mem);
+        if (screen) ReleaseDC(nullptr, screen);
+        return 2;
+    }
+
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = width;
+    bi.bmiHeader.biHeight = -viewportH;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!dib) {
+        DeleteDC(mem);
+        ReleaseDC(nullptr, screen);
+        return 2;
+    }
+    HBITMAP oldBmp = (HBITMAP)SelectObject(mem, dib);
+
+    std::vector<TextFrag> frags;
+    double t0 = NowMs();
+    int contentH = LayoutDocument(mem, width, g_doc, th, nullptr, &frags);
+    double layoutMs = NowMs() - t0;
+    BenchLog("layout_once", layoutMs, width, viewportH, contentH, "duration");
+
+    auto paintOnce = [&](int scroll) {
+        RECT full{0, 0, width, viewportH};
+        HBRUSH bg = CreateSolidBrush(th.bg);
+        FillRect(mem, &full, bg);
+        DeleteObject(bg);
+        PaintDocument(mem, scroll, width, viewportH, th, nullptr, frags);
+    };
+
+    double t1 = NowMs();
+    for (int i = 0; i < scrollRuns; i++) paintOnce(0);
+    double viewportMs = (NowMs() - t1) / scrollRuns;
+    BenchLog("paint_viewport_avg", viewportMs, width, viewportH, contentH, "duration");
+
+    double t2 = NowMs();
+    for (int i = 0; i < scrollRuns; i++) {
+        int scroll = (contentH > viewportH) ? (i * (contentH - viewportH) / scrollRuns) : 0;
+        paintOnce(scroll);
+    }
+    double scrollMs = (NowMs() - t2) / scrollRuns;
+    BenchLog("scroll_paint_avg", scrollMs, width, viewportH, contentH, "duration");
+
+    wprintf(L"blocks=%zu contentH=%d layout_once=%.2f ms paint_viewport_avg=%.3f ms scroll_paint_avg(%d)=%.3f ms\n",
+            g_doc.blocks.size(), contentH, layoutMs, viewportMs, scrollRuns, scrollMs);
+
+    SelectObject(mem, oldBmp);
+    DeleteObject(dib);
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    FreeFontCache();
+    return 0;
+}
+#endif
 
 // --- editor state (P6) ---
 static bool g_editing = false;
@@ -474,7 +658,14 @@ static void UpdateLayout(HWND hwnd, bool redrawScrollbar) {
     g_sel.active = false; // re-layout invalidates fragment indices
     if (g_editing) { ClampSplit(); PositionEdit(); }
     HDC dc = GetDC(hwnd);
+    bool logFirstLayout = g_benchEnabled && !g_firstLayoutLogged;
+    double layoutStart = NowMs();
+    if (logFirstLayout) BenchLog("first_layout_start", layoutStart, PreviewWidth(), g_clientH, -1, "elapsed");
     g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags, &g_blockTops);
+    if (logFirstLayout) {
+        g_firstLayoutLogged = true;
+        BenchLog("first_layout_done", NowMs() - layoutStart, PreviewWidth(), g_clientH, g_contentH, "duration");
+    }
     ReleaseDC(hwnd, dc);
 
     g_toc.clear();
@@ -1587,7 +1778,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         EndPaint(hwnd, &ps);
         static bool firstPaintDone = false;
-        if (!firstPaintDone) { firstPaintDone = true; Timing("first-paint"); FlushTiming(); }
+        if (!firstPaintDone) {
+            firstPaintDone = true;
+            Timing("first-paint");
+            BenchLog("first_paint", NowMs(), pw, h, g_contentH, "elapsed");
+            FlushTiming();
+        }
         return 0;
     }
     case WM_SIZE:
@@ -1959,24 +2155,38 @@ static int Run(int argc, wchar_t** argv) {
 
     // Load persisted preferences (dark mode, split, zoom)
     g_prefs = LoadPrefs();
+    double prefsLoadedMs = NowMs();
     g_dark = g_prefs.dark;
     g_zoomPct = g_prefs.zoomPct;
 
     bool parseDump = false;
+    bool benchRender = false;
+    bool benchMode = false;
     std::wstring dumpPath;
     int dumpWidth = 900;
     int dumpViewportH = 0;
     int dumpScroll = 0;
+    int scrollRuns = 200;
     for (int i = 1; i < argc; i++) {
         if (wcscmp(argv[i], L"--parse-dump") == 0) { parseDump = true; continue; }
+        if (wcscmp(argv[i], L"--bench-startup") == 0) { g_benchStartup = true; benchMode = true; continue; }
+        if (wcscmp(argv[i], L"--bench-render") == 0) { benchRender = true; benchMode = true; continue; }
+        if (wcscmp(argv[i], L"--benchpaint") == 0) { benchRender = true; benchMode = true; if (dumpWidth == 900) dumpWidth = 1000; if (dumpViewportH == 0) dumpViewportH = 800; continue; }
         if (wcscmp(argv[i], L"--dump") == 0 && i + 1 < argc) { dumpPath = argv[++i]; continue; }
-        if (wcscmp(argv[i], L"--width") == 0 && i + 1 < argc) { dumpWidth = _wtoi(argv[++i]); continue; }
+        if (wcscmp(argv[i], L"--width") == 0 && i + 1 < argc) { dumpWidth = _wtoi(argv[++i]); g_benchWindowW = dumpWidth; continue; }
+        if (wcscmp(argv[i], L"--height") == 0 && i + 1 < argc) { g_benchWindowH = _wtoi(argv[++i]); continue; }
         if (wcscmp(argv[i], L"--viewport") == 0 && i + 1 < argc) { dumpViewportH = _wtoi(argv[++i]); continue; }
+        if (wcscmp(argv[i], L"--scroll-runs") == 0 && i + 1 < argc) { scrollRuns = _wtoi(argv[++i]); continue; }
         if (wcscmp(argv[i], L"--scroll") == 0 && i + 1 < argc) { dumpScroll = _wtoi(argv[++i]); continue; }
         if (wcscmp(argv[i], L"--dark") == 0) { g_dark = true; continue; }
         if (argv[i][0] == L'-') continue; // other flags handled later
         if (g_filePath.empty()) g_filePath = argv[i];
     }
+    double argsParsedMs = NowMs();
+    InitBenchLog(benchMode);
+    BenchLog("process_start", 0.0, g_benchWindowW, g_benchWindowH, 0, "elapsed");
+    BenchLog("prefs_loaded", prefsLoadedMs, g_benchWindowW, g_benchWindowH, 0, "elapsed");
+    BenchLog("args_parsed", argsParsedMs, g_benchWindowW, g_benchWindowH, 0, "elapsed");
     Timing("args-parsed");
 
 #ifdef FMDV_CONSOLE
@@ -2041,8 +2251,17 @@ static int Run(int argc, wchar_t** argv) {
 
     // Read + parse the file
     std::wstring text;
-    if (!g_filePath.empty() && ReadFileUtf8(g_filePath, text)) {
+    double fileStart = NowMs();
+    bool fileRead = false;
+    if (!g_filePath.empty()) {
+        fileRead = ReadFileUtf8(g_filePath, text);
+    }
+    BenchLog("file_read", NowMs() - fileStart, g_benchWindowW, g_benchWindowH, 0,
+             g_filePath.empty() ? "no_file" : (fileRead ? "duration" : "failed"));
+    if (fileRead) {
+        double parseStart = NowMs();
         g_doc = ParseMarkdown(text);
+        BenchLog("parsed", NowMs() - parseStart, g_benchWindowW, g_benchWindowH, 0, "duration");
     }
     g_rawText = text;
     Timing("parsed");
@@ -2054,35 +2273,7 @@ static int Run(int argc, wchar_t** argv) {
 #endif
 
 #ifdef FMDV_CONSOLE
-    // Bench: lay out once, then time repeated culled paints (the per-scroll cost).
-    for (int i = 1; i < argc; i++) if (wcscmp(argv[i], L"--benchpaint") == 0) {
-        Theme th = g_dark ? DarkTheme() : LightTheme();
-        int W = 1000, H = 800;
-        HDC screen = GetDC(nullptr);
-        HDC mem = CreateCompatibleDC(screen);
-        BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bi.bmiHeader.biWidth = W; bi.bmiHeader.biHeight = -H; bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
-        void* bits = nullptr;
-        HBITMAP dib = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-        SelectObject(mem, dib);
-        std::vector<TextFrag> frags;
-        double t0 = NowMs();
-        int contentH = LayoutDocument(mem, W, g_doc, th, nullptr, &frags);
-        double layoutMs = NowMs() - t0;
-        int N = 200; double t1 = NowMs();
-        for (int i2 = 0; i2 < N; i2++) {
-            int scroll = (contentH > H) ? (i2 * (contentH - H) / N) : 0;
-            RECT full{0,0,W,H}; HBRUSH bg = CreateSolidBrush(th.bg); FillRect(mem,&full,bg); DeleteObject(bg);
-            PaintDocument(mem, scroll, W, H, th, nullptr, frags);
-        }
-        double paintMs = (NowMs() - t1) / N;
-        wprintf(L"blocks=%zu contentH=%d  layout(once)=%.2f ms  paint(per-scroll avg over %d)=%.3f ms\n",
-                g_doc.blocks.size(), contentH, layoutMs, N, paintMs);
-        DeleteObject(dib); DeleteDC(mem); ReleaseDC(nullptr, screen);
-        FreeFontCache();
-        return 0;
-    }
+    if (benchRender) return RunBenchRender(dumpWidth, dumpViewportH, scrollRuns);
 #endif
 
     // headless PNG dump (visual test)
@@ -2126,10 +2317,11 @@ static int Run(int argc, wchar_t** argv) {
     HWND hwnd = CreateWindowExW(
         0, wc.lpszClassName, title.c_str(),
         WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
-        initX, initY, 1100, 800,
+        initX, initY, g_benchWindowW, g_benchWindowH,
         nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
     Timing("window-created");
+    BenchLog("window_created", NowMs(), g_benchWindowW, g_benchWindowH, 0, "elapsed");
 
     // Kill the open-transition animation (saves ~100-150ms of synchronous DWM work)
     BOOL disable = TRUE;
@@ -2147,8 +2339,15 @@ static int Run(int argc, wchar_t** argv) {
 
     ShowWindow(hwnd, SW_SHOWNA);   // no-activate show: paints fast (activation handshake is the slow part)
     Timing("showwindow");
+    BenchLog("window_shown", NowMs(), g_benchWindowW, g_benchWindowH, 0, "elapsed");
     UpdateWindow(hwnd);            // forces immediate WM_PAINT -> first-paint timing
     Timing("updatewindow");
+    if (g_benchStartup) {
+        DestroyWindow(hwnd);
+        DeleteCriticalSection(&g_updLock);
+        FreeFontCache();
+        return 0;
+    }
     // Bring to foreground AFTER the content is already on screen, so perceived
     // startup stays instant while the window still ends up focused.
     SetForegroundWindow(hwnd);

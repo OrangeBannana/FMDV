@@ -54,6 +54,11 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 .\fmdv.exe file.md --dump out.png --width 900 --viewport 600 --scroll 300
 # Dump the parsed document model (debug build):
 .\fmdv_dbg.exe file.md --parse-dump
+# Structured benchmark log (debug build):
+$env:FMDV_BENCH_LOG = "..\bench\results\windows-baseline.csv"
+$env:FMDV_BENCH_LABEL = "pre-core-split"
+.\fmdv_dbg.exe ..\test.md --bench-startup --width 900 --height 700
+.\fmdv_dbg.exe ..\test.md --bench-render --width 900 --viewport 700 --scroll-runs 200
 # Capture the live window (incl. editor) via PrintWindow:
 .\tests\capture.ps1 -Exe .\fmdv.exe -File ..\test.md -Out shot.png -Command 2001
 # Updater (debug build): offline unit checks / live API / real download+swap
