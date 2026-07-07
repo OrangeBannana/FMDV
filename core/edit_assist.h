@@ -7,10 +7,9 @@
 // (Win32 EDIT, NSTextView, ...). Shared by the Win32 app, the CLI, and the
 // future macOS frontend so all three behave identically.
 //
-// Strings are std::wstring for now, matching the parser; they migrate to the
-// core Str type together in the string-type milestone. The logic is code-point
-// based and behaves the same whether wchar_t is 16- or 32-bit.
-#include <string>
+// Text is the core Str type (16-bit UTF-16). The logic is code-unit based and
+// only inspects ASCII markdown syntax, so it behaves identically everywhere.
+#include "str.h"
 
 namespace fmdv {
 
@@ -20,10 +19,10 @@ namespace fmdv {
 // which the frontend expands to its own line ending. `caret` is where the caret
 // should land within the inserted text after commit. Empty text => no suggestion.
 struct Suggestion {
-    std::wstring text;
+    Str text;
     int caret = 0;
 };
-Suggestion SuggestClose(const std::wstring& line);
+Suggestion SuggestClose(const Str& line);
 
 // ---- list continuation on Enter ----
 // Decide what pressing Enter inside `line` (the current line up to the caret)
@@ -36,14 +35,14 @@ Suggestion SuggestClose(const std::wstring& line);
 struct ListEnter {
     bool handled = false;
     bool endList = false;
-    std::wstring continuation; // indent + marker, no line ending
+    Str continuation; // indent + marker, no line ending
 };
-ListEnter DecideListEnter(const std::wstring& line);
+ListEnter DecideListEnter(const Str& line);
 
 // ---- table insertion ----
 // Markdown for a cols x rows table with placeholder headers ("Column N") and
 // empty body cells. LF line endings, one trailing newline, no leading newline;
 // the frontend converts line endings and handles caret positioning.
-std::wstring MakeTableMarkdown(int cols, int rows);
+Str MakeTableMarkdown(int cols, int rows);
 
 } // namespace fmdv

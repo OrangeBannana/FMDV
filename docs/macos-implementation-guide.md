@@ -184,8 +184,15 @@ platform-neutral types below use `Str`, never `std::wstring`.
 
 ### Phase 0.5 Acceptance Criteria
 
+> **Status: implemented.** `core/str.h` defines `Str`/`Char` as
+> `std::u16string`/`char16_t` off Windows and `std::wstring`/`wchar_t` on Windows
+> (already 16-bit UTF-16 there), with a `U16("literal")` macro. Core sources use
+> `Str`/`Char`/`U16` and never write `std::wstring`/`wchar_t` directly, so the
+> type is uniformly 16-bit UTF-16 everywhere and the Win32 frontend is unchanged.
+
 - The core string type is chosen and documented before Phase 1 extraction.
-- `core/` contains no `wchar_t` or `std::wstring`.
+- `core/` contains no `wchar_t` or `std::wstring` (except the aliases in
+  `str.h`'s Windows branch).
 - All `std::wstring`/`wchar_t` use is confined to Win32 frontend or adapter
   files, with helpers named clearly enough to grep.
 - `--parse-dump` and any benchmark logging that prints core text converts

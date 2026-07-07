@@ -1,21 +1,26 @@
 // FMDV command-line frontend — the first non-Windows consumer of the core.
 //
 // Purpose (macOS implementation guide, Phase 3): prove the platform-neutral
-// markdown parser compiles and runs off Windows, and exercise the shared
-// bench-logging schema (Phase 0) before any macOS UI is written. Builds on
-// macOS/Linux with clang or gcc via the repo Makefile; the Windows GUI is
-// untouched and still builds via cpp/build.ps1.
+// core compiles and runs off Windows, and exercise the shared bench-logging
+// schema (Phase 0) before any macOS UI is written. Builds on macOS/Linux with
+// clang or gcc via the repo Makefile; the Windows GUI is untouched.
 //
 // Commands:
 //   fmdv-cli parse <file.md>                    dump the parsed Document model
 //   fmdv-cli bench-parse <file.md> [--runs N]   time parsing, log to FMDV_BENCH_LOG
+//   fmdv-cli suggest --line "<text>"            autocomplete for a line
+//   fmdv-cli table --cols N --rows M            markdown for a table
+//   fmdv-cli releases <releases.json>           parse a GitHub releases payload
+//   fmdv-cli vercmp <a> <b>                     compare versions (-1/0/1)
 //
 // The `parse` output mirrors the Windows debug build's --parse-dump so the two
-// can be diffed for byte-for-byte parser equivalence across platforms.
+// can be diffed for byte-for-byte parser equivalence across platforms. UTF-8
+// <-> core-string conversion is the frontend boundary; it uses core/str.h.
 
 #include "markdown.h"
 #include "edit_assist.h"
 #include "release_info.h"
+#include "str.h"
 #include "bench_log.h"
 
 #include <algorithm>
@@ -40,82 +45,6 @@ static const char* kPlatform = "linux";
 #define FMDV_BUILD "release"
 #endif
 
-// ---------------- UTF-8 <-> wstring bridge (frontend boundary) ----------------
-// The core parser takes std::wstring. This is the frontend-boundary conversion
-// the guide describes: the CLI reads/writes UTF-8 and bridges here. Handles both
-// 32-bit wchar_t (macOS/Linux) and 16-bit wchar_t (Windows, surrogate pairs).
-
-static void appendCp(std::wstring& w, char32_t cp) {
-    if (sizeof(wchar_t) >= 4) { w.push_back((wchar_t)cp); return; }
-    if (cp <= 0xFFFF) {
-        w.push_back((wchar_t)cp);
-    } else {
-        cp -= 0x10000;
-        w.push_back((wchar_t)(0xD800 + (cp >> 10)));
-        w.push_back((wchar_t)(0xDC00 + (cp & 0x3FF)));
-    }
-}
-
-static std::wstring utf8ToW(const std::string& s) {
-    std::wstring w;
-    w.reserve(s.size());
-    size_t i = 0, n = s.size();
-    while (i < n) {
-        unsigned char c = (unsigned char)s[i];
-        char32_t cp;
-        int len;
-        if (c < 0x80)            { cp = c;          len = 1; }
-        else if ((c >> 5) == 0x6){ cp = c & 0x1F;   len = 2; }
-        else if ((c >> 4) == 0xE){ cp = c & 0x0F;   len = 3; }
-        else if ((c >> 3) == 0x1E){ cp = c & 0x07;  len = 4; }
-        else                     { cp = 0xFFFD;     len = 1; }
-        if (i + (size_t)len > n) { cp = 0xFFFD; len = 1; }
-        for (int k = 1; k < len; k++) {
-            unsigned char cc = (unsigned char)s[i + k];
-            if ((cc & 0xC0) != 0x80) { cp = 0xFFFD; len = 1; break; }
-            cp = (cp << 6) | (cc & 0x3F);
-        }
-        appendCp(w, cp);
-        i += (size_t)len;
-    }
-    return w;
-}
-
-static void appendUtf8(std::string& o, char32_t cp) {
-    if (cp < 0x80) {
-        o += (char)cp;
-    } else if (cp < 0x800) {
-        o += (char)(0xC0 | (cp >> 6));
-        o += (char)(0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-        o += (char)(0xE0 | (cp >> 12));
-        o += (char)(0x80 | ((cp >> 6) & 0x3F));
-        o += (char)(0x80 | (cp & 0x3F));
-    } else {
-        o += (char)(0xF0 | (cp >> 18));
-        o += (char)(0x80 | ((cp >> 12) & 0x3F));
-        o += (char)(0x80 | ((cp >> 6) & 0x3F));
-        o += (char)(0x80 | (cp & 0x3F));
-    }
-}
-
-static std::string wToUtf8(const std::wstring& w) {
-    std::string o;
-    o.reserve(w.size());
-    for (size_t i = 0; i < w.size(); i++) {
-        char32_t cp = (char32_t)(unsigned long)w[i];
-        if (sizeof(wchar_t) < 4 && cp >= 0xD800 && cp <= 0xDBFF && i + 1 < w.size()) {
-            char32_t lo = (char32_t)(unsigned long)w[i + 1];
-            if (lo >= 0xDC00 && lo <= 0xDFFF) {
-                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                i++;
-            }
-        }
-        appendUtf8(o, cp);
-    }
-    return o;
-}
-
 // ---------------- file loading ----------------
 
 static bool readFileUtf8(const char* path, std::string& out) {
@@ -137,14 +66,11 @@ static bool readFileUtf8(const char* path, std::string& out) {
     return true;
 }
 
-// The parser expects LF-normalized text; drop CR so CRLF fixtures parse the
-// same as LF ones (matches the Windows frontend's normalization).
-static std::wstring loadDoc(const std::string& utf8) {
-    std::wstring w = utf8ToW(utf8);
-    std::wstring lf;
-    lf.reserve(w.size());
-    for (wchar_t c : w) if (c != L'\r') lf += c;
-    return lf;
+// The parser expects LF-normalized text; drop CR bytes (ASCII 0x0D) so CRLF
+// fixtures parse the same as LF ones, then convert to the core string type.
+static Str loadDoc(std::string utf8) {
+    utf8.erase(std::remove(utf8.begin(), utf8.end(), '\r'), utf8.end());
+    return FromUtf8(utf8);
 }
 
 // ---------------- parse dump (mirrors Windows --parse-dump) ----------------
@@ -169,9 +95,9 @@ static void dumpRuns(std::string& o, const std::vector<InlineRun>& runs) {
         if (r.italic) o += "i";
         if (r.code)   o += "c";
         if (r.strike) o += "s";
-        if (!r.href.empty()) { o += "link="; o += wToUtf8(r.href); }
+        if (!r.href.empty()) { o += "link="; o += ToUtf8(r.href); }
         o += "] \"";
-        o += wToUtf8(r.text);
+        o += ToUtf8(r.text);
         o += "\"\n";
     }
 }
@@ -194,11 +120,11 @@ static std::string dumpDoc(const Document& doc) {
                           b.ordered ? "ordered" : "bullet", b.level, b.taskState);
             o += buf;
         }
-        if (b.type == BlockType::CodeBlock) { o += " lang="; o += wToUtf8(b.lang); }
+        if (b.type == BlockType::CodeBlock) { o += " lang="; o += ToUtf8(b.lang); }
         o += "\n";
         if (b.type == BlockType::CodeBlock) {
             o += "    <code>\n";
-            o += wToUtf8(b.codeText);
+            o += ToUtf8(b.codeText);
             o += "\n    </code>\n";
         } else if (b.type == BlockType::Table) {
             std::snprintf(buf, sizeof buf, "    headers: %zu cols, %zu rows, aligns:",
@@ -263,7 +189,7 @@ static int cmdBenchParse(const char* path, int runs) {
         std::fprintf(stderr, "fmdv-cli: cannot read %s\n", path);
         return 1;
     }
-    std::wstring doc = loadDoc(utf8);
+    Str doc = loadDoc(utf8);
 
     fmdv::BenchLog log;
     std::vector<double> times;
@@ -298,8 +224,8 @@ static int cmdBenchParse(const char* path, int runs) {
 
 // Render a suggestion/continuation string on one line, showing '\n' as "\\n"
 // so multi-line results stay greppable in tests and shells.
-static std::string escapeNl(const std::wstring& w) {
-    std::string u = wToUtf8(w);
+static std::string escapeNl(const Str& w) {
+    std::string u = ToUtf8(w);
     std::string o;
     for (char c : u) {
         if (c == '\n') o += "\\n";
@@ -309,13 +235,13 @@ static std::string escapeNl(const std::wstring& w) {
 }
 
 static int cmdSuggest(const std::string& line) {
-    fmdv::Suggestion sg = fmdv::SuggestClose(utf8ToW(line));
+    fmdv::Suggestion sg = fmdv::SuggestClose(FromUtf8(line));
     std::printf("caret=%d text=%s\n", sg.caret, escapeNl(sg.text).c_str());
     return 0;
 }
 
 static int cmdTable(int cols, int rows) {
-    std::string out = wToUtf8(fmdv::MakeTableMarkdown(cols, rows));
+    std::string out = ToUtf8(fmdv::MakeTableMarkdown(cols, rows));
     std::fwrite(out.data(), 1, out.size(), stdout);
     return 0;
 }
@@ -330,14 +256,14 @@ static int cmdReleases(const char* path) {
     ParseReleasesJson(json, rel);
     std::printf("releases: %zu\n", rel.size());
     for (const auto& r : rel) {
-        std::string exe = wToUtf8(r.exeUrl);
-        std::printf("%s\t%s\n", wToUtf8(r.tag).c_str(), exe.empty() ? "(no exe asset)" : exe.c_str());
+        std::string exe = ToUtf8(r.exeUrl);
+        std::printf("%s\t%s\n", ToUtf8(r.tag).c_str(), exe.empty() ? "(no exe asset)" : exe.c_str());
     }
     return 0;
 }
 
 static int cmdVercmp(const char* a, const char* b) {
-    int c = CompareVersions(utf8ToW(a), utf8ToW(b));
+    int c = CompareVersions(FromUtf8(a), FromUtf8(b));
     std::printf("%d\n", c < 0 ? -1 : (c > 0 ? 1 : 0));
     return 0;
 }
