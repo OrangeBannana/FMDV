@@ -70,6 +70,27 @@ jobs:
           name: fmdv
           path: cpp/fmdv.exe
 
+  # Proves the platform-neutral core + CLI build off Windows (macOS impl guide,
+  # "Build System and CI"). Not a release gate — the Windows job ships the exe.
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CLI (clang)
+        run: make cli
+
+      - name: Parser parity + bench smoke
+        run: |
+          out=$(./build/fmdv-cli parse test.md)
+          for want in 'Heading level=1' 'CodeBlock lang=python' 'Table' 'BlockQuote' 'HRule' 'link=https://github.com'; do
+            echo "$out" | grep -qF "$want" || { echo "parse-dump missing: $want"; exit 1; }
+          done
+          FMDV_BENCH_LOG=build/bench.csv FMDV_BENCH_LABEL=ci-macos \
+            ./build/fmdv-cli bench-parse test.md --runs 50
+          test -s build/bench.csv || { echo "bench log not written"; exit 1; }
+          echo "macOS CLI checks OK"
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
