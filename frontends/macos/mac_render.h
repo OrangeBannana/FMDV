@@ -33,4 +33,9 @@ bool RenderMarkdownToPng(const Document& doc, double width, bool dark, const cha
 // Open the AppKit window showing `file` and run the app loop (app.mm).
 int RunApp(const char* file, bool dark);
 
+// Time layout and render-to-bitmap over `runs` iterations; returns the medians
+// (ms) via the out params. For the Windows-vs-macOS comparison (Phase 5).
+void BenchLayoutRender(const Document& doc, double width, bool dark, int runs,
+                       double& layoutMedianMs, double& renderMedianMs);
+
 } // namespace fmdv

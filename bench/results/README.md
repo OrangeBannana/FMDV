@@ -37,11 +37,44 @@ The CLI writes the same 15-column schema as the Windows frontend's bench mode
 (`cpp/fmdv.cpp`, `FMDV_BENCH_LOG`), so these rows are directly comparable to a
 Windows run.
 
+## macOS — CoreText render baseline (`macos-baseline`)
+
+Layout + render medians for the native macOS frontend (`fmdv-macos
+--bench-render`), now that layout is platform-neutral (Phase 2) and the CoreText/
+CoreGraphics renderer exists (Phase 4). Reproduce with:
+
+```sh
+make macos
+FMDV_BENCH_LOG=build/bench.csv ./build/fmdv-macos --bench-render test.md --width 900 --runs 200
+```
+
+- Machine: Apple M3 Pro, macOS 26.5.2 (arm64); Apple clang, `-O2`; width 900, warm.
+
+| File | Blocks | Parse median | Layout median | Render median |
+| --- | --- | --- | --- | --- |
+| `test.md` | 17 | 0.20 ms | 0.25 ms | 0.34 ms |
+| `README.md` | 37 | 0.08 ms | 0.89 ms | 1.39 ms |
+| `cpp/tests/stress.md` | 15 | 0.04 ms | 0.29 ms | 0.52 ms |
+
+Parse + layout + a full off-screen render stays comfortably sub-2 ms per document
+on this hardware, so first paint is dominated by process/window startup, not the
+content pipeline — consistent with FMDV's fast-first-paint goal.
+
+## Windows vs macOS comparison
+
+The macOS (`macos`) and Windows (`win32`) frontends emit the **same 15-column
+schema**, so their `layout_once` / `paint_viewport_avg` rows are directly
+comparable. The macOS side is captured above; the Windows GUI side is pending a
+run on a Windows machine (below). Compare medians on similar hardware, noting
+that the two frontends use different layout engines (GDI vs the shared
+`core/layout`), so small metric differences are expected — compare structure and
+order of magnitude, not exact pixels.
+
 ## Pending
 
-- **Windows GUI baseline** — the Windows frontend already emits this schema
-  (`fmdv_dbg.exe … --bench-startup/--bench-render`); it just needs to be run on
-  a Windows machine to capture `windows-baseline` / `pre-core-split` before the
-  Phase 1 core move.
-- **CLI `bench-layout`** — after Phase 2 makes layout platform-neutral.
-- **macOS AppKit first-paint** — after Phase 4.
+- **Windows GUI baseline** — the Windows frontend emits this schema
+  (`fmdv_dbg.exe … --bench-startup/--bench-render`); it needs a run on a Windows
+  machine to fill in the `win32` side of the comparison.
+- **Windows adoption of `core/layout`** — the shared engine currently backs the
+  macOS frontend; migrating `render.cpp` onto it (guide Step 2a/2b) is a
+  separate, Windows-tested step.

@@ -109,6 +109,8 @@ jobs:
           ./build/fmdv-macos --dump test.md dark.png --width 900 --dark
           file light.png | grep -q 'PNG image data' || { echo "png not produced"; exit 1; }
           test "$(stat -f%z light.png)" -gt 3000 || { echo "png too small"; exit 1; }
+          FMDV_BENCH_LOG=mac-bench.csv ./build/fmdv-macos --bench-render test.md --width 900 --runs 20
+          grep -q 'macos,macos,.*layout_once' mac-bench.csv || { echo "bench schema wrong"; exit 1; }
           echo "macOS render OK"
 
   release:

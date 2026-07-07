@@ -1,7 +1,10 @@
 #include "mac_render.h"
+#include "bench_log.h"
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace fmdv {
 
@@ -176,6 +179,38 @@ bool RenderMarkdownToPng(const Document& doc, double width, bool dark, const cha
     }
     CFRelease(url); CFRelease(path); CGImageRelease(img);
     return ok;
+}
+
+void BenchLayoutRender(const Document& doc, double width, bool dark, int runs,
+                       double& layoutMedianMs, double& renderMedianMs) {
+    if (runs < 1) runs = 1;
+    LayoutTheme th = dark ? DarkLayoutTheme() : LightLayoutTheme();
+    CoreTextMeasurer tm;
+    std::vector<double> lt, rt;
+
+    LayoutResult r;
+    for (int i = 0; i < runs; i++) {
+        double t0 = NowMonotonicMs();
+        r = LayoutDocument(doc, width, th, tm);
+        lt.push_back(NowMonotonicMs() - t0);
+    }
+
+    int W = (int)std::ceil(width), H = (int)std::ceil(r.contentHeight);
+    if (H < 1) H = 1;
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(nullptr, W, H, 8, 0, cs, kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(cs);
+    for (int i = 0; i < runs; i++) {
+        double t0 = NowMonotonicMs();
+        PaintLayout(ctx, H, r, th, tm);
+        rt.push_back(NowMonotonicMs() - t0);
+    }
+    if (ctx) CGContextRelease(ctx);
+
+    std::sort(lt.begin(), lt.end());
+    std::sort(rt.begin(), rt.end());
+    layoutMedianMs = lt[lt.size() / 2];
+    renderMedianMs = rt[rt.size() / 2];
 }
 
 } // namespace fmdv
