@@ -737,6 +737,12 @@ static int g_tpVisCols = 8, g_tpVisRows = 8; // currently visible/allocated grid
 static const int TP_MAX = 8, TP_HARD_MAX = 20;
 static const int TP_CELL = 20, TP_GAP = 3, TP_PAD = 10, TP_LABEL = 22;
 
+// edit mode: caret was inside an existing table when Ctrl+T opened the
+// picker, so Enter resizes that table in place instead of inserting a new one
+static bool g_tpEditMode = false;
+static int g_tpEditStartLine = -1, g_tpEditEndLine = -1;
+static std::vector<int> g_tpEditAligns;
+
 static SIZE TpWindowSize(int visCols, int visRows) {
     int gridW = visCols * (TP_CELL + TP_GAP) - TP_GAP;
     int gridH = visRows * (TP_CELL + TP_GAP);
@@ -764,6 +770,83 @@ static void InsertTableMarkdown(int cols, int rows) {
     SendMessageW(g_hEdit, EM_REPLACESEL, TRUE, (LPARAM)t.c_str());
 }
 
+// ---- table resize (edit an existing table's row/column count in place) ----
+
+// Table block containing the given 0-based source line, or nullptr.
+static const Block* FindTableAtLine(int line) {
+    if (line < 0) return nullptr;
+    for (const auto& b : g_doc.blocks)
+        if (b.type == BlockType::Table && line >= b.srcStartLine && line <= b.srcEndLine)
+            return &b;
+    return nullptr;
+}
+
+static const wchar_t* AlignSeparator(int align) {
+    switch (align) {
+        case AlignCenter: return L":---:";
+        case AlignRight:  return L"---:";
+        default:          return L"---";
+    }
+}
+
+// Rewrite the table occupying source lines [startLine, endLine] to newCols x
+// newRows, preserving existing cell text (and per-column alignment) by
+// index; new cells/columns get blank/default content. Operates on the raw
+// edit-control text so markdown inside existing cells (bold, links, ...)
+// survives untouched — the parsed Block model already stripped that into
+// InlineRun flags, so it can't be used to reconstruct source text.
+static void ResizeTableMarkdown(int startLine, int endLine, const std::vector<int>& oldAligns,
+                                 int newCols, int newRows) {
+    if (!g_hEdit || startLine < 0 || endLine < startLine) return;
+
+    int totalLines = (int)SendMessageW(g_hEdit, EM_GETLINECOUNT, 0, 0);
+    int startChar = (int)SendMessageW(g_hEdit, EM_LINEINDEX, startLine, 0);
+    bool hasTrailingLine = (endLine + 1 < totalLines);
+    int endChar = hasTrailingLine ? (int)SendMessageW(g_hEdit, EM_LINEINDEX, endLine + 1, 0)
+                                  : GetWindowTextLengthW(g_hEdit);
+    if (startChar < 0 || endChar < startChar) return;
+
+    int len = GetWindowTextLengthW(g_hEdit);
+    std::wstring all(len + 1, L'\0'); GetWindowTextW(g_hEdit, &all[0], len + 1); all.resize(len);
+    std::wstring block = all.substr(startChar, endChar - startChar);
+
+    std::vector<std::wstring> lines; std::wstring cur;
+    for (wchar_t c : block) { if (c == L'\n') { lines.push_back(cur); cur.clear(); } else if (c != L'\r') cur += c; }
+    lines.push_back(cur);
+    if (lines.size() < 2) return; // not actually a header+separator pair
+
+    std::vector<std::wstring> oldHeader = SplitTableCells(lines[0]);
+    std::vector<std::vector<std::wstring>> oldRows;
+    for (size_t li = 2; li < lines.size(); li++) {
+        if (lines[li].find(L'|') == std::wstring::npos) continue;
+        oldRows.push_back(SplitTableCells(lines[li]));
+    }
+
+    std::wstring t;
+    t += L"|";
+    for (int c = 0; c < newCols; c++) {
+        std::wstring cell = (c < (int)oldHeader.size()) ? oldHeader[c] : (L"Column " + std::to_wstring(c + 1));
+        t += L" " + cell + L" |";
+    }
+    t += L"\r\n|";
+    for (int c = 0; c < newCols; c++) {
+        int a = (c < (int)oldAligns.size()) ? oldAligns[c] : AlignLeft;
+        t += L" "; t += AlignSeparator(a); t += L" |";
+    }
+    for (int r = 0; r < newRows; r++) {
+        t += L"\r\n|";
+        const std::vector<std::wstring>* src = (r < (int)oldRows.size()) ? &oldRows[r] : nullptr;
+        for (int c = 0; c < newCols; c++) {
+            if (src && c < (int)src->size()) t += L" " + (*src)[c] + L" |";
+            else t += L"   |";
+        }
+    }
+    if (hasTrailingLine) t += L"\r\n";
+
+    SendMessageW(g_hEdit, EM_SETSEL, startChar, endChar);
+    SendMessageW(g_hEdit, EM_REPLACESEL, TRUE, (LPARAM)t.c_str());
+}
+
 static void CloseTablePicker() {
     if (g_tpHwnd) { HWND h = g_tpHwnd; g_tpHwnd = nullptr; DestroyWindow(h); }
     if (g_hEdit) SetFocus(g_hEdit);
@@ -777,7 +860,11 @@ static LRESULT CALLBACK TablePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             case VK_LEFT:  if (g_tpCols > 1) g_tpCols--; break;
             case VK_DOWN:  if (g_tpRows < TP_HARD_MAX) g_tpRows++; break;
             case VK_UP:    if (g_tpRows > 1) g_tpRows--; break;
-            case VK_RETURN: InsertTableMarkdown(g_tpCols, g_tpRows); CloseTablePicker(); return 0;
+            case VK_RETURN:
+                if (g_tpEditMode) ResizeTableMarkdown(g_tpEditStartLine, g_tpEditEndLine, g_tpEditAligns, g_tpCols, g_tpRows);
+                else InsertTableMarkdown(g_tpCols, g_tpRows);
+                CloseTablePicker();
+                return 0;
             case VK_ESCAPE: CloseTablePicker(); return 0;
             default: return 0;
         }
@@ -815,7 +902,8 @@ static LRESULT CALLBACK TablePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             FillRect(hdc, &cell, b); DeleteObject(b);
             HBRUSH bd = CreateSolidBrush(th.border); FrameRect(hdc, &cell, bd); DeleteObject(bd);
         }
-        wchar_t lbl[32]; _snwprintf_s(lbl, 32, _TRUNCATE, L"%d x %d table", g_tpCols, g_tpRows);
+        wchar_t lbl[40];
+        _snwprintf_s(lbl, 40, _TRUNCATE, g_tpEditMode ? L"resize to %d x %d" : L"%d x %d table", g_tpCols, g_tpRows);
         SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, th.text);
         HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT); HFONT of = (HFONT)SelectObject(hdc, f);
         int gridH = g_tpVisRows * (TP_CELL + TP_GAP);
@@ -843,8 +931,27 @@ static void ShowTablePicker(HWND main) {
         RegisterClassExW(&wc);
         reg = true;
     }
-    g_tpCols = 2; g_tpRows = 3;
-    g_tpVisCols = TP_MAX; g_tpVisRows = TP_MAX;
+    int caretLine = (int)SendMessageW(g_hEdit, EM_LINEFROMCHAR, (WPARAM)-1, 0);
+    const Block* tbl = FindTableAtLine(caretLine);
+    if (tbl) {
+        g_tpEditMode = true;
+        g_tpEditStartLine = tbl->srcStartLine;
+        g_tpEditEndLine = tbl->srcEndLine;
+        g_tpEditAligns = tbl->aligns;
+        g_tpCols = (int)tbl->aligns.size();
+        g_tpRows = (int)tbl->rows.size();
+        if (g_tpCols < 1) g_tpCols = 1;
+        if (g_tpCols > TP_HARD_MAX) g_tpCols = TP_HARD_MAX;
+        if (g_tpRows < 1) g_tpRows = 1;
+        if (g_tpRows > TP_HARD_MAX) g_tpRows = TP_HARD_MAX;
+    } else {
+        g_tpEditMode = false;
+        g_tpEditStartLine = g_tpEditEndLine = -1;
+        g_tpEditAligns.clear();
+        g_tpCols = 2; g_tpRows = 3;
+    }
+    g_tpVisCols = g_tpCols > TP_MAX ? g_tpCols : TP_MAX;
+    g_tpVisRows = g_tpRows > TP_MAX ? g_tpRows : TP_MAX;
     SIZE sz = TpWindowSize(g_tpVisCols, g_tpVisRows);
     POINT pt; GetCaretPos(&pt); ClientToScreen(g_hEdit, &pt);
     g_tpHwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"FMDV_TablePicker", L"",

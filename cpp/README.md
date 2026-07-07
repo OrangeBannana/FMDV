@@ -11,6 +11,9 @@ Custom markdown parser + GDI layout/renderer drawing directly to the window.
   alignment, horizontal rules, links, images (alt text).
 - **Ctrl+E** — toggle split editor (monospace source left, live preview right);
   drag the divider to resize.
+- **Ctrl+T** — insert a table via a grid picker (grows past 8x8 on demand, up
+  to 20x20). Caret inside an existing table reopens the picker in resize mode
+  instead — grows/shrinks rows and columns, preserving existing cell content.
 - **Ctrl+D** — toggle dark mode (persists).
 - **Ctrl+S** — save. **Ctrl+Shift+S** — save and close editor.
 - **Ctrl+U** — updates: list GitHub releases, install any version in-app
@@ -49,9 +52,9 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 # FMDV_VERSION_OVERRIDE=<ver> makes the app report that version (test hook)
 ```
 
-`tests\run-tests.ps1` builds both configurations and runs 53 checks: parser,
+`tests\run-tests.ps1` builds both configurations and runs 59 checks: parser,
 rendering, stability, selection + clipboard, save round-trip, autocomplete,
-table picker, list continuation, updater.
+table picker (insert + resize), list continuation, updater.
 
 ## Set as default app for .md
 1. Right-click any `.md` → **Open with → Choose another app**
