@@ -44,6 +44,8 @@ app* → browse to `fmdv.exe` → *Always*. Put the exe somewhere stable first
 - **Ctrl+U** in-app updates from GitHub Releases: notify (default), auto-update,
   or pin any version — including downgrades.
 - **Ctrl+Shift+O** table of contents sidebar — click a heading to jump to it.
+- **Ctrl+F** find in doc: highlights all matches, Enter/Shift+Enter step
+  through them (wraps around).
 
 ## Source & build
 The app is in [`cpp/`](cpp/) — see [cpp/README.md](cpp/README.md) for build
@@ -53,7 +55,7 @@ details, headless test/inspection flags, and source layout.
 ```powershell
 cd cpp
 .\build.ps1                            # -> cpp\fmdv.exe
-powershell -File tests\run-tests.ps1   # 65-check suite
+powershell -File tests\run-tests.ps1   # 71-check suite
 ```
 
 Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2

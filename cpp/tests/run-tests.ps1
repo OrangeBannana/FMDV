@@ -140,7 +140,25 @@ Start-Sleep -Milliseconds 200
 [T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_TOC, [IntPtr]::Zero) | Out-Null    # hide
 Start-Sleep -Milliseconds 200
 Check "TOC toggle off: window stable" (-not $p.HasExited)
-if (-not $p.HasExited) { $p.Kill() }
+
+Write-Host "`nFind in doc (Ctrl+F):" -ForegroundColor Cyan
+$ID_FIND = 2013
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_FIND, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 300
+$fb = [T]::FindWindowW("FMDV_FindBar", $null)
+Check "find bar opens" ($fb -ne [IntPtr]::Zero)
+$fe = [T]::FindWindowExW($fb, [IntPtr]::Zero, "Edit", $null)
+Check "find bar has an edit box" ($fe -ne [IntPtr]::Zero)
+[T]::SendMessageW($fe, $WM_SETTEXT, [IntPtr]::Zero, "heading") | Out-Null  # matches "Heading One"/"Heading Two"
+Start-Sleep -Milliseconds 250
+Check "main window stable while searching" (-not $p.HasExited)
+[T]::SendInt($fe, $WM_KEYDOWN, [IntPtr]0x0D, [IntPtr]0) | Out-Null  # Enter: next match
+Start-Sleep -Milliseconds 200
+Check "main window stable after next-match" (-not $p.HasExited)
+[T]::SendInt($fe, $WM_KEYDOWN, [IntPtr]0x1B, [IntPtr]0) | Out-Null  # Esc: close
+Start-Sleep -Milliseconds 250
+Check "Esc closes the find bar" ([T]::FindWindowW("FMDV_FindBar", $null) -eq [IntPtr]::Zero)
+Check "main window survives find bar close" (-not $p.HasExited)
 
 Write-Host "`nSelection + copy (all block types):" -ForegroundColor Cyan
 [T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_SELALL, [IntPtr]::Zero) | Out-Null
