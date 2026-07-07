@@ -7,6 +7,8 @@
 #
 #   make cli     build build/fmdv-cli
 #   make check   build, then smoke-test parse + bench-parse on test.md
+#   make macos   build the native macOS binary (build/fmdv-macos)  [macOS only]
+#   make app     assemble build/FMDV.app with a generated icon     [macOS only]
 #   make clean
 
 CXX      ?= c++
@@ -37,6 +39,32 @@ macos: $(MAC_BIN)
 $(MAC_BIN): $(MAC_SRCS) $(MAC_DEPS)
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -ObjC++ $(INCLUDES) $(MAC_SRCS) $(MAC_FRAMEWORKS) -o $(MAC_BIN)
+
+# --- macOS .app bundle (build/FMDV.app) with generated icon ---
+ICON_FRAMEWORKS := -framework CoreGraphics -framework CoreText -framework ImageIO -framework CoreFoundation
+APP := build/FMDV.app
+
+app: $(APP)
+
+build/AppIcon.icns: frontends/macos/appicon/make_icon.mm
+	@mkdir -p build/AppIcon.iconset
+	$(CXX) -std=c++17 -ObjC++ -w frontends/macos/appicon/make_icon.mm $(ICON_FRAMEWORKS) -o build/make_icon
+	./build/make_icon build/icon-1024.png
+	@for s in 16 32 128 256 512; do \
+	  d=$$((s*2)); \
+	  sips -z $$s $$s   build/icon-1024.png --out build/AppIcon.iconset/icon_$${s}x$${s}.png    >/dev/null; \
+	  sips -z $$d $$d   build/icon-1024.png --out build/AppIcon.iconset/icon_$${s}x$${s}@2x.png >/dev/null; \
+	done
+	iconutil -c icns build/AppIcon.iconset -o build/AppIcon.icns
+
+$(APP): $(MAC_BIN) build/AppIcon.icns frontends/macos/Info.plist
+	rm -rf $(APP)
+	@mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
+	cp $(MAC_BIN) $(APP)/Contents/MacOS/FMDV
+	cp build/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
+	cp frontends/macos/Info.plist $(APP)/Contents/Info.plist
+	printf 'APPL????' > $(APP)/Contents/PkgInfo
+	@echo "built $(APP)"
 
 check: cli
 	@echo "== parse test.md =="

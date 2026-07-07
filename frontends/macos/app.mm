@@ -161,24 +161,68 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
     NSSplitView* _split;
     std::string _file;
     bool _editing;
+    bool _dark;
+    bool _opened;
 }
-- (instancetype)initWithFile:(std::string)file preview:(FMDVPreviewView*)pv
-                previewScroll:(NSScrollView*)ps window:(NSWindow*)w;
+- (instancetype)initWithFile:(const char*)file dark:(bool)dark;
+- (void)openPath:(NSString*)path;
 @end
 
 @implementation FMDVAppDelegate
-- (instancetype)initWithFile:(std::string)file preview:(FMDVPreviewView*)pv
-                previewScroll:(NSScrollView*)ps window:(NSWindow*)w {
+- (instancetype)initWithFile:(const char*)file dark:(bool)dark {
     if ((self = [super init])) {
-        _file = std::move(file); _preview = pv; _previewScroll = ps; _window = w; _editing = false;
+        _file = file ? file : ""; _dark = dark; _editing = false; _opened = false;
     }
     return self;
 }
+
+// Create the window + preview on demand (a bare .app launch has no document yet).
+- (void)ensureWindow {
+    if (_window) return;
+    NSRect frame = NSMakeRect(0, 0, 940, 760);
+    _window = [[NSWindow alloc]
+        initWithContentRect:frame
+                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                             NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
+                    backing:NSBackingStoreBuffered defer:NO];
+    [_window setTitle:@"FMDV"];
+    [_window center];
+    _previewScroll = [[NSScrollView alloc] initWithFrame:frame];
+    [_previewScroll setHasVerticalScroller:YES];
+    [_previewScroll setAutohidesScrollers:YES];
+    [_previewScroll setDrawsBackground:NO];
+    _preview = [[FMDVPreviewView alloc] initWithDoc:Document() dark:_dark];
+    [_previewScroll setDocumentView:_preview];
+    [_window setContentView:_previewScroll];
+    [_window makeKeyAndOrderFront:nil];
+    [_window makeFirstResponder:_preview];
+}
+
+- (void)openPath:(NSString*)path {
+    [self ensureWindow];
+    _opened = true;
+    _file = path.UTF8String ? path.UTF8String : "";
+    Document doc = ParseMarkdown(LoadDoc(ReadFileUtf8(_file.c_str())));
+    [_preview setDoc:doc];
+    if (_textView) [_textView setString:StrToNS(LoadDoc(ReadFileUtf8(_file.c_str())))];
+    [_window setTitle:path.lastPathComponent];
+}
+
+- (BOOL)application:(NSApplication*)app openFile:(NSString*)filename {
+    (void)app; [self openPath:filename]; return YES;
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification*)n {
     (void)n;
     [NSApp activateIgnoringOtherApps:YES];
-    [_window makeKeyAndOrderFront:nil];
-    [_window makeFirstResponder:_preview];
+    if (_opened) return;                         // openFile: already loaded a document
+    if (!_file.empty()) { [self openPath:[NSString stringWithUTF8String:_file.c_str()]]; return; }
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    [panel setAllowsMultipleSelection:NO];
+    if ([panel runModal] == NSModalResponseOK && panel.URLs.count > 0)
+        [self openPath:panel.URLs.firstObject.path];
+    else
+        [self ensureWindow];                     // empty window if nothing chosen
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)a { (void)a; return YES; }
 
@@ -265,31 +309,9 @@ int RunApp(const char* file, bool dark) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-
-        Document doc = ParseMarkdown(LoadDoc(ReadFileUtf8(file)));
-
-        NSRect frame = NSMakeRect(0, 0, 940, 760);
-        NSWindow* window = [[NSWindow alloc]
-            initWithContentRect:frame
-                      styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                                 NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
-                        backing:NSBackingStoreBuffered
-                          defer:NO];
-        [window setTitle:[[NSString stringWithUTF8String:file] lastPathComponent]];
-
-        NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:frame];
-        [scroll setHasVerticalScroller:YES];
-        [scroll setAutohidesScrollers:YES];
-        [scroll setDrawsBackground:NO];
-        FMDVPreviewView* preview = [[FMDVPreviewView alloc] initWithDoc:doc dark:dark];
-        [scroll setDocumentView:preview];
-        [window setContentView:scroll];
-
-        FMDVAppDelegate* delegate = [[FMDVAppDelegate alloc] initWithFile:std::string(file)
-                                                                  preview:preview previewScroll:scroll window:window];
+        FMDVAppDelegate* delegate = [[FMDVAppDelegate alloc] initWithFile:file dark:dark];
         [NSApp setDelegate:delegate];
         buildMenu(delegate);
-
         [NSApp run];
     }
     return 0;

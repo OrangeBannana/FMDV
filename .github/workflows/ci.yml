@@ -113,6 +113,14 @@ jobs:
           grep -q 'macos,macos,.*layout_once' mac-bench.csv || { echo "bench schema wrong"; exit 1; }
           echo "macOS render OK"
 
+      - name: Build .app bundle
+        run: |
+          make app
+          test -f build/FMDV.app/Contents/MacOS/FMDV || { echo "app binary missing"; exit 1; }
+          test -f build/FMDV.app/Contents/Resources/AppIcon.icns || { echo "icon missing"; exit 1; }
+          plutil -lint build/FMDV.app/Contents/Info.plist
+          echo ".app bundle OK"
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build

@@ -94,20 +94,23 @@ int main(int argc, char** argv) {
             file = argv[i];
         }
     }
-    if (!file) return usage();
-
-    if (bench) return benchRender(file, width, dark, runs);
-
+    if (bench) {
+        if (!file) return usage();
+        return benchRender(file, width, dark, runs);
+    }
     if (dump) {
+        if (!file || !out) return usage();
         std::string u8;
         if (!readFileUtf8(file, u8)) { std::fprintf(stderr, "fmdv-macos: cannot read %s\n", file); return 1; }
         Document doc = ParseMarkdown(loadDoc(u8));
-        if (!out || !fmdv::RenderMarkdownToPng(doc, width, dark, out)) {
+        if (!fmdv::RenderMarkdownToPng(doc, width, dark, out)) {
             std::fprintf(stderr, "fmdv-macos: render failed\n");
             return 1;
         }
         std::printf("wrote %s (%zu blocks, width %.0f%s)\n", out, doc.blocks.size(), width, dark ? ", dark" : "");
         return 0;
     }
-    return fmdv::RunApp(file, dark); // open the AppKit window
+    // Window mode: `file` may be null (a bare .app launch opens a file panel; the
+    // Finder passes documents via the openFile: Apple Event, not argv).
+    return fmdv::RunApp(file, dark);
 }
