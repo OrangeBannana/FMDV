@@ -44,47 +44,8 @@ static bool HttpGet(const std::wstring& host, const std::wstring& path, std::str
     return ok;
 }
 
-static std::wstring Widen(const std::string& s) {
-    int need = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring w(need, L'\0');
-    if (need) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], need);
-    return w;
-}
-
-// Minimal scan of the releases payload: one "tag_name" per release, asset
-// "browser_download_url"s follow it. Escaped quotes in body text can't false-
-// match because the escape backslash breaks the `":"` pattern.
-bool ParseReleasesJson(const std::string& json, std::vector<ReleaseInfo>& out) {
-    static const char* TAG = "\"tag_name\":\"";
-    static const char* URL = "\"browser_download_url\":\"";
-    static const char* EXE = "/fmdv.exe";
-    size_t pos = 0;
-    while ((pos = json.find(TAG, pos)) != std::string::npos) {
-        pos += strlen(TAG);
-        size_t te = json.find('"', pos);
-        if (te == std::string::npos) break;
-        ReleaseInfo r;
-        r.tag = Widen(json.substr(pos, te - pos));
-
-        size_t next = json.find(TAG, te);
-        size_t u = json.find(URL, te);
-        while (u != std::string::npos && (next == std::string::npos || u < next)) {
-            size_t us = u + strlen(URL);
-            size_t ue = json.find('"', us);
-            if (ue == std::string::npos) break;
-            std::string cand = json.substr(us, ue - us);
-            if (cand.size() > strlen(EXE) &&
-                cand.compare(cand.size() - strlen(EXE), strlen(EXE), EXE) == 0) {
-                r.exeUrl = Widen(cand);
-                break;
-            }
-            u = json.find(URL, ue);
-        }
-        out.push_back(std::move(r));
-        pos = te;
-    }
-    return !out.empty();
-}
+// ReleaseInfo, ParseReleasesJson, and CompareVersions now live in the shared
+// core (core/release_info.*); this file keeps only the Win32 network/install glue.
 
 bool FetchReleases(std::vector<ReleaseInfo>& out) {
     std::string body;
@@ -156,22 +117,4 @@ std::wstring CurrentVersion() {
     wchar_t* o = _wgetenv(L"FMDV_VERSION_OVERRIDE");
     if (o && o[0]) return o;
     return FMDV_VERSION_WSTR;
-}
-
-int CompareVersions(const std::wstring& a, const std::wstring& b) {
-    size_t i = 0, j = 0;
-    if (i < a.size() && (a[i] == L'v' || a[i] == L'V')) i++;
-    if (j < b.size() && (b[j] == L'v' || b[j] == L'V')) j++;
-    while (i < a.size() || j < b.size()) {
-        long x = 0, y = 0;
-        while (i < a.size() && iswdigit(a[i])) x = x * 10 + (a[i++] - L'0');
-        while (j < b.size() && iswdigit(b[j])) y = y * 10 + (b[j++] - L'0');
-        if (x != y) return x < y ? -1 : 1;
-        if (i < a.size() && a[i] == L'.') i++;
-        if (j < b.size() && b[j] == L'.') j++;
-        // non-numeric suffixes (e.g. "-rc1") are ignored for ordering
-        if (i < a.size() && !iswdigit(a[i]) && a[i] != L'.') break;
-        if (j < b.size() && !iswdigit(b[j]) && b[j] != L'.') break;
-    }
-    return 0;
 }

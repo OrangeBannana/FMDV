@@ -15,8 +15,8 @@ COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null)
 INCLUDES := -Icpp -Icore
 DEFS     := -DFMDV_COMMIT=\"$(COMMIT)\" -DFMDV_BUILD=\"release\"
 
-CLI_SRCS := frontends/cli/fmdv_cli.cpp cpp/markdown.cpp core/edit_assist.cpp
-CLI_DEPS := core/bench_log.h core/edit_assist.h cpp/markdown.h
+CLI_SRCS := frontends/cli/fmdv_cli.cpp cpp/markdown.cpp core/edit_assist.cpp core/release_info.cpp
+CLI_DEPS := core/bench_log.h core/edit_assist.h core/release_info.h cpp/markdown.h
 CLI_BIN  := build/fmdv-cli
 
 .PHONY: cli check clean
@@ -37,6 +37,10 @@ check: cli
 	@test "`$(CLI_BIN) suggest --line '- ['`" = "caret=3 text= ] " || { echo "suggest checkbox FAILED"; exit 1; }
 	@$(CLI_BIN) table --cols 2 --rows 1 | grep -q '| Column 1 | Column 2 |' || { echo "table FAILED"; exit 1; }
 	@echo "edit helpers OK"
+	@echo "== releases/vercmp =="
+	@test "`$(CLI_BIN) vercmp v1.10.0 v1.9.9`" = "1" || { echo "vercmp FAILED"; exit 1; }
+	@test "`$(CLI_BIN) vercmp 1.0 1.0.0`" = "0" || { echo "vercmp eq FAILED"; exit 1; }
+	@echo "releases/vercmp OK"
 
 clean:
 	rm -rf build

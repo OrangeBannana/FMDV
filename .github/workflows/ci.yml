@@ -91,6 +91,8 @@ jobs:
           test -s build/bench.csv || { echo "bench log not written"; exit 1; }
           test "$(./build/fmdv-cli suggest --line '**')" = "caret=0 text=**" || { echo "suggest failed"; exit 1; }
           ./build/fmdv-cli table --cols 2 --rows 1 | grep -q '| Column 1 | Column 2 |' || { echo "table failed"; exit 1; }
+          test "$(./build/fmdv-cli vercmp v1.10.0 v1.9.9)" = "1" || { echo "vercmp failed"; exit 1; }
+          test "$(./build/fmdv-cli vercmp 1.0 1.0.0)" = "0" || { echo "vercmp eq failed"; exit 1; }
           echo "macOS CLI checks OK"
 
   release:

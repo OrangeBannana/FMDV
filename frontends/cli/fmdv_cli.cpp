@@ -15,6 +15,7 @@
 
 #include "markdown.h"
 #include "edit_assist.h"
+#include "release_info.h"
 #include "bench_log.h"
 
 #include <algorithm>
@@ -319,6 +320,28 @@ static int cmdTable(int cols, int rows) {
     return 0;
 }
 
+static int cmdReleases(const char* path) {
+    std::string json;
+    if (!readFileUtf8(path, json)) {
+        std::fprintf(stderr, "fmdv-cli: cannot read %s\n", path);
+        return 1;
+    }
+    std::vector<ReleaseInfo> rel;
+    ParseReleasesJson(json, rel);
+    std::printf("releases: %zu\n", rel.size());
+    for (const auto& r : rel) {
+        std::string exe = wToUtf8(r.exeUrl);
+        std::printf("%s\t%s\n", wToUtf8(r.tag).c_str(), exe.empty() ? "(no exe asset)" : exe.c_str());
+    }
+    return 0;
+}
+
+static int cmdVercmp(const char* a, const char* b) {
+    int c = CompareVersions(utf8ToW(a), utf8ToW(b));
+    std::printf("%d\n", c < 0 ? -1 : (c > 0 ? 1 : 0));
+    return 0;
+}
+
 static int usage() {
     std::fprintf(stderr,
         "fmdv-cli — FMDV command-line frontend\n\n"
@@ -326,7 +349,9 @@ static int usage() {
         "  fmdv-cli parse <file.md>                   dump the parsed Document model\n"
         "  fmdv-cli bench-parse <file.md> [--runs N]  time parsing (default N=100)\n"
         "  fmdv-cli suggest --line \"<text>\"           autocomplete for a line\n"
-        "  fmdv-cli table --cols N --rows M           markdown for a table\n\n"
+        "  fmdv-cli table --cols N --rows M           markdown for a table\n"
+        "  fmdv-cli releases <releases.json>          parse a GitHub releases payload\n"
+        "  fmdv-cli vercmp <a> <b>                    compare versions (-1/0/1)\n\n"
         "Env:\n"
         "  FMDV_BENCH_LOG    CSV path; benchmark rows are appended when set\n"
         "  FMDV_BENCH_LABEL  optional run label recorded in each row\n");
@@ -364,6 +389,14 @@ int main(int argc, char** argv) {
             else if (std::strcmp(argv[i], "--rows") == 0 && i + 1 < argc) rows = std::atoi(argv[++i]);
         }
         return cmdTable(cols, rows);
+    }
+    if (std::strcmp(cmd, "releases") == 0) {
+        if (argc < 3) return usage();
+        return cmdReleases(argv[2]);
+    }
+    if (std::strcmp(cmd, "vercmp") == 0) {
+        if (argc < 4) return usage();
+        return cmdVercmp(argv[2], argv[3]);
     }
     if (std::strcmp(cmd, "--help") == 0 || std::strcmp(cmd, "-h") == 0) {
         usage();
