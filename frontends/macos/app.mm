@@ -36,9 +36,10 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
 // Persisted UI preferences. macOS uses NSUserDefaults; the Win32 app stores the
 // same fields in %APPDATA%\fmdv\prefs.txt (dark / zoom / split). Update mode+pin
 // are Windows-only for now (the macOS updater is check-and-link, not install).
-static NSString* const kPrefDark     = @"FMDVDark";
-static NSString* const kPrefZoomPct  = @"FMDVZoomPct";
-static NSString* const kPrefSplitPct = @"FMDVSplitPct";
+static NSString* const kPrefDark         = @"FMDVDark";
+static NSString* const kPrefZoomPct      = @"FMDVZoomPct";
+static NSString* const kPrefSplitPct     = @"FMDVSplitPct";
+static NSString* const kPrefUpdateNotify = @"FMDVUpdateNotify"; // check on launch (default on)
 
 // File modification time (seconds since reference date; 0 if missing). Backs the
 // live-reload poll — the Win32 app watches the same mtime via a 500ms WM_TIMER.
@@ -607,6 +608,8 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
     bool _opened;
     NSTimeInterval _fileMtime;  // last-seen mtime of _file (live reload)
     NSTimer* _watchTimer;       // 500ms file-change poll
+    NSView* _updateBanner;      // passive "update available" strip (notify mode)
+    NSTextField* _updateLabel;  // banner text
 }
 - (instancetype)initWithFile:(const char*)file dark:(bool)dark;
 - (void)openPath:(NSString*)path;
@@ -704,6 +707,10 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
 - (void)applicationDidFinishLaunching:(NSNotification*)n {
     (void)n;
     [NSApp activateIgnoringOtherApps:YES];
+    // Passive update check runs after first paint (Windows: async, post-paint).
+    __unsafe_unretained FMDVAppDelegate* weak = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [weak maybeCheckUpdatesOnLaunch]; });
     if (_opened) return;                         // openFile: already loaded a document
     if (!_file.empty()) {
         NSString* f = [NSString stringWithUTF8String:_file.c_str()];
@@ -820,13 +827,24 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
     NSString* v = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
     return v.length ? v : @"1.1.0";
 }
-- (void)checkUpdates:(id)sender {
-    (void)sender;
+- (NSURLRequest*)releasesRequest {
     NSURL* url = [NSURL URLWithString:@"https://api.github.com/repos/OrangeBannana/FMDV/releases?per_page=30"];
     NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
     [req setValue:[@"fmdv-macos/" stringByAppendingString:[self currentVersion]] forHTTPHeaderField:@"User-Agent"];
+    return req;
+}
+// Newest release tag if it's newer than the running version, else nil.
+static NSString* NewerTag(const std::string& json, const Str& cur) {
+    std::vector<ReleaseInfo> rel;
+    ParseReleasesJson(json, rel);
+    const ReleaseInfo* newest = nullptr;
+    for (const auto& r : rel) if (!newest || CompareVersions(r.tag, newest->tag) > 0) newest = &r;
+    return (newest && CompareVersions(newest->tag, cur) > 0) ? StrToNS(newest->tag) : nil;
+}
+- (void)checkUpdates:(id)sender {
+    (void)sender;
     __unsafe_unretained FMDVAppDelegate* weak = self;
-    NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+    NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:[self releasesRequest]
         completionHandler:^(NSData* data, NSURLResponse* resp, NSError* err) {
             (void)resp; (void)err;
             NSData* d = [data retain];
@@ -861,6 +879,78 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
         [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/OrangeBannana/FMDV/releases"]];
     [a release];
 }
+
+// Passive notify (Windows: banner in UPDATE_NOTIFY mode). On launch, if enabled,
+// check GitHub silently and show a dismissible top banner only when a newer
+// release exists — no alert, no nagging when up to date or offline.
+- (BOOL)updateNotifyEnabled {
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    return [ud objectForKey:kPrefUpdateNotify] ? [ud boolForKey:kPrefUpdateNotify] : YES; // default on
+}
+- (void)toggleUpdateNotify:(id)sender {
+    BOOL now = ![self updateNotifyEnabled];
+    [[NSUserDefaults standardUserDefaults] setBool:now forKey:kPrefUpdateNotify];
+    if ([sender isKindOfClass:[NSMenuItem class]])
+        [(NSMenuItem*)sender setState:now ? NSControlStateValueOn : NSControlStateValueOff];
+    if (!now && _updateBanner) _updateBanner.hidden = YES;
+}
+- (void)maybeCheckUpdatesOnLaunch {
+    if (![self updateNotifyEnabled]) return;
+    __unsafe_unretained FMDVAppDelegate* weak = self;
+    Str cur = NSStringToStr([self currentVersion]);
+    NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:[self releasesRequest]
+        completionHandler:^(NSData* data, NSURLResponse* resp, NSError* err) {
+            (void)resp; (void)err;
+            if (!data.length) return;            // offline: stay silent
+            NSData* d = [data retain];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                std::string json((const char*)d.bytes, d.length);
+                [d release];
+                NSString* tag = NewerTag(json, cur);
+                if (tag) [weak showUpdateBanner:tag];
+            });
+        }];
+    [task resume];
+}
+- (void)openReleasesPage:(id)sender {
+    (void)sender;
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/OrangeBannana/FMDV/releases"]];
+}
+- (void)dismissUpdateBanner:(id)sender { (void)sender; if (_updateBanner) _updateBanner.hidden = YES; }
+- (void)positionUpdateBanner {
+    if (!_previewScroll || !_updateBanner) return;
+    double w = _updateBanner.frame.size.width, sw = _previewScroll.bounds.size.width;
+    _updateBanner.frame = NSMakeRect((sw - w) / 2, _previewScroll.bounds.size.height - 44, w, 34);
+}
+- (void)showUpdateBanner:(NSString*)tag {
+    [self ensureWindow];
+    if (!_previewScroll) return;
+    if (!_updateBanner) {
+        _updateBanner = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 380, 34)];
+        _updateBanner.wantsLayer = YES;
+        _updateBanner.layer.backgroundColor = [[NSColor controlAccentColor] CGColor];
+        _updateBanner.layer.cornerRadius = 8;
+        _updateBanner.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin | NSViewMinYMargin;
+        _updateLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(12, 8, 214, 20)];
+        _updateLabel.editable = NO; _updateLabel.bordered = NO; _updateLabel.drawsBackground = NO;
+        _updateLabel.textColor = [NSColor whiteColor];
+        _updateLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+        [_updateBanner addSubview:_updateLabel];
+        NSButton* view = [[NSButton alloc] initWithFrame:NSMakeRect(228, 5, 118, 24)];
+        [view setTitle:@"View Releases…"]; [view setBezelStyle:NSBezelStyleRounded];
+        [view setTarget:self]; [view setAction:@selector(openReleasesPage:)];
+        [_updateBanner addSubview:view]; [view release];
+        NSButton* x = [[NSButton alloc] initWithFrame:NSMakeRect(352, 6, 22, 22)];
+        [x setTitle:@"✕"]; [x setBordered:NO];
+        [x setTarget:self]; [x setAction:@selector(dismissUpdateBanner:)];
+        [_updateBanner addSubview:x]; [x release];
+    }
+    _updateLabel.stringValue = [NSString stringWithFormat:@"FMDV %@ is available", tag];
+    if (_updateBanner.superview != _previewScroll)
+        [_previewScroll addFloatingSubview:_updateBanner forAxis:NSEventGestureAxisVertical];
+    _updateBanner.hidden = NO;
+    [self positionUpdateBanner];
+}
 @end
 
 // ---------------- menu ----------------
@@ -872,6 +962,12 @@ static void buildMenu(id target) {
     [menubar addItem:appItem];
     NSMenu* appMenu = [[NSMenu alloc] init];
     [[appMenu addItemWithTitle:@"Check for Updates…" action:@selector(checkUpdates:) keyEquivalent:@"u"] setTarget:target];
+    NSMenuItem* notify = [appMenu addItemWithTitle:@"Check for Updates on Launch"
+                                            action:@selector(toggleUpdateNotify:) keyEquivalent:@""];
+    [notify setTarget:target];
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    BOOL on = [ud objectForKey:kPrefUpdateNotify] ? [ud boolForKey:kPrefUpdateNotify] : YES;
+    [notify setState:on ? NSControlStateValueOn : NSControlStateValueOff];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:@"Quit FMDV" action:@selector(terminate:) keyEquivalent:@"q"];
     [appItem setSubmenu:appMenu];

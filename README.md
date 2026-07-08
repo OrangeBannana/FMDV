@@ -58,9 +58,10 @@ continuation, and table insert (**⌘T**). It also reloads on external file
 changes and persists dark/zoom/split across launches. CI builds the CLI, the
 `.app`, and renders fixtures on `macos-latest`.
 
-Not yet at full parity: the **updater** is reduced (⌘U checks GitHub and links
-to Releases, but no in-app install), and packaging (signing/notarization, a
-macOS release artifact) is pending. The complete tracker is in
+Not yet at full parity: the **updater** has no in-app install — it checks GitHub
+on launch and shows a passive "update available" banner (⌘U for details), but
+auto-update/pin/install need the pending packaging work (signing/notarization,
+a macOS release artifact). The complete tracker is in
 [docs/macos-implementation-guide.md](docs/macos-implementation-guide.md#remaining-work).
 
 ## Source & build

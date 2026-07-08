@@ -558,12 +558,13 @@ Interpretation rules:
 > shows a TOC sidebar (Cmd+Shift+O), and has a lazy split editor with ghost-text
 > autocomplete, list continuation, and table insert.
 >
-> **The port is not yet at full Windows parity.** Live reload and preferences
-> persistence (dark/zoom/split) have since been implemented; the remaining
-> reduced feature is the full updater. Several live interactions have only been
-> compile/no-crash checked, and packaging (signing/notarization, a macOS release
-> artifact) is not done. The complete, honest list is in
-> **[Remaining Work](#remaining-work)** below.
+> **The port is not yet at full Windows parity.** Live reload, preferences
+> persistence (dark/zoom/split), and the passive update-notify banner have since
+> been implemented; the remaining reduced piece is the updater's **in-app
+> install** (auto-update / pin), which is blocked by packaging. Several live
+> interactions have only been compile/no-crash checked, and packaging
+> (signing/notarization, a macOS release artifact) is not done. The complete,
+> honest list is in **[Remaining Work](#remaining-work)** below.
 
 1. `bench/logging`: add unified benchmark logging and capture Windows baseline.
 2. `core/string-type`: choose the core string type (Phase 0.5) and migrate the
@@ -606,14 +607,13 @@ environment limitation, not a work item.)
   fields. An explicit `--dark` flag still forces dark for that launch. Update
   mode/pin are not persisted (the macOS updater is check-and-link, not install).
   *(Compiles + launches clean; restore-on-relaunch wants a hands-on pass.)*
-- ⬜ **Full updater.** Windows has a passive "update available" banner on launch,
-  three modes (notify / auto-update / pin any version, including downgrade), and
-  in-app install (running exe swapped, effective next launch). macOS has only
-  **Cmd+U → check + open the Releases page** — no passive notification, no
-  auto-update, no pin, no install. The check and version-compare already reuse
-  `core/release_info`. Full install is **blocked** by code signing and the
-  absence of a macOS release artifact (see §3); notify-banner + mode preference
-  could land independently.
+- 🔄 **Updater (partial).** Done: the passive "update available" banner on launch
+  (Windows `UPDATE_NOTIFY` parity) — a silent GitHub check shows a dismissible
+  top banner only when a newer release exists — plus a persisted "Check for
+  Updates on Launch" preference (`FMDVUpdateNotify`) and the manual Cmd+U check.
+  Still missing vs Windows: **auto-update**, **pin/downgrade**, and **in-app
+  install** (exe swap). Those are blocked by code signing + the absence of a
+  macOS release artifact (see §3), so they can't be closed on this branch.
 
 ### 2. Live macOS interactions — compile + no-crash only (logic is unit-tested)
 
@@ -632,6 +632,9 @@ CI):
   reparse path is smoke-tested; the visual update isn't screenshot-verified).
 - ⬜ Preferences: toggle dark/zoom, drag the editor split, relaunch, and confirm
   each is restored.
+- ⬜ Update banner: confirm it appears when a newer release exists, "View
+  Releases…" opens the page, ✕ dismisses, and the launch-check preference
+  toggles it off.
 
 ### 3. Packaging / distribution
 
