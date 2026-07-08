@@ -67,6 +67,8 @@ struct Match { long frag, start, len; }; // a find match within one fragment
 - (void)toggleDark;
 - (void)zoomBy:(double)factor;
 - (void)zoomReset;
+- (void)scrollToDocY:(double)docY;
+- (std::vector<fmdv::HeadingRef>)headings;
 @end
 
 @implementation FMDVPreviewView
@@ -382,6 +384,19 @@ struct Match { long frag, start, len; }; // a find match within one fragment
     [clip scrollToPoint:o];
     [sv reflectScrolledClipView:clip];
 }
+- (std::vector<fmdv::HeadingRef>)headings { return _layout.headings; }
+- (void)scrollToDocY:(double)docY {
+    NSScrollView* sv = self.enclosingScrollView;
+    if (!sv) return;
+    NSClipView* clip = sv.contentView;
+    NSPoint o = clip.bounds.origin;
+    o.y = docY * _zoom - 20;
+    double maxY = self.bounds.size.height - clip.bounds.size.height;
+    if (maxY < 0) maxY = 0;
+    if (o.y < 0) o.y = 0; else if (o.y > maxY) o.y = maxY;
+    [clip scrollToPoint:o];
+    [sv reflectScrolledClipView:clip];
+}
 
 // Keyboard scrolling parity with Windows: arrows, PgUp/PgDn, Home/End, Space.
 - (void)keyDown:(NSEvent*)ev {
@@ -455,14 +470,62 @@ struct Match { long frag, start, len; }; // a find match within one fragment
 }
 @end
 
+// ---------------- table-of-contents sidebar (Windows Ctrl+Shift+O) ----------------
+
+@interface FMDVTocView : NSView
+@property (nonatomic, copy) void (^onPick)(double docY);
+- (void)setHeadings:(const std::vector<fmdv::HeadingRef>&)h dark:(bool)dark;
+@end
+
+@implementation FMDVTocView {
+    std::vector<fmdv::HeadingRef> _items;
+    bool _dark;
+}
+static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
+- (BOOL)isFlipped { return YES; }
+- (void)setHeadings:(const std::vector<fmdv::HeadingRef>&)h dark:(bool)dark {
+    _items = h; _dark = dark; self.needsDisplay = YES;
+}
+- (void)drawRect:(NSRect)r {
+    (void)r;
+    NSColor* bg = _dark ? [NSColor colorWithSRGBRed:0x16/255.0 green:0x1b/255.0 blue:0x22/255.0 alpha:1]
+                        : [NSColor colorWithSRGBRed:0xf6/255.0 green:0xf8/255.0 blue:0xfa/255.0 alpha:1];
+    [bg set]; NSRectFill(self.bounds);
+    NSColor* border = _dark ? [NSColor colorWithWhite:1 alpha:0.10] : [NSColor colorWithWhite:0 alpha:0.10];
+    [border set]; NSRectFill(NSMakeRect(self.bounds.size.width - 1, 0, 1, self.bounds.size.height));
+    NSColor* fg = _dark ? [NSColor colorWithWhite:0.90 alpha:1]
+                        : [NSColor colorWithSRGBRed:0x24/255.0 green:0x29/255.0 blue:0x2f/255.0 alpha:1];
+    for (long i = 0; i < (long)_items.size(); i++) {
+        const auto& it = _items[i];
+        double fs = it.level <= 1 ? 13 : (it.level == 2 ? 12 : 11);
+        NSFont* font = [NSFont systemFontOfSize:fs
+                                         weight:(it.level <= 2 ? NSFontWeightSemibold : NSFontWeightRegular)];
+        NSColor* c = it.level <= 2 ? fg : [fg colorWithAlphaComponent:0.72];
+        NSDictionary* attrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: c};
+        double indent = TOC_PADX + (it.level - 1) * 12;
+        NSString* s = StrToNS(it.text);
+        NSRect box = NSMakeRect(indent, TOC_TOP + i * TOC_ROW + 4, self.bounds.size.width - indent - 6, TOC_ROW);
+        [s drawWithRect:box options:NSStringDrawingUsesLineFragmentOrigin attributes:attrs];
+    }
+}
+- (void)mouseDown:(NSEvent*)ev {
+    NSPoint p = [self convertPoint:ev.locationInWindow fromView:nil];
+    long i = (long)std::floor((p.y - TOC_TOP) / TOC_ROW);
+    if (i >= 0 && i < (long)_items.size() && self.onPick) self.onPick(_items[i].y);
+}
+@end
+
 // ---------------- window controller / app delegate ----------------
 
 @interface FMDVAppDelegate : NSObject <NSApplicationDelegate, NSTextViewDelegate> {
     NSWindow* _window;
+    NSView* _container;
     FMDVPreviewView* _preview;
     NSScrollView* _previewScroll;
     FMDVTextView* _textView;
     NSSplitView* _split;
+    FMDVTocView* _tocView;
+    bool _tocVisible;
     std::string _file;
     bool _editing;
     bool _dark;
@@ -491,15 +554,38 @@ struct Match { long frag, start, len; }; // a find match within one fragment
                     backing:NSBackingStoreBuffered defer:NO];
     [_window setTitle:@"FMDV"];
     [_window center];
+    _container = [[NSView alloc] initWithFrame:frame];
     _previewScroll = [[NSScrollView alloc] initWithFrame:frame];
     [_previewScroll setHasVerticalScroller:YES];
     [_previewScroll setAutohidesScrollers:YES];
     [_previewScroll setDrawsBackground:NO];
     _preview = [[FMDVPreviewView alloc] initWithDoc:Document() dark:_dark];
     [_previewScroll setDocumentView:_preview];
-    [_window setContentView:_previewScroll];
+    [_container addSubview:_previewScroll];
+    [_window setContentView:_container];
+    [self layoutPanes];
     [_window makeKeyAndOrderFront:nil];
     [_window makeFirstResponder:_preview];
+}
+
+// Position the optional TOC sidebar (left) and the main pane (preview or editor
+// split) that fills the rest; autoresizing then tracks window resizes.
+- (void)layoutPanes {
+    if (!_container) return;
+    NSRect b = _container.bounds;
+    double tocW = (_tocVisible && _tocView) ? 240 : 0;
+    if (_tocView) {
+        _tocView.hidden = !_tocVisible;
+        _tocView.frame = NSMakeRect(0, 0, tocW, b.size.height);
+        _tocView.autoresizingMask = NSViewHeightSizable | NSViewMaxXMargin;
+    }
+    NSView* main = _editing ? (NSView*)_split : (NSView*)_previewScroll;
+    main.frame = NSMakeRect(tocW, 0, b.size.width - tocW, b.size.height);
+    main.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+}
+
+- (void)refreshToc {
+    if (_tocVisible && _tocView) { auto h = [_preview headings]; [_tocView setHeadings:h dark:[_preview dark]]; }
 }
 
 - (void)openPath:(NSString*)path {
@@ -510,6 +596,7 @@ struct Match { long frag, start, len; }; // a find match within one fragment
     [_preview setDoc:doc];
     if (_textView) [_textView setString:StrToNS(LoadDoc(ReadFileUtf8(_file.c_str())))];
     [_window setTitle:path.lastPathComponent];
+    [self refreshToc];
 }
 
 - (BOOL)application:(NSApplication*)app openFile:(NSString*)filename {
@@ -533,13 +620,16 @@ struct Match { long frag, start, len; }; // a find match within one fragment
 - (void)reparseFromEditor {
     Document doc = ParseMarkdown(NSStringToStr(_textView.string));
     [_preview setDoc:doc];
+    [self refreshToc];
 }
 - (void)textDidChange:(NSNotification*)n { (void)n; [self reparseFromEditor]; }
+- (void)scrollPreviewToDocY:(double)y { [_preview scrollToDocY:y]; }
 
 - (void)toggleEditor:(id)sender {
     (void)sender;
+    [self ensureWindow];
     if (!_editing) {
-        NSRect b = _window.contentView.bounds;
+        NSRect b = _container.bounds;
         if (!_textView) {
             NSScrollView* tvScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, b.size.width / 2, b.size.height)];
             [tvScroll setHasVerticalScroller:YES];
@@ -548,25 +638,42 @@ struct Match { long frag, start, len; }; // a find match within one fragment
             [_textView setAutomaticQuoteSubstitutionEnabled:NO];
             [_textView setAutomaticDashSubstitutionEnabled:NO];
             [_textView setDelegate:self];
-            [_textView setString:StrToNS(LoadDoc(ReadFileUtf8(_file.c_str())))];
             [tvScroll setDocumentView:_textView];
-
             _split = [[NSSplitView alloc] initWithFrame:b];
             [_split setVertical:YES];
             [_split setDividerStyle:NSSplitViewDividerStyleThin];
-            [_split addSubview:tvScroll];
-            [_split addSubview:_previewScroll];
+            [_split addSubview:tvScroll];  // preview pane is reparented in below
         }
-        [_window setContentView:_split];
-        [_window makeFirstResponder:_textView];
+        [_textView setString:StrToNS(LoadDoc(ReadFileUtf8(_file.c_str())))];
+        [_previewScroll removeFromSuperview];
+        [_split addSubview:_previewScroll];   // move preview into the split's right pane
+        [_container addSubview:_split];
         _editing = true;
+        [self layoutPanes];
+        [_window makeFirstResponder:_textView];
         [self reparseFromEditor];
     } else {
-        [_previewScroll removeFromSuperview];
-        [_window setContentView:_previewScroll];
-        [_window makeFirstResponder:_preview];
+        [_previewScroll removeFromSuperview];  // pull preview back out of the split
+        [_split removeFromSuperview];
+        [_container addSubview:_previewScroll];
         _editing = false;
+        [self layoutPanes];
+        [_window makeFirstResponder:_preview];
     }
+}
+
+- (void)toggleContents:(id)sender {
+    (void)sender;
+    [self ensureWindow];
+    if (!_tocView) {
+        _tocView = [[FMDVTocView alloc] initWithFrame:NSMakeRect(0, 0, 240, _container.bounds.size.height)];
+        __unsafe_unretained FMDVAppDelegate* weak = self; // delegate outlives the view (MRC)
+        _tocView.onPick = ^(double y) { [weak scrollPreviewToDocY:y]; };
+        [_container addSubview:_tocView];
+    }
+    _tocVisible = !_tocVisible;
+    [self refreshToc];
+    [self layoutPanes];
 }
 
 - (void)saveDoc:(id)sender {
@@ -609,6 +716,10 @@ static void buildMenu(id target) {
     [menubar addItem:viewItem];
     NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
     [[viewMenu addItemWithTitle:@"Toggle Editor" action:@selector(toggleEditor:) keyEquivalent:@"e"] setTarget:target];
+    NSMenuItem* toc = [viewMenu addItemWithTitle:@"Toggle Contents"
+                                          action:@selector(toggleContents:) keyEquivalent:@"o"];
+    [toc setKeyEquivalentModifierMask:(NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+    [toc setTarget:target];
     [[viewMenu addItemWithTitle:@"Insert Table" action:@selector(insertTable:) keyEquivalent:@"t"] setTarget:target];
     [viewItem setSubmenu:viewMenu];
 

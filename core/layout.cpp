@@ -152,6 +152,8 @@ LayoutResult LayoutDocument(const Document& doc, double width,
             y += (b.level <= 2) ? 24 : 18;
             FontRole role = (FontRole)((int)FontRole::H1 + (b.level - 1));
             if ((int)role > (int)FontRole::H6) role = FontRole::H6;
+            Str htext; for (const auto& rn : b.runs) htext += rn.text;
+            res.headings.push_back({b.level, htext, y});
             y = layoutInline(cx, buildWords(cx, b.runs, role), cx.left, y);
             if (b.level <= 2) { y += 6; line(cx, cx.left, y, cx.right, y, th.border); y += 2; }
             y += 6;

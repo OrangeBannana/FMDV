@@ -72,9 +72,17 @@ struct LayoutTheme {
 LayoutTheme LightLayoutTheme();
 LayoutTheme DarkLayoutTheme();
 
+// A heading occurrence, for a table-of-contents sidebar (document-space top y).
+struct HeadingRef {
+    int level;
+    Str text;
+    double y;
+};
+
 struct LayoutResult {
     std::vector<DrawCommand> cmds;
     std::vector<LinkHit> links;
+    std::vector<HeadingRef> headings;
     double contentHeight = 0;
 };
 
