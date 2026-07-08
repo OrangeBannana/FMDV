@@ -63,18 +63,26 @@ content pipeline — consistent with FMDV's fast-first-paint goal.
 ## Windows vs macOS comparison
 
 The macOS (`macos`) and Windows (`win32`) frontends emit the **same 15-column
-schema**, so their `layout_once` / `paint_viewport_avg` rows are directly
-comparable. The macOS side is captured above; the Windows GUI side is pending a
-run on a Windows machine (below). Compare medians on similar hardware, noting
-that the two frontends use different layout engines (GDI vs the shared
-`core/layout`), so small metric differences are expected — compare structure and
-order of magnitude, not exact pixels.
+schema**, so their `layout_once` / `paint_viewport_avg` / `scroll_paint_avg`
+rows are directly comparable. Compare medians on similar hardware, noting that
+the two frontends use different layout engines (GDI vs the shared `core/layout`),
+so small metric differences are expected — compare structure and order of
+magnitude, not exact pixels.
+
+The macOS rows are captured above. The **win32 headless layout/render rows are
+now produced in CI**: the `build` (windows-latest) job runs `fmdv_dbg.exe
+--bench-render`, prints the rows, and uploads them as the `win32-bench` artifact
+(the macOS job likewise uploads `macos-bench`). Pull those from a CI run to fill
+the `win32` layout/render column here. The one metric CI cannot produce is **GUI
+first-paint/startup**, which needs a real Windows desktop with a window server
+(`--bench-startup`).
 
 ## Pending
 
-- **Windows GUI baseline** — the Windows frontend emits this schema
-  (`fmdv_dbg.exe … --bench-startup/--bench-render`); it needs a run on a Windows
-  machine to fill in the `win32` side of the comparison.
+- **Windows GUI first-paint** — `fmdv_dbg.exe … --bench-startup` needs a real
+  Windows desktop (CI has no window server). The layout/render rows are already
+  covered by the CI `win32-bench` artifact described above.
 - **Windows adoption of `core/layout`** — the shared engine currently backs the
-  macOS frontend; migrating `render.cpp` onto it (guide Step 2a/2b) is a
-  separate, Windows-tested step.
+  macOS frontend; migrating `render.cpp` onto it is a separate, Windows-tested
+  step. Plan:
+  [render → core/layout migration](../../docs/render-core-layout-migration.md).

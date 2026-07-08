@@ -650,13 +650,19 @@ CI):
   only the macOS frontend; Windows still lays out in its GDI `render.cpp`.
   Migrating `render.cpp` onto `core/layout` would give one shared layout path
   (and is the last structural item in "Definition of Done"). Optional — Windows
-  works as-is.
+  works as-is. A concrete, code-grounded step-by-step plan (Step 2a/2b, the
+  specific divergences to resolve, and the PNG-diff gates) is written up in
+  [render → core/layout migration](render-core-layout-migration.md). It is a
+  **Windows-tested** change and hasn't been started — there is no Windows
+  toolchain here to compile it or run the mandatory PNG diff.
 
 ### 5. Benchmarks
 
-- ⬜ **Windows GUI baseline.** Capture first-paint/scroll medians on a Windows
-  machine to fill the `win32` column of the comparison (milestone 13). The macOS
-  and CLI columns are recorded; the Windows GUI numbers need a Windows desktop.
+- 🔄 **Windows baseline.** The win32 headless **layout/render** rows now come from
+  CI — the `build` job prints them and uploads a `win32-bench` artifact (see
+  `bench/results/README.md`). Remaining: **GUI first-paint/startup**
+  (`--bench-startup`), which needs a real Windows desktop (CI has no window
+  server). The macOS and CLI columns are already recorded.
 
 ### 6. Known minor limitations (not necessarily blockers)
 

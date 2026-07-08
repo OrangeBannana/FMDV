@@ -52,7 +52,18 @@ jobs:
           foreach ($want in 'layout_once', 'paint_viewport_avg', 'scroll_paint_avg') {
             if ($bench -notmatch $want) { throw "bench log missing: $want" }
           }
+          # Surface the win32 layout/render rows for the Windows-vs-macOS comparison
+          # (bench/results/README.md). GUI first-paint still needs a real desktop.
+          Write-Host "---- win32 headless bench rows ----"
+          Write-Host $bench
+          Copy-Item $env:FMDV_BENCH_LOG win32-bench.csv
           Write-Host "headless checks OK"
+
+      - name: Upload win32 bench CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: win32-bench
+          path: win32-bench.csv
 
       # The full suite drives live windows (selection, clipboard, autocomplete).
       # It usually works on Windows runners but is inherently flakier than the
@@ -114,7 +125,14 @@ jobs:
           test "$(stat -f%z light.png)" -gt 3000 || { echo "png too small"; exit 1; }
           FMDV_BENCH_LOG=mac-bench.csv ./build/fmdv-macos --bench-render test.md --width 900 --runs 20
           grep -q 'macos,macos,.*layout_once' mac-bench.csv || { echo "bench schema wrong"; exit 1; }
+          echo "---- macos bench rows ----"; cat mac-bench.csv
           echo "macOS render OK"
+
+      - name: Upload macos bench CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-bench
+          path: mac-bench.csv
 
       - name: Build .app bundle
         run: |
