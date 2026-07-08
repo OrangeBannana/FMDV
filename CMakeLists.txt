@@ -27,7 +27,8 @@ add_library(fmdv_core STATIC
   core/markdown.cpp
   core/edit_assist.cpp
   core/release_info.cpp
-  core/layout.cpp)
+  core/layout.cpp
+  core/text_select.cpp)
 target_include_directories(fmdv_core PUBLIC core)
 if(MSVC)
   target_compile_options(fmdv_core PRIVATE /W4)

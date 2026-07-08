@@ -17,17 +17,17 @@ COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null)
 INCLUDES := -Icore
 DEFS     := -DFMDV_COMMIT=\"$(COMMIT)\" -DFMDV_BUILD=\"release\"
 
-CLI_SRCS := frontends/cli/fmdv_cli.cpp core/str.cpp core/markdown.cpp core/edit_assist.cpp core/release_info.cpp core/layout.cpp
+CLI_SRCS := frontends/cli/fmdv_cli.cpp core/str.cpp core/markdown.cpp core/edit_assist.cpp core/release_info.cpp core/layout.cpp core/text_select.cpp
 CLI_DEPS := core/str.h core/markdown.h core/edit_assist.h core/release_info.h core/layout.h core/bench_log.h
 CLI_BIN  := build/fmdv-cli
 
 # macOS frontend (headless renderer for now): CoreText/CoreGraphics via .mm.
-MAC_SRCS := frontends/macos/main.mm frontends/macos/app.mm frontends/macos/mac_render.mm core/str.cpp core/markdown.cpp core/layout.cpp core/edit_assist.cpp core/release_info.cpp
+MAC_SRCS := frontends/macos/main.mm frontends/macos/app.mm frontends/macos/mac_render.mm core/str.cpp core/markdown.cpp core/layout.cpp core/edit_assist.cpp core/release_info.cpp core/text_select.cpp
 MAC_DEPS := frontends/macos/mac_render.h core/layout.h core/markdown.h core/str.h
 MAC_FRAMEWORKS := -framework Cocoa -framework CoreGraphics -framework CoreText -framework ImageIO
 MAC_BIN  := build/fmdv-macos
 
-.PHONY: cli macos check clean
+.PHONY: cli macos app test check clean
 cli: $(CLI_BIN)
 
 $(CLI_BIN): $(CLI_SRCS) $(CLI_DEPS)
@@ -66,7 +66,17 @@ $(APP): $(MAC_BIN) build/AppIcon.icns frontends/macos/Info.plist
 	printf 'APPL????' > $(APP)/Contents/PkgInfo
 	@echo "built $(APP)"
 
-check: cli
+TEST_BIN := build/text-select-test
+$(TEST_BIN): tests/text_select_test.cpp core/text_select.cpp core/text_select.h core/str.cpp core/str.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/text_select_test.cpp core/text_select.cpp core/str.cpp -o $(TEST_BIN)
+
+test: $(TEST_BIN)
+	@$(TEST_BIN)
+
+check: cli test
+	@echo "== unit tests (text_select) =="
+	@$(TEST_BIN) | tail -1
 	@echo "== parse test.md =="
 	@$(CLI_BIN) parse test.md | head -n 5
 	@echo "== bench-parse test.md =="

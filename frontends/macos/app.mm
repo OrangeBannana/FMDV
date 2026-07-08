@@ -12,6 +12,7 @@
 #include "markdown.h"
 #include "edit_assist.h"
 #include "release_info.h"
+#include "text_select.h"
 #include "str.h"
 
 static std::string ReadFileUtf8(const char* path) {
@@ -42,8 +43,6 @@ struct Frag {
     Str text;
     double baseline;
 };
-struct Match { long frag, start, len; }; // a find match within one fragment
-
 @interface FMDVPreviewView : NSView <NSTextFieldDelegate> {
     Document _doc;
     fmdv::LayoutResult _layout;
@@ -59,7 +58,7 @@ struct Match { long frag, start, len; }; // a find match within one fragment
     NSView* _findBar;
     NSTextField* _findField;
     NSTextField* _findLabel;
-    std::vector<Match> _matches;
+    std::vector<fmdv::FindMatch> _matches;
     long _curMatch;
 }
 - (instancetype)initWithDoc:(const Document&)doc dark:(bool)dark;
@@ -183,11 +182,18 @@ struct Match { long frag, start, len; }; // a find match within one fragment
     }
     return out;
 }
-- (fmdv::RectF)matchRect:(const Match&)m {
+- (fmdv::RectF)matchRect:(const fmdv::FindMatch&)m {
     const Frag& f = _frags[m.frag];
     double x0 = [self xInFrag:f upto:m.start];
     double x1 = [self xInFrag:f upto:m.start + m.len];
     return {f.box.x + x0, f.box.y, x1 - x0, f.box.h};
+}
+// Fragment text + geometry for the pure find/selection helpers.
+- (std::vector<fmdv::SelFrag>)selFrags {
+    std::vector<fmdv::SelFrag> v;
+    v.reserve(_frags.size());
+    for (const Frag& f : _frags) v.push_back({f.text, f.box.x, f.box.w, f.baseline});
+    return v;
 }
 // All highlights drawn behind text: selection (theme colour) + find matches.
 - (std::vector<fmdv::ColoredRect>)allHighlights {
@@ -202,19 +208,7 @@ struct Match { long frag, start, len; }; // a find match within one fragment
 - (NSString*)selectedString {
     if (!_hasSel) return @"";
     long a, aCh, b, bCh; [self normSelA:&a aCh:&aCh b:&b bCh:&bCh];
-    Str out;
-    for (long i = a; i <= b && i < (long)_frags.size(); i++) {
-        const Frag& f = _frags[i];
-        long c0 = (i == a) ? aCh : 0;
-        long c1 = (i == b) ? bCh : (long)f.text.size();
-        if (i > a) {
-            const Frag& prev = _frags[i - 1];
-            if (std::abs(f.baseline - prev.baseline) > 1) out += U16("\n");
-            else if (f.box.x - (prev.box.x + prev.box.w) > 2) out += U16(" ");
-        }
-        if (c1 > c0) out.append(f.text, c0, c1 - c0);
-    }
-    return StrToNS(out);
+    return StrToNS(fmdv::SelectionText([self selFrags], a, aCh, b, bCh));
 }
 - (void)copySelection {
     NSString* s = [self selectedString];
@@ -312,20 +306,9 @@ struct Match { long frag, start, len; }; // a find match within one fragment
     [self scrollRectToVisible:NSMakeRect(r.x * _zoom, (r.y - 60) * _zoom, r.w * _zoom, (r.h + 120) * _zoom)];
 }
 - (void)updateMatches {
-    _matches.clear(); _curMatch = -1;
-    auto lc = [](Str s) { for (Char& c : s) if (c >= U16('A') && c <= U16('Z')) c = c - U16('A') + U16('a'); return s; };
-    Str q = lc(NSStringToStr(_findField.stringValue));
-    if (!q.empty()) {
-        for (long i = 0; i < (long)_frags.size(); i++) {
-            Str hay = lc(_frags[i].text);
-            size_t pos = 0;
-            while ((pos = hay.find(q, pos)) != Str::npos) {
-                _matches.push_back({i, (long)pos, (long)q.size()});
-                pos += q.size();
-            }
-        }
-        if (!_matches.empty()) { _curMatch = 0; [self scrollToCurrent]; }
-    }
+    _matches = fmdv::FindMatches([self selFrags], NSStringToStr(_findField.stringValue));
+    _curMatch = _matches.empty() ? -1 : 0;
+    if (_curMatch == 0) [self scrollToCurrent];
     [self updateFindLabel];
     self.needsDisplay = YES;
 }
