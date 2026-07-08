@@ -551,11 +551,13 @@ Interpretation rules:
 
 ## Recommended Milestones
 
-> **Status.** Milestones 1–13 are implemented on the branch and green in CI
-> (Windows build + a `macos-latest` job that builds the CLI and the AppKit app,
-> runs the unit tests, and renders fixtures). The macOS app opens files, renders
-> (light/dark), scrolls, zooms, selects/copies, follows links, finds (Cmd+F),
-> shows a TOC sidebar (Cmd+Shift+O), and has a lazy split editor with ghost-text
+> **Status (updated 2026-07-08).** Milestones 2–6 and 8–12 are complete and green
+> in CI (Windows build + a `macos-latest` job that builds the CLI and the AppKit
+> app, runs the unit tests, and renders fixtures). Milestones 1, 7, and 13 have
+> Windows-side remainders (benchmark capture and the GDI→`core/layout` migration
+> — see Remaining Work §4/§5). The macOS app opens files, renders (light/dark),
+> scrolls, zooms, selects/copies, follows links, finds (Cmd+F), shows a TOC
+> sidebar (Cmd+Shift+O), and has a lazy split editor with ghost-text
 > autocomplete, list continuation, and table insert.
 >
 > **The port is not yet at full Windows parity.** Live reload, preferences
@@ -589,9 +591,24 @@ Interpretation rules:
 ## Remaining Work
 
 Tracker for everything left before the macOS port reaches Windows parity and is
-shippable. Status key: ⬜ todo · 🔄 in progress · ✅ done. Grouped by kind, most
-impactful first. (Excludes running the app on a Windows machine, which is an
-environment limitation, not a work item.)
+shippable. Status key: ⬜ todo · 🔄 in progress · ✅ done · ⛔ blocked. Grouped by
+kind, most impactful first. (Excludes running the app on a Windows machine, which
+is an environment limitation, not a work item.)
+
+### At a glance (updated 2026-07-08)
+
+| Area | Status |
+| --- | --- |
+| Core render / interaction / editor features (render, scroll, zoom, dark, select+copy, links, find, TOC, editor, autocomplete, list continuation, table) | ✅ done |
+| Live reload on external change | ✅ done |
+| Preferences persistence (dark / zoom / split) | ✅ done |
+| Updater — notify banner + launch-check preference | ✅ done |
+| Updater — auto-update / pin / in-app install | ⛔ blocked by packaging (§3) |
+| Hands-on Mac QA of live interactions (§2) | ⬜ needs a Mac desktop |
+| Packaging — code signing / notarization + release artifact (§3) | ⬜ todo |
+| Windows layout-engine unification (§4) | ⬜ planned (Windows-tested) |
+| Windows benchmark — layout/render (§5) | 🔄 captured via CI artifact |
+| Windows benchmark — GUI first-paint (§5) | ⬜ needs a Windows desktop |
 
 ### 1. Feature parity gaps — Windows has these; macOS does not yet
 
