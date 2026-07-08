@@ -437,7 +437,66 @@ struct Match { long frag, start, len; }; // a find match within one fragment
 @interface FMDVTextView : NSTextView
 @end
 
-@implementation FMDVTextView
+@implementation FMDVTextView {
+    NSString* _ghost;       // autocomplete overlay (not in the text buffer); nil = none
+    NSInteger _ghostCaret;  // caret offset within _ghost after Tab-commit
+}
+- (void)dealloc { [_ghost release]; [super dealloc]; }
+
+// ---- markdown autocomplete ghost text (Windows: gray overlay, Tab commits) ----
+- (void)setGhost:(NSString*)g caret:(NSInteger)c {
+    if (g != _ghost) { [_ghost release]; _ghost = [g retain]; }
+    _ghostCaret = c;
+    self.needsDisplay = YES;
+}
+- (void)updateGhost {
+    NSRange sel = self.selectedRange;
+    NSString* g = nil; NSInteger gc = 0;
+    if (sel.length == 0) {
+        NSString* s = self.string;
+        NSUInteger caret = sel.location;
+        BOOL atLineEnd = (caret >= s.length) || [s characterAtIndex:caret] == '\n';
+        if (atLineEnd) {
+            NSUInteger ls = caret;
+            while (ls > 0 && [s characterAtIndex:ls - 1] != '\n') ls--;
+            fmdv::Suggestion sg = fmdv::SuggestClose(NSStringToStr([s substringWithRange:NSMakeRange(ls, caret - ls)]));
+            if (!sg.text.empty()) { g = StrToNS(sg.text); gc = sg.caret; }
+        }
+    }
+    [self setGhost:g caret:gc];
+}
+- (void)setSelectedRanges:(NSArray<NSValue*>*)ranges affinity:(NSSelectionAffinity)aff stillSelecting:(BOOL)flag {
+    [super setSelectedRanges:ranges affinity:aff stillSelecting:flag];
+    [self updateGhost]; // fires on every caret move / edit
+}
+- (void)drawRect:(NSRect)r {
+    [super drawRect:r];
+    if (_ghost.length == 0) return;
+    NSUInteger caret = self.selectedRange.location;
+    NSRect scr = [self firstRectForCharacterRange:NSMakeRange(caret, 0) actualRange:NULL];
+    if (scr.size.height == 0) return;
+    NSPoint pt = [self convertPoint:[self.window convertRectFromScreen:scr].origin fromView:nil];
+    NSDictionary* attrs = @{ NSFontAttributeName: (self.font ?: [NSFont userFixedPitchFontOfSize:13]),
+                             NSForegroundColorAttributeName: [NSColor tertiaryLabelColor] };
+    [_ghost drawAtPoint:pt withAttributes:attrs];
+}
+- (void)insertTab:(id)sender {
+    if (_ghost.length == 0) { [super insertTab:sender]; return; }
+    NSString* g = [[_ghost retain] autorelease];
+    NSInteger gc = _ghostCaret;
+    [self setGhost:nil caret:0];
+    NSRange sel = self.selectedRange;
+    if ([self shouldChangeTextInRange:sel replacementString:g]) {
+        [self replaceCharactersInRange:sel withString:g];
+        [self didChangeText];
+        [self setSelectedRange:NSMakeRange(sel.location + gc, 0)];
+    }
+}
+- (void)cancelOperation:(id)sender {
+    if (_ghost.length) { [self setGhost:nil caret:0]; return; }
+    [super cancelOperation:sender];
+}
+
 - (void)insertNewline:(id)sender {
     NSString* s = self.string;
     NSUInteger caret = self.selectedRange.location;
