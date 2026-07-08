@@ -667,7 +667,11 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
     (void)n;
     [NSApp activateIgnoringOtherApps:YES];
     if (_opened) return;                         // openFile: already loaded a document
-    if (!_file.empty()) { [self openPath:[NSString stringWithUTF8String:_file.c_str()]]; return; }
+    if (!_file.empty()) {
+        NSString* f = [NSString stringWithUTF8String:_file.c_str()];
+        if ([[NSFileManager defaultManager] isReadableFileAtPath:f]) { [self openPath:f]; return; }
+        // an unreadable path argument would show a blank window; fall through to the panel
+    }
     NSOpenPanel* panel = [NSOpenPanel openPanel];
     [panel setAllowsMultipleSelection:NO];
     if ([panel runModal] == NSModalResponseOK && panel.URLs.count > 0)
