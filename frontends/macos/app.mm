@@ -476,10 +476,13 @@ struct Match { long frag, start, len; }; // a find match within one fragment
     NSUInteger caret = self.selectedRange.location;
     NSRect scr = [self firstRectForCharacterRange:NSMakeRange(caret, 0) actualRange:NULL];
     if (scr.size.height == 0) return;
-    NSPoint pt = [self convertPoint:[self.window convertRectFromScreen:scr].origin fromView:nil];
+    // firstRect is screen coords (y-up); take the caret line's TOP-LEFT and map
+    // into this flipped view so drawAtPoint (top-left) lands inline with the caret.
+    NSPoint topLeft = [self convertPoint:[self.window convertPointFromScreen:NSMakePoint(NSMinX(scr), NSMaxY(scr))]
+                                fromView:nil];
     NSDictionary* attrs = @{ NSFontAttributeName: (self.font ?: [NSFont userFixedPitchFontOfSize:13]),
                              NSForegroundColorAttributeName: [NSColor tertiaryLabelColor] };
-    [_ghost drawAtPoint:pt withAttributes:attrs];
+    [_ghost drawAtPoint:topLeft withAttributes:attrs];
 }
 - (void)insertTab:(id)sender {
     if (_ghost.length == 0) { [super insertTab:sender]; return; }
