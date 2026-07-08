@@ -41,8 +41,9 @@ struct Frag {
     Str text;
     double baseline;
 };
+struct Match { long frag, start, len; }; // a find match within one fragment
 
-@interface FMDVPreviewView : NSView {
+@interface FMDVPreviewView : NSView <NSTextFieldDelegate> {
     Document _doc;
     fmdv::LayoutResult _layout;
     fmdv::CoreTextMeasurer _tm;
@@ -53,6 +54,12 @@ struct Frag {
     long _selA, _selACh, _selB, _selBCh;    // selection endpoints (frag index + char)
     bool _hasSel;
     bool _dragging;
+    // find in doc
+    NSView* _findBar;
+    NSTextField* _findField;
+    NSTextField* _findLabel;
+    std::vector<Match> _matches;
+    long _curMatch;
 }
 - (instancetype)initWithDoc:(const Document&)doc dark:(bool)dark;
 - (void)setDoc:(const Document&)doc;
@@ -92,7 +99,9 @@ struct Frag {
         _frags.push_back(std::move(f));
     }
     _hasSel = false;
+    _matches.clear(); _curMatch = -1;
     [self setFrameSize:NSMakeSize(viewW, _layout.contentHeight * _zoom)];
+    if (_findBar && !_findBar.hidden) [self updateMatches];
     self.needsDisplay = YES;
 }
 - (void)setDoc:(const Document&)doc { _doc = doc; [self relayout]; }
@@ -113,8 +122,8 @@ struct Frag {
     // (verified by the PNG path) applies unchanged; also applies zoom.
     CGContextTranslateCTM(ctx, 0, self.bounds.size.height);
     CGContextScaleCTM(ctx, _zoom, -_zoom);
-    std::vector<fmdv::RectF> sel = [self selectionRects];
-    fmdv::PaintLayout(ctx, _layout.contentHeight, _layout, [self theme], _tm, &sel);
+    std::vector<fmdv::ColoredRect> hl = [self allHighlights];
+    fmdv::PaintLayout(ctx, _layout.contentHeight, _layout, [self theme], _tm, &hl);
     CGContextRestoreGState(ctx);
 }
 
@@ -169,6 +178,22 @@ struct Frag {
         double x1 = (i == b) ? [self xInFrag:f upto:bCh] : f.box.w;
         if (x1 > x0) out.push_back({f.box.x + x0, f.box.y, x1 - x0, f.box.h});
     }
+    return out;
+}
+- (fmdv::RectF)matchRect:(const Match&)m {
+    const Frag& f = _frags[m.frag];
+    double x0 = [self xInFrag:f upto:m.start];
+    double x1 = [self xInFrag:f upto:m.start + m.len];
+    return {f.box.x + x0, f.box.y, x1 - x0, f.box.h};
+}
+// All highlights drawn behind text: selection (theme colour) + find matches.
+- (std::vector<fmdv::ColoredRect>)allHighlights {
+    std::vector<fmdv::ColoredRect> out;
+    fmdv::LayoutTheme th = [self theme];
+    for (const auto& r : [self selectionRects]) out.push_back({r, th.sel});
+    fmdv::Color hit{250, 220, 90}, cur{255, 168, 40};
+    for (long i = 0; i < (long)_matches.size(); i++)
+        out.push_back({[self matchRect:_matches[i]], (i == _curMatch) ? cur : hit});
     return out;
 }
 - (NSString*)selectedString {
@@ -232,6 +257,94 @@ struct Frag {
     }
 }
 
+// ---- find in doc (Windows Ctrl+F): highlight all matches, step, wraparound ----
+- (void)positionFindBar {
+    NSScrollView* sv = self.enclosingScrollView;
+    if (!sv || !_findBar) return;
+    _findBar.frame = NSMakeRect(sv.bounds.size.width - 320, sv.bounds.size.height - 44, 300, 36);
+}
+- (void)showFind {
+    NSScrollView* sv = self.enclosingScrollView;
+    if (!sv) return;
+    if (!_findBar) {
+        _findBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 300, 36)];
+        _findBar.wantsLayer = YES;
+        _findBar.layer.backgroundColor = [[NSColor windowBackgroundColor] CGColor];
+        _findBar.layer.borderColor = [[NSColor separatorColor] CGColor];
+        _findBar.layer.borderWidth = 1;
+        _findBar.layer.cornerRadius = 6;
+        _findBar.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
+        _findField = [[NSTextField alloc] initWithFrame:NSMakeRect(8, 7, 202, 22)];
+        _findField.placeholderString = @"Find";
+        _findField.bezelStyle = NSTextFieldRoundedBezel;
+        _findField.delegate = self;
+        [_findBar addSubview:_findField];
+        _findLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(216, 8, 76, 20)];
+        _findLabel.editable = NO; _findLabel.bordered = NO; _findLabel.drawsBackground = NO;
+        _findLabel.textColor = [NSColor secondaryLabelColor];
+        [_findBar addSubview:_findLabel];
+    }
+    if (_findBar.superview != sv) [sv addFloatingSubview:_findBar forAxis:NSEventGestureAxisVertical];
+    _findBar.hidden = NO;
+    [self positionFindBar];
+    [self updateMatches];
+    [self.window makeFirstResponder:_findField];
+}
+- (void)closeFind {
+    if (_findBar) _findBar.hidden = YES;
+    _matches.clear(); _curMatch = -1;
+    [self.window makeFirstResponder:self];
+    self.needsDisplay = YES;
+}
+- (void)updateFindLabel {
+    if (!_findLabel) return;
+    if (!_matches.empty())
+        _findLabel.stringValue = [NSString stringWithFormat:@"%ld/%zu", _curMatch + 1, _matches.size()];
+    else
+        _findLabel.stringValue = _findField.stringValue.length ? @"0/0" : @"";
+}
+- (void)scrollToCurrent {
+    if (_curMatch < 0 || _curMatch >= (long)_matches.size()) return;
+    fmdv::RectF r = [self matchRect:_matches[_curMatch]];
+    [self scrollRectToVisible:NSMakeRect(r.x * _zoom, (r.y - 60) * _zoom, r.w * _zoom, (r.h + 120) * _zoom)];
+}
+- (void)updateMatches {
+    _matches.clear(); _curMatch = -1;
+    auto lc = [](Str s) { for (Char& c : s) if (c >= U16('A') && c <= U16('Z')) c = c - U16('A') + U16('a'); return s; };
+    Str q = lc(NSStringToStr(_findField.stringValue));
+    if (!q.empty()) {
+        for (long i = 0; i < (long)_frags.size(); i++) {
+            Str hay = lc(_frags[i].text);
+            size_t pos = 0;
+            while ((pos = hay.find(q, pos)) != Str::npos) {
+                _matches.push_back({i, (long)pos, (long)q.size()});
+                pos += q.size();
+            }
+        }
+        if (!_matches.empty()) { _curMatch = 0; [self scrollToCurrent]; }
+    }
+    [self updateFindLabel];
+    self.needsDisplay = YES;
+}
+- (void)stepFind:(int)dir {
+    if (_matches.empty()) return;
+    _curMatch = (_curMatch + dir + (long)_matches.size()) % (long)_matches.size();
+    [self scrollToCurrent];
+    [self updateFindLabel];
+    self.needsDisplay = YES;
+}
+- (void)controlTextDidChange:(NSNotification*)n { (void)n; [self updateMatches]; }
+- (BOOL)control:(NSControl*)ctl textView:(NSTextView*)tv doCommandBySelector:(SEL)sel {
+    (void)ctl; (void)tv;
+    if (sel == @selector(insertNewline:)) {
+        BOOL shift = ([NSApp currentEvent].modifierFlags & NSEventModifierFlagShift) != 0;
+        [self stepFind:shift ? -1 : 1];
+        return YES;
+    }
+    if (sel == @selector(cancelOperation:)) { [self closeFind]; return YES; }
+    return NO;
+}
+
 - (BOOL)performKeyEquivalent:(NSEvent*)ev {
     if (ev.modifierFlags & NSEventModifierFlagCommand) {
         NSString* c = ev.charactersIgnoringModifiers;
@@ -239,8 +352,11 @@ struct Frag {
         if ([c isEqualToString:@"="] || [c isEqualToString:@"+"]) { [self zoomBy:1.1]; return YES; }
         if ([c isEqualToString:@"-"]) { [self zoomBy:1.0 / 1.1]; return YES; }
         if ([c isEqualToString:@"0"]) { [self zoomReset]; return YES; }
-        if ([c isEqualToString:@"a"]) { [self selectAll:nil]; return YES; }
-        if ([c isEqualToString:@"c"]) { [self copySelection]; return YES; }
+        if ([c isEqualToString:@"f"]) { [self showFind]; return YES; }
+        // select-all / copy belong to the editor when it's focused
+        BOOL previewFocused = (self.window.firstResponder == self);
+        if (previewFocused && [c isEqualToString:@"a"]) { [self selectAll:nil]; return YES; }
+        if (previewFocused && [c isEqualToString:@"c"]) { [self copySelection]; return YES; }
     }
     return [super performKeyEquivalent:ev];
 }

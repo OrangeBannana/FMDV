@@ -83,7 +83,7 @@ static CGColorRef cg(CGColorSpaceRef cs, Color c) {
 
 void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
                  const LayoutTheme& th, CoreTextMeasurer& tm,
-                 const std::vector<RectF>* selRects) {
+                 const std::vector<ColoredRect>* highlights) {
     double H = height;
     CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
 
@@ -96,13 +96,14 @@ void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
     CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
     auto flipY = [&](double docY) { return H - docY; }; // top-left -> CG bottom-left
 
-    // selection highlight, behind the text
-    if (selRects && !selRects->empty()) {
-        CGColorRef sc = cg(cs, th.sel);
-        CGContextSetFillColorWithColor(ctx, sc);
-        for (const RectF& s : *selRects)
-            CGContextFillRect(ctx, CGRectMake(s.x, flipY(s.y + s.h), s.w, s.h));
-        CGColorRelease(sc);
+    // highlights (selection, find matches, ...), behind the text
+    if (highlights) {
+        for (const ColoredRect& h : *highlights) {
+            CGColorRef hc = cg(cs, h.color);
+            CGContextSetFillColorWithColor(ctx, hc);
+            CGContextFillRect(ctx, CGRectMake(h.rect.x, flipY(h.rect.y + h.rect.h), h.rect.w, h.rect.h));
+            CGColorRelease(hc);
+        }
     }
 
     for (const DrawCommand& c : r.cmds) {
