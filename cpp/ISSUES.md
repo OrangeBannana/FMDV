@@ -99,13 +99,26 @@ Round 8 — PERF: cached layout + visible-range painting:
   paint time from cached frags, so it still updates without relayout. Ctrl+D relayouts
   once (colors are baked into the cached commands). All 47 tests still green.
 
+Shipped since round 8 (see cpp/README.md for behavior):
+- ✅ **Find in doc (Ctrl+F)** — highlights all matches, Enter/Shift+Enter step with
+  wraparound, Esc closes. (find/selection logic now lives in `core/text_select`.)
+- ✅ **TOC sidebar (Ctrl+Shift+O)** — headings from the current doc; click to jump.
+- ✅ **Content-aware table columns + cell wrapping** — columns size to the widest
+  cell and wrap instead of overflowing a narrow pane.
+- ✅ **In-app updater (Ctrl+U)** — GitHub Releases list, install any version, modes
+  notify/auto-update/pin (`core/release_info` for parse + version compare).
+
 Remaining roadmap (not yet done):
 - Smarter fence re-trigger suppression on the closing ```
 - Incremental relayout on edit (currently full relayout per keystroke — fine for now)
 - Off-thread / debounced parse
-- Content-aware table columns + cell wrapping
-- DirectWrite renderer; RichEdit editor; find-in-doc (Ctrl+F); TOC sidebar
+- DirectWrite renderer; RichEdit editor
 - Selection in the editor pane already works (native EDIT control)
+
+> **macOS port.** The parser, edit helpers, layout, find/selection, and release
+> logic now live in a shared `core/` consumed by a native AppKit frontend
+> (`frontends/macos/`). Remaining-work tracker:
+> [docs/macos-implementation-guide.md](../docs/macos-implementation-guide.md#remaining-work).
 
 ## Open bugs
 _(none)_

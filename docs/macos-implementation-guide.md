@@ -552,13 +552,17 @@ Interpretation rules:
 ## Recommended Milestones
 
 > **Status.** Milestones 1–13 are implemented on the branch and green in CI
-> (Windows build + a `macos-latest` job that builds the CLI and the AppKit app
-> and renders fixtures). Two items remain for a Windows machine / interactive
-> Mac: capturing the Windows GUI benchmark baseline (milestone 13's `win32`
-> column), and migrating `render.cpp` onto the shared `core/layout` (milestone 7
-> currently backs the macOS frontend; Windows keeps its GDI renderer). The live
-> macOS window/editor interactions compile and launch without crashing but need
-> a hands-on pass on a Mac desktop (screen capture isn't available in CI).
+> (Windows build + a `macos-latest` job that builds the CLI and the AppKit app,
+> runs the unit tests, and renders fixtures). The macOS app opens files, renders
+> (light/dark), scrolls, zooms, selects/copies, follows links, finds (Cmd+F),
+> shows a TOC sidebar (Cmd+Shift+O), and has a lazy split editor with ghost-text
+> autocomplete, list continuation, and table insert.
+>
+> **The port is not yet at full Windows parity.** Three Windows features are
+> missing or reduced on macOS (live reload, preferences persistence, the full
+> updater), several live interactions have only been compile/no-crash checked,
+> and packaging (signing/notarization, a macOS release artifact) is not done.
+> The complete, honest list is in **[Remaining Work](#remaining-work)** below.
 
 1. `bench/logging`: add unified benchmark logging and capture Windows baseline.
 2. `core/string-type`: choose the core string type (Phase 0.5) and migrate the
@@ -579,6 +583,83 @@ Interpretation rules:
 11. `macos/interactions`: scrolling, selection/copy, links, dark mode, zoom.
 12. `macos/editor`: lazy split editor, save, autocomplete, table picker.
 13. `compare`: publish Windows vs macOS timing summary.
+
+## Remaining Work
+
+Tracker for everything left before the macOS port reaches Windows parity and is
+shippable. Status key: ⬜ todo · 🔄 in progress · ✅ done. Grouped by kind, most
+impactful first. (Excludes running the app on a Windows machine, which is an
+environment limitation, not a work item.)
+
+### 1. Feature parity gaps — Windows has these; macOS does not yet
+
+- ⬜ **Live reload on external file change.** Windows polls the file's mtime
+  (`WM_TIMER`, ~500 ms) and reloads the preview when the file changes on disk,
+  skipping while the editor is focused. macOS has **no file watcher**. Add one
+  via `dispatch_source` (VNODE) or FSEvents; reparse + relayout on change; skip
+  while editing. *(Implementable and verifiable on macOS.)*
+- ⬜ **Preferences persistence.** Windows saves dark mode, zoom, split ratio, and
+  update mode/pin to `%APPDATA%\fmdv\prefs.txt` and restores them on launch.
+  macOS persists **nothing** — every launch resets to defaults. Add
+  `NSUserDefaults` (or `~/Library/Application Support/FMDV/prefs.txt`) and load
+  it before first paint. *(Implementable and verifiable on macOS.)*
+- ⬜ **Full updater.** Windows has a passive "update available" banner on launch,
+  three modes (notify / auto-update / pin any version, including downgrade), and
+  in-app install (running exe swapped, effective next launch). macOS has only
+  **Cmd+U → check + open the Releases page** — no passive notification, no
+  auto-update, no pin, no install. The check and version-compare already reuse
+  `core/release_info`. Full install is **blocked** by code signing and the
+  absence of a macOS release artifact (see §3); notify-banner + mode preference
+  could land independently.
+
+### 2. Live macOS interactions — compile + no-crash only (logic is unit-tested)
+
+The find/selection *logic* has unit tests (`tests/text_select_test.cpp`) and
+rendering/TOC/ghost-text are verified via PNG/live-capture, but these
+event-driven paths need a hands-on pass on a Mac desktop (no screen capture in
+CI):
+
+- ⬜ Selection drag (mouse-down → drag → copy), double/triple-click, auto-scroll.
+- ⬜ Find bar: typing, Enter/Shift+Enter stepping + wraparound, Esc to close.
+- ⬜ Cmd+U live network fetch + result alert.
+- ⬜ Full editor session: type → reparse → list continuation → save → table insert.
+- ⬜ TOC sidebar + split-editor pane resizing.
+- ⬜ `.md` double-click file association (Info.plist `CFBundleDocumentTypes`).
+
+### 3. Packaging / distribution
+
+- ⬜ **Code signing + notarization.** The `.app` is unsigned → Gatekeeper warns
+  on first launch.
+- ⬜ **macOS release artifact.** The CI `release` job is Windows-only (attaches
+  `fmdv.exe`). Add a DMG or zipped `.app` and attach it to tagged releases. This
+  also unblocks the updater's in-app install (§1).
+
+### 4. Architecture / optional
+
+- ⬜ **Unify the layout engines.** Milestone 7 (`core/layout`) currently backs
+  only the macOS frontend; Windows still lays out in its GDI `render.cpp`.
+  Migrating `render.cpp` onto `core/layout` would give one shared layout path
+  (and is the last structural item in "Definition of Done"). Optional — Windows
+  works as-is.
+
+### 5. Benchmarks
+
+- ⬜ **Windows GUI baseline.** Capture first-paint/scroll medians on a Windows
+  machine to fill the `win32` column of the comparison (milestone 13). The macOS
+  and CLI columns are recorded; the Windows GUI numbers need a Windows desktop.
+
+### 6. Known minor limitations (not necessarily blockers)
+
+- TOC heading Y-offsets can go stale after a window resize until the next
+  relayout.
+- Find/selection are **frag-atomic**: a match or selection can't span a
+  formatting-change boundary mid-line (e.g. bold→plain). This is intentional and
+  matches the Windows behavior.
+
+### Not a gap
+
+- **Per-monitor / HiDPI:** handled natively by macOS (Retina backing scale) — no
+  code needed. On Windows this is explicit (`PER_MONITOR_V2`).
 
 ## Definition of Done
 

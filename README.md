@@ -47,6 +47,21 @@ app* → browse to `fmdv.exe` → *Always*. Put the exe somewhere stable first
 - **Ctrl+F** find in doc: highlights all matches, Enter/Shift+Enter step
   through them (wraps around).
 
+## macOS port (in progress)
+A native macOS frontend is being built on a shared, platform-neutral `core/`
+(parser, edit helpers, layout, find/selection) with an AppKit +
+CoreText/CoreGraphics UI — no browser engine, same priorities as the Windows
+app. It currently opens files and renders (light/dark), scrolls, zooms,
+selects/copies, follows links, finds (**⌘F**), shows a TOC sidebar
+(**⌘⇧O**), and has a split editor (**⌘E**) with ghost-text autocomplete, list
+continuation, and table insert (**⌘T**). CI builds the CLI, the `.app`, and
+renders fixtures on `macos-latest`.
+
+Not yet at full parity: **live reload**, **preferences persistence**, and the
+**full updater** are missing or reduced, and packaging (signing/notarization,
+a macOS release artifact) is pending. The complete tracker is in
+[docs/macos-implementation-guide.md](docs/macos-implementation-guide.md#remaining-work).
+
 ## Source & build
 The app is in [`cpp/`](cpp/) — see [cpp/README.md](cpp/README.md) for build
 details, headless test/inspection flags, and source layout.
