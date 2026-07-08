@@ -558,11 +558,12 @@ Interpretation rules:
 > shows a TOC sidebar (Cmd+Shift+O), and has a lazy split editor with ghost-text
 > autocomplete, list continuation, and table insert.
 >
-> **The port is not yet at full Windows parity.** Three Windows features are
-> missing or reduced on macOS (live reload, preferences persistence, the full
-> updater), several live interactions have only been compile/no-crash checked,
-> and packaging (signing/notarization, a macOS release artifact) is not done.
-> The complete, honest list is in **[Remaining Work](#remaining-work)** below.
+> **The port is not yet at full Windows parity.** Live reload and preferences
+> persistence (dark/zoom/split) have since been implemented; the remaining
+> reduced feature is the full updater. Several live interactions have only been
+> compile/no-crash checked, and packaging (signing/notarization, a macOS release
+> artifact) is not done. The complete, honest list is in
+> **[Remaining Work](#remaining-work)** below.
 
 1. `bench/logging`: add unified benchmark logging and capture Windows baseline.
 2. `core/string-type`: choose the core string type (Phase 0.5) and migrate the
@@ -593,16 +594,18 @@ environment limitation, not a work item.)
 
 ### 1. Feature parity gaps — Windows has these; macOS does not yet
 
-- ⬜ **Live reload on external file change.** Windows polls the file's mtime
-  (`WM_TIMER`, ~500 ms) and reloads the preview when the file changes on disk,
-  skipping while the editor is focused. macOS has **no file watcher**. Add one
-  via `dispatch_source` (VNODE) or FSEvents; reparse + relayout on change; skip
-  while editing. *(Implementable and verifiable on macOS.)*
-- ⬜ **Preferences persistence.** Windows saves dark mode, zoom, split ratio, and
-  update mode/pin to `%APPDATA%\fmdv\prefs.txt` and restores them on launch.
-  macOS persists **nothing** — every launch resets to defaults. Add
-  `NSUserDefaults` (or `~/Library/Application Support/FMDV/prefs.txt`) and load
-  it before first paint. *(Implementable and verifiable on macOS.)*
+- ✅ **Live reload on external file change.** An `NSTimer` polls the file's mtime
+  every 500 ms (mirroring the Win32 `WM_TIMER`) and reparses into the preview
+  when it changes on disk; skips while the split editor is open so an external
+  change never clobbers in-progress edits; a save-from-editor updates the stored
+  mtime so it doesn't self-trigger. *(Reparse path smoke-tested on macOS; the
+  visual refresh wants a hands-on pass — see §2.)*
+- ✅ **Preferences persistence.** Dark mode, zoom, and the editor split ratio are
+  saved to `NSUserDefaults` (`FMDVDark`/`FMDVZoomPct`/`FMDVSplitPct`) and
+  restored before first paint — mirroring the Win32 `prefs.txt` dark/zoom/split
+  fields. An explicit `--dark` flag still forces dark for that launch. Update
+  mode/pin are not persisted (the macOS updater is check-and-link, not install).
+  *(Compiles + launches clean; restore-on-relaunch wants a hands-on pass.)*
 - ⬜ **Full updater.** Windows has a passive "update available" banner on launch,
   three modes (notify / auto-update / pin any version, including downgrade), and
   in-app install (running exe swapped, effective next launch). macOS has only
@@ -625,6 +628,10 @@ CI):
 - ⬜ Full editor session: type → reparse → list continuation → save → table insert.
 - ⬜ TOC sidebar + split-editor pane resizing.
 - ⬜ `.md` double-click file association (Info.plist `CFBundleDocumentTypes`).
+- ⬜ Live reload: confirm the preview visibly refreshes on an external edit (the
+  reparse path is smoke-tested; the visual update isn't screenshot-verified).
+- ⬜ Preferences: toggle dark/zoom, drag the editor split, relaunch, and confirm
+  each is restored.
 
 ### 3. Packaging / distribution
 

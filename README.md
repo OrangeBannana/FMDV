@@ -54,12 +54,13 @@ CoreText/CoreGraphics UI — no browser engine, same priorities as the Windows
 app. It currently opens files and renders (light/dark), scrolls, zooms,
 selects/copies, follows links, finds (**⌘F**), shows a TOC sidebar
 (**⌘⇧O**), and has a split editor (**⌘E**) with ghost-text autocomplete, list
-continuation, and table insert (**⌘T**). CI builds the CLI, the `.app`, and
-renders fixtures on `macos-latest`.
+continuation, and table insert (**⌘T**). It also reloads on external file
+changes and persists dark/zoom/split across launches. CI builds the CLI, the
+`.app`, and renders fixtures on `macos-latest`.
 
-Not yet at full parity: **live reload**, **preferences persistence**, and the
-**full updater** are missing or reduced, and packaging (signing/notarization,
-a macOS release artifact) is pending. The complete tracker is in
+Not yet at full parity: the **updater** is reduced (⌘U checks GitHub and links
+to Releases, but no in-app install), and packaging (signing/notarization, a
+macOS release artifact) is pending. The complete tracker is in
 [docs/macos-implementation-guide.md](docs/macos-implementation-guide.md#remaining-work).
 
 ## Source & build

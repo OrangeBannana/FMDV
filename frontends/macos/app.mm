@@ -33,6 +33,23 @@ static Str LoadDoc(std::string u8) {
 static Str NSStringToStr(NSString* s) { return FromUtf8(s.UTF8String ? s.UTF8String : ""); }
 static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:ToUtf8(s).c_str()]; }
 
+// Persisted UI preferences. macOS uses NSUserDefaults; the Win32 app stores the
+// same fields in %APPDATA%\fmdv\prefs.txt (dark / zoom / split). Update mode+pin
+// are Windows-only for now (the macOS updater is check-and-link, not install).
+static NSString* const kPrefDark     = @"FMDVDark";
+static NSString* const kPrefZoomPct  = @"FMDVZoomPct";
+static NSString* const kPrefSplitPct = @"FMDVSplitPct";
+
+// File modification time (seconds since reference date; 0 if missing). Backs the
+// live-reload poll — the Win32 app watches the same mtime via a 500ms WM_TIMER.
+static NSTimeInterval FileModTime(const std::string& path) {
+    if (path.empty()) return 0;
+    NSString* p = [NSString stringWithUTF8String:path.c_str()];
+    NSDictionary* a = [[NSFileManager defaultManager] attributesOfItemAtPath:p error:nil];
+    NSDate* d = a[NSFileModificationDate];
+    return d ? d.timeIntervalSinceReferenceDate : 0;
+}
+
 // ---------------- preview view ----------------
 
 // A selectable text fragment: one laid-out Text command, with its box in
@@ -74,10 +91,22 @@ struct Frag {
 @implementation FMDVPreviewView
 - (instancetype)initWithDoc:(const Document&)doc dark:(bool)dark {
     if ((self = [super initWithFrame:NSMakeRect(0, 0, 900, 100)])) {
-        _doc = doc; _dark = dark; _zoom = 1.0; _laidOutWidth = -1;
+        // Restore persisted dark/zoom so the very first paint uses them; an
+        // explicit --dark flag still forces dark for this launch.
+        NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+        NSInteger zp = [ud integerForKey:kPrefZoomPct]; // 0 if never set
+        _doc = doc;
+        _dark = dark || [ud boolForKey:kPrefDark];
+        _zoom = zp > 0 ? std::min(3.0, std::max(0.5, zp / 100.0)) : 1.0;
+        _laidOutWidth = -1;
         _hasSel = false; _dragging = false;
     }
     return self;
+}
+- (void)savePrefs {
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    [ud setBool:_dark forKey:kPrefDark];
+    [ud setInteger:(NSInteger)std::llround(_zoom * 100) forKey:kPrefZoomPct];
 }
 - (BOOL)isFlipped { return YES; }          // top-left origin -> scrolls from the top
 - (BOOL)acceptsFirstResponder { return YES; }
@@ -107,9 +136,9 @@ struct Frag {
     self.needsDisplay = YES;
 }
 - (void)setDoc:(const Document&)doc { _doc = doc; [self relayout]; }
-- (void)toggleDark { _dark = !_dark; [self relayout]; }
-- (void)zoomBy:(double)f { _zoom = std::min(3.0, std::max(0.5, _zoom * f)); [self relayout]; }
-- (void)zoomReset { _zoom = 1.0; [self relayout]; }
+- (void)toggleDark { _dark = !_dark; [self savePrefs]; [self relayout]; }
+- (void)zoomBy:(double)f { _zoom = std::min(3.0, std::max(0.5, _zoom * f)); [self savePrefs]; [self relayout]; }
+- (void)zoomReset { _zoom = 1.0; [self savePrefs]; [self relayout]; }
 - (void)viewDidMoveToSuperview { [self relayout]; }
 - (void)resizeWithOldSuperviewSize:(NSSize)old {
     [super resizeWithOldSuperviewSize:old];
@@ -563,7 +592,7 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
 
 // ---------------- window controller / app delegate ----------------
 
-@interface FMDVAppDelegate : NSObject <NSApplicationDelegate, NSTextViewDelegate> {
+@interface FMDVAppDelegate : NSObject <NSApplicationDelegate, NSTextViewDelegate, NSSplitViewDelegate> {
     NSWindow* _window;
     NSView* _container;
     FMDVPreviewView* _preview;
@@ -576,6 +605,8 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
     bool _editing;
     bool _dark;
     bool _opened;
+    NSTimeInterval _fileMtime;  // last-seen mtime of _file (live reload)
+    NSTimer* _watchTimer;       // 500ms file-change poll
 }
 - (instancetype)initWithFile:(const char*)file dark:(bool)dark;
 - (void)openPath:(NSString*)path;
@@ -643,6 +674,27 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
     if (_textView) [_textView setString:StrToNS(LoadDoc(ReadFileUtf8(_file.c_str())))];
     [_window setTitle:path.lastPathComponent];
     [self refreshToc];
+    _fileMtime = FileModTime(_file);
+    [self startWatching];
+}
+
+// Live reload (Windows: 500ms WM_TIMER polling the file's mtime). Reparse into
+// the preview when the file changes on disk. Skip while the split editor is
+// open so an external change never clobbers in-progress edits (matches Win32).
+- (void)startWatching {
+    if (_watchTimer) return;
+    _watchTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self
+                     selector:@selector(pollFileChange:) userInfo:nil repeats:YES];
+}
+- (void)pollFileChange:(NSTimer*)t {
+    (void)t;
+    if (_editing || _file.empty()) return;
+    NSTimeInterval m = FileModTime(_file);
+    if (m == 0 || m == _fileMtime) return;
+    _fileMtime = m;
+    Document doc = ParseMarkdown(LoadDoc(ReadFileUtf8(_file.c_str())));
+    [_preview setDoc:doc];
+    [self refreshToc];
 }
 
 - (BOOL)application:(NSApplication*)app openFile:(NSString*)filename {
@@ -692,6 +744,7 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
             _split = [[NSSplitView alloc] initWithFrame:b];
             [_split setVertical:YES];
             [_split setDividerStyle:NSSplitViewDividerStyleThin];
+            [_split setDelegate:self];      // persist the divider ratio
             [_split addSubview:tvScroll];  // preview pane is reparented in below
         }
         [_textView setString:StrToNS(LoadDoc(ReadFileUtf8(_file.c_str())))];
@@ -700,6 +753,7 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
         [_container addSubview:_split];
         _editing = true;
         [self layoutPanes];
+        [self restoreSplitPosition];
         [_window makeFirstResponder:_textView];
         [self reparseFromEditor];
     } else {
@@ -710,6 +764,24 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
         [self layoutPanes];
         [_window makeFirstResponder:_preview];
     }
+}
+
+// Editor split divider: restore the saved ratio when opening, persist on drag.
+- (void)restoreSplitPosition {
+    if (!_split) return;
+    NSInteger pct = [[NSUserDefaults standardUserDefaults] integerForKey:kPrefSplitPct];
+    if (pct <= 0 || pct >= 100) pct = 50;
+    double total = _split.bounds.size.width;
+    if (total > 1) [_split setPosition:total * pct / 100.0 ofDividerAtIndex:0];
+}
+- (void)splitViewDidResizeSubviews:(NSNotification*)n {
+    (void)n;
+    if (!_split || _split.subviews.count < 2) return;
+    double total = _split.bounds.size.width;
+    if (total < 1) return;
+    NSInteger pct = (NSInteger)std::llround(((NSView*)_split.subviews[0]).frame.size.width / total * 100);
+    if (pct > 0 && pct < 100)
+        [[NSUserDefaults standardUserDefaults] setInteger:pct forKey:kPrefSplitPct];
 }
 
 - (void)toggleContents:(id)sender {
@@ -733,6 +805,7 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
     // NSTextView already uses LF; write as UTF-8.
     FILE* f = std::fopen(_file.c_str(), "wb");
     if (f) { std::fwrite(text.data(), 1, text.size(), f); std::fclose(f); }
+    _fileMtime = FileModTime(_file); // our own save shouldn't trigger a live reload
 }
 - (void)saveAndClose:(id)sender {
     [self saveDoc:sender];
