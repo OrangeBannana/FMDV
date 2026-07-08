@@ -11,6 +11,7 @@
 #include "mac_render.h"
 #include "markdown.h"
 #include "edit_assist.h"
+#include "release_info.h"
 #include "str.h"
 
 static std::string ReadFileUtf8(const char* path) {
@@ -748,6 +749,55 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
     if (_editing) [self toggleEditor:sender]; // save & close editor (Windows Ctrl+Shift+S)
 }
 - (void)insertTable:(id)sender { (void)sender; if (_editing && _textView) [_textView insertTableMarkdown]; }
+
+// Updates (Windows Ctrl+U). macOS can't swap a running, unsigned binary and the
+// releases carry no macOS asset, so this checks GitHub (shared core parse +
+// version compare) and links to the releases page rather than installing.
+- (NSString*)currentVersion {
+    NSString* v = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    return v.length ? v : @"1.1.0";
+}
+- (void)checkUpdates:(id)sender {
+    (void)sender;
+    NSURL* url = [NSURL URLWithString:@"https://api.github.com/repos/OrangeBannana/FMDV/releases?per_page=30"];
+    NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
+    [req setValue:[@"fmdv-macos/" stringByAppendingString:[self currentVersion]] forHTTPHeaderField:@"User-Agent"];
+    __unsafe_unretained FMDVAppDelegate* weak = self;
+    NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData* data, NSURLResponse* resp, NSError* err) {
+            (void)resp; (void)err;
+            NSData* d = [data retain];
+            dispatch_async(dispatch_get_main_queue(), ^{ [weak showUpdateResult:d]; [d release]; });
+        }];
+    [task resume];
+}
+- (void)showUpdateResult:(NSData*)data {
+    std::string json;
+    if (data.length) json.assign((const char*)data.bytes, data.length);
+    std::vector<ReleaseInfo> rel;
+    ParseReleasesJson(json, rel);
+    Str cur = NSStringToStr([self currentVersion]);
+    const ReleaseInfo* newest = nullptr;
+    for (const auto& r : rel) if (!newest || CompareVersions(r.tag, newest->tag) > 0) newest = &r;
+
+    NSAlert* a = [[NSAlert alloc] init];
+    a.messageText = [NSString stringWithFormat:@"FMDV %@", [self currentVersion]];
+    if (rel.empty()) {
+        a.informativeText = @"Couldn't reach GitHub releases.";
+    } else if (newest && CompareVersions(newest->tag, cur) > 0) {
+        a.informativeText = [NSString stringWithFormat:
+            @"%@ is available. In-app update isn't supported on macOS yet — open the releases page to download.",
+            StrToNS(newest->tag)];
+    } else {
+        a.informativeText = @"You have the latest version.";
+    }
+    [a addButtonWithTitle:@"OK"];
+    [a addButtonWithTitle:@"View Releases…"];
+    NSModalResponse r = [a runModal];
+    if (r == NSAlertSecondButtonReturn)
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/OrangeBannana/FMDV/releases"]];
+    [a release];
+}
 @end
 
 // ---------------- menu ----------------
@@ -758,6 +808,8 @@ static void buildMenu(id target) {
     NSMenuItem* appItem = [[NSMenuItem alloc] init];
     [menubar addItem:appItem];
     NSMenu* appMenu = [[NSMenu alloc] init];
+    [[appMenu addItemWithTitle:@"Check for Updates…" action:@selector(checkUpdates:) keyEquivalent:@"u"] setTarget:target];
+    [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:@"Quit FMDV" action:@selector(terminate:) keyEquivalent:@"q"];
     [appItem setSubmenu:appMenu];
 
