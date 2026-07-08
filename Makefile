@@ -8,7 +8,7 @@
 #   make cli     build build/fmdv-cli
 #   make check   build, then smoke-test parse + bench-parse on test.md
 #   make macos   build the native macOS binary (build/fmdv-macos)  [macOS only]
-#   make app     assemble build/FMDV.app with a generated icon     [macOS only]
+#   make app     assemble build/FMDV.app (icon from cpp/fmdv.ico)   [macOS only]
 #   make clean
 
 CXX      ?= c++
@@ -40,20 +40,20 @@ $(MAC_BIN): $(MAC_SRCS) $(MAC_DEPS)
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -ObjC++ $(INCLUDES) $(MAC_SRCS) $(MAC_FRAMEWORKS) -o $(MAC_BIN)
 
-# --- macOS .app bundle (build/FMDV.app) with generated icon ---
-ICON_FRAMEWORKS := -framework CoreGraphics -framework CoreText -framework ImageIO -framework CoreFoundation
+# --- macOS .app bundle (build/FMDV.app) ---
+# The icon is the shared FMDV brand icon (cpp/fmdv.ico, same as the Windows app),
+# converted to an .icns.
 APP := build/FMDV.app
 
 app: $(APP)
 
-build/AppIcon.icns: frontends/macos/appicon/make_icon.mm
+build/AppIcon.icns: cpp/fmdv.ico
 	@mkdir -p build/AppIcon.iconset
-	$(CXX) -std=c++17 -ObjC++ -w frontends/macos/appicon/make_icon.mm $(ICON_FRAMEWORKS) -o build/make_icon
-	./build/make_icon build/icon-1024.png
+	sips -s format png cpp/fmdv.ico --out build/icon-src.png >/dev/null
 	@for s in 16 32 128 256 512; do \
 	  d=$$((s*2)); \
-	  sips -z $$s $$s   build/icon-1024.png --out build/AppIcon.iconset/icon_$${s}x$${s}.png    >/dev/null; \
-	  sips -z $$d $$d   build/icon-1024.png --out build/AppIcon.iconset/icon_$${s}x$${s}@2x.png >/dev/null; \
+	  sips -z $$s $$s build/icon-src.png --out build/AppIcon.iconset/icon_$${s}x$${s}.png    >/dev/null; \
+	  sips -z $$d $$d build/icon-src.png --out build/AppIcon.iconset/icon_$${s}x$${s}@2x.png >/dev/null; \
 	done
 	iconutil -c icns build/AppIcon.iconset -o build/AppIcon.icns
 
