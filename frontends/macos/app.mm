@@ -99,6 +99,46 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
     }
     return [super performKeyEquivalent:ev];
 }
+// Ctrl+scroll zooms on Windows; Cmd+scroll is the macOS equivalent.
+- (void)scrollWheel:(NSEvent*)ev {
+    if (ev.modifierFlags & NSEventModifierFlagCommand) {
+        double d = ev.scrollingDeltaY;
+        if (d != 0) [self zoomBy:(d > 0 ? 1.06 : 1.0 / 1.06)];
+        return;
+    }
+    [super scrollWheel:ev];
+}
+
+- (void)scrollByPoints:(double)dy {
+    NSScrollView* sv = self.enclosingScrollView;
+    if (!sv) return;
+    NSClipView* clip = sv.contentView;
+    NSPoint o = clip.bounds.origin;                     // flipped doc view: o.y = offset from top
+    double maxY = self.bounds.size.height - clip.bounds.size.height;
+    if (maxY < 0) maxY = 0;
+    o.y += dy;
+    if (o.y < 0) o.y = 0; else if (o.y > maxY) o.y = maxY;
+    [clip scrollToPoint:o];
+    [sv reflectScrolledClipView:clip];
+}
+
+// Keyboard scrolling parity with Windows: arrows, PgUp/PgDn, Home/End, Space.
+- (void)keyDown:(NSEvent*)ev {
+    NSString* c = ev.charactersIgnoringModifiers;
+    unichar k = c.length ? [c characterAtIndex:0] : 0;
+    double page = self.enclosingScrollView.contentView.bounds.size.height - 40;
+    switch (k) {
+        case NSUpArrowFunctionKey:   [self scrollByPoints:-60];    return;
+        case NSDownArrowFunctionKey: [self scrollByPoints:60];     return;
+        case NSPageUpFunctionKey:    [self scrollByPoints:-page];  return;
+        case NSPageDownFunctionKey:  [self scrollByPoints:page];   return;
+        case NSHomeFunctionKey:      [self scrollByPoints:-1e9];   return;
+        case NSEndFunctionKey:       [self scrollByPoints:1e9];    return;
+        case ' ':                    [self scrollByPoints:page];   return;
+    }
+    [super keyDown:ev];
+}
+
 - (void)mouseUp:(NSEvent*)ev {
     NSPoint p = [self convertPoint:ev.locationInWindow fromView:nil];
     double lx = p.x / _zoom, ly = p.y / _zoom;
@@ -273,6 +313,10 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
     FILE* f = std::fopen(_file.c_str(), "wb");
     if (f) { std::fwrite(text.data(), 1, text.size(), f); std::fclose(f); }
 }
+- (void)saveAndClose:(id)sender {
+    [self saveDoc:sender];
+    if (_editing) [self toggleEditor:sender]; // save & close editor (Windows Ctrl+Shift+S)
+}
 - (void)insertTable:(id)sender { (void)sender; if (_editing && _textView) [_textView insertTableMarkdown]; }
 @end
 
@@ -291,6 +335,10 @@ static void buildMenu(id target) {
     [menubar addItem:fileItem];
     NSMenu* fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
     [[fileMenu addItemWithTitle:@"Save" action:@selector(saveDoc:) keyEquivalent:@"s"] setTarget:target];
+    NSMenuItem* saveClose = [fileMenu addItemWithTitle:@"Save & Close Editor"
+                                                action:@selector(saveAndClose:) keyEquivalent:@"s"];
+    [saveClose setKeyEquivalentModifierMask:(NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+    [saveClose setTarget:target];
     [fileItem setSubmenu:fileMenu];
 
     NSMenuItem* viewItem = [[NSMenuItem alloc] init];
