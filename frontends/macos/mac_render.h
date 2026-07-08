@@ -23,9 +23,11 @@ private:
 
 // Paint a display list into a CGContext whose height is `height` px (document
 // space is top-left/y-down; this flips to CoreGraphics' bottom-left). Fills the
-// background first. Shared by the headless PNG path and the AppKit preview view.
+// background first, then any `selRects` (selection highlight, in document space)
+// behind the text. Shared by the headless PNG path and the AppKit preview view.
 void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
-                 const LayoutTheme& th, CoreTextMeasurer& tm);
+                 const LayoutTheme& th, CoreTextMeasurer& tm,
+                 const std::vector<RectF>* selRects = nullptr);
 
 // Render a laid-out document to a PNG at `outPath`. Returns false on failure.
 bool RenderMarkdownToPng(const Document& doc, double width, bool dark, const char* outPath);

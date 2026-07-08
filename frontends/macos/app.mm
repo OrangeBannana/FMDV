@@ -5,7 +5,9 @@
 // Editor decisions (list continuation, table markdown) reuse core/edit_assist.
 #import <Cocoa/Cocoa.h>
 #include <algorithm>
+#include <cmath>
 #include <string>
+#include <vector>
 #include "mac_render.h"
 #include "markdown.h"
 #include "edit_assist.h"
@@ -31,6 +33,15 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
 
 // ---------------- preview view ----------------
 
+// A selectable text fragment: one laid-out Text command, with its box in
+// document space (top-left, y-down) for hit-testing and highlighting.
+struct Frag {
+    fmdv::RectF box;
+    fmdv::FontSpec font;
+    Str text;
+    double baseline;
+};
+
 @interface FMDVPreviewView : NSView {
     Document _doc;
     fmdv::LayoutResult _layout;
@@ -38,6 +49,10 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
     bool _dark;
     double _zoom;
     double _laidOutWidth;
+    std::vector<Frag> _frags;               // selectable text, document order
+    long _selA, _selACh, _selB, _selBCh;    // selection endpoints (frag index + char)
+    bool _hasSel;
+    bool _dragging;
 }
 - (instancetype)initWithDoc:(const Document&)doc dark:(bool)dark;
 - (void)setDoc:(const Document&)doc;
@@ -51,6 +66,7 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
 - (instancetype)initWithDoc:(const Document&)doc dark:(bool)dark {
     if ((self = [super initWithFrame:NSMakeRect(0, 0, 900, 100)])) {
         _doc = doc; _dark = dark; _zoom = 1.0; _laidOutWidth = -1;
+        _hasSel = false; _dragging = false;
     }
     return self;
 }
@@ -65,6 +81,17 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
     double logicalW = viewW / _zoom;
     _layout = fmdv::LayoutDocument(_doc, logicalW, [self theme], _tm);
     _laidOutWidth = viewW;
+    // rebuild selectable fragments from the Text draw commands (document order)
+    _frags.clear();
+    for (const auto& c : _layout.cmds) {
+        if (c.kind != fmdv::DrawCommand::Text || c.text.empty()) continue;
+        double asc = _tm.ascent(c.font), lh = _tm.lineHeight(c.font);
+        Frag f;
+        f.box = {c.rect.x, c.rect.y - asc, c.rect.w, lh};
+        f.font = c.font; f.text = c.text; f.baseline = c.rect.y;
+        _frags.push_back(std::move(f));
+    }
+    _hasSel = false;
     [self setFrameSize:NSMakeSize(viewW, _layout.contentHeight * _zoom)];
     self.needsDisplay = YES;
 }
@@ -86,9 +113,125 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
     // (verified by the PNG path) applies unchanged; also applies zoom.
     CGContextTranslateCTM(ctx, 0, self.bounds.size.height);
     CGContextScaleCTM(ctx, _zoom, -_zoom);
-    fmdv::PaintLayout(ctx, _layout.contentHeight, _layout, [self theme], _tm);
+    std::vector<fmdv::RectF> sel = [self selectionRects];
+    fmdv::PaintLayout(ctx, _layout.contentHeight, _layout, [self theme], _tm, &sel);
     CGContextRestoreGState(ctx);
 }
+
+// ---- text selection (Windows: drag-select, double/triple click, Ctrl+A/C) ----
+
+// Insertion char index in frag `fi` nearest logical x (document space).
+- (long)charInFrag:(long)fi atX:(double)x {
+    if (fi < 0 || fi >= (long)_frags.size()) return 0;
+    const Frag& f = _frags[fi];
+    double xr = x - f.box.x, prev = 0;
+    long n = (long)f.text.size();
+    for (long ch = 1; ch <= n; ch++) {
+        double w = _tm.textWidth(f.font, StrView(f.text.data(), ch));
+        if (xr < (prev + w) / 2) return ch - 1;
+        prev = w;
+    }
+    return n;
+}
+// Map a logical point to (frag, char). Returns false if there are no frags.
+- (bool)hitPoint:(NSPoint)p frag:(long*)fi ch:(long*)ch {
+    if (_frags.empty()) return false;
+    long best = -1; double bestDy = 1e18;
+    for (long i = 0; i < (long)_frags.size(); i++) {
+        const fmdv::RectF& b = _frags[i].box;
+        bool inRow = p.y >= b.y && p.y <= b.y + b.h;
+        if (inRow && p.x >= b.x && p.x <= b.x + b.w) { *fi = i; *ch = [self charInFrag:i atX:p.x]; return true; }
+        double dy = inRow ? 0 : std::min(std::abs(p.y - b.y), std::abs(p.y - (b.y + b.h)));
+        double dx = (p.x < b.x) ? (b.x - p.x) : (p.x > b.x + b.w ? p.x - (b.x + b.w) : 0);
+        double d = dy * 1000 + dx; // prefer same row, then nearest x
+        if (d < bestDy) { bestDy = d; best = i; }
+    }
+    *fi = best; *ch = [self charInFrag:best atX:p.x];
+    return true;
+}
+- (void)normSelA:(long*)a aCh:(long*)aCh b:(long*)b bCh:(long*)bCh {
+    if (_selA < _selB || (_selA == _selB && _selACh <= _selBCh)) {
+        *a = _selA; *aCh = _selACh; *b = _selB; *bCh = _selBCh;
+    } else { *a = _selB; *aCh = _selBCh; *b = _selA; *bCh = _selACh; }
+}
+- (double)xInFrag:(const Frag&)f upto:(long)ch {
+    if (ch <= 0) return 0;
+    if (ch >= (long)f.text.size()) return f.box.w;
+    return _tm.textWidth(f.font, StrView(f.text.data(), ch));
+}
+- (std::vector<fmdv::RectF>)selectionRects {
+    std::vector<fmdv::RectF> out;
+    if (!_hasSel) return out;
+    long a, aCh, b, bCh; [self normSelA:&a aCh:&aCh b:&b bCh:&bCh];
+    for (long i = a; i <= b && i < (long)_frags.size(); i++) {
+        const Frag& f = _frags[i];
+        double x0 = (i == a) ? [self xInFrag:f upto:aCh] : 0;
+        double x1 = (i == b) ? [self xInFrag:f upto:bCh] : f.box.w;
+        if (x1 > x0) out.push_back({f.box.x + x0, f.box.y, x1 - x0, f.box.h});
+    }
+    return out;
+}
+- (NSString*)selectedString {
+    if (!_hasSel) return @"";
+    long a, aCh, b, bCh; [self normSelA:&a aCh:&aCh b:&b bCh:&bCh];
+    Str out;
+    for (long i = a; i <= b && i < (long)_frags.size(); i++) {
+        const Frag& f = _frags[i];
+        long c0 = (i == a) ? aCh : 0;
+        long c1 = (i == b) ? bCh : (long)f.text.size();
+        if (i > a) {
+            const Frag& prev = _frags[i - 1];
+            if (std::abs(f.baseline - prev.baseline) > 1) out += U16("\n");
+            else if (f.box.x - (prev.box.x + prev.box.w) > 2) out += U16(" ");
+        }
+        if (c1 > c0) out.append(f.text, c0, c1 - c0);
+    }
+    return StrToNS(out);
+}
+- (void)copySelection {
+    NSString* s = [self selectedString];
+    if (s.length == 0) return;
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb setString:s forType:NSPasteboardTypeString];
+}
+- (void)selectAll:(id)sender {
+    (void)sender;
+    if (_frags.empty()) return;
+    _selA = 0; _selACh = 0;
+    _selB = (long)_frags.size() - 1; _selBCh = (long)_frags.back().text.size();
+    _hasSel = true; self.needsDisplay = YES;
+}
+- (void)clearSelection { if (_hasSel) { _hasSel = false; self.needsDisplay = YES; } }
+
+- (NSPoint)logicalPoint:(NSEvent*)ev {
+    NSPoint p = [self convertPoint:ev.locationInWindow fromView:nil];
+    return NSMakePoint(p.x / _zoom, p.y / _zoom);
+}
+- (void)mouseDown:(NSEvent*)ev {
+    _dragging = false;
+    long fi, ch;
+    if (![self hitPoint:[self logicalPoint:ev] frag:&fi ch:&ch]) { [self clearSelection]; return; }
+    if (ev.clickCount >= 3) {                 // triple click: select the line
+        double base = _frags[fi].baseline; long lo = fi, hi = fi;
+        while (lo > 0 && std::abs(_frags[lo - 1].baseline - base) < 1) lo--;
+        while (hi + 1 < (long)_frags.size() && std::abs(_frags[hi + 1].baseline - base) < 1) hi++;
+        _selA = lo; _selACh = 0; _selB = hi; _selBCh = (long)_frags[hi].text.size(); _hasSel = true;
+    } else if (ev.clickCount == 2) {          // double click: select the word (frag)
+        _selA = fi; _selACh = 0; _selB = fi; _selBCh = (long)_frags[fi].text.size(); _hasSel = true;
+    } else {
+        _selA = _selB = fi; _selACh = _selBCh = ch; _hasSel = true;
+    }
+    self.needsDisplay = YES;
+}
+- (void)mouseDragged:(NSEvent*)ev {
+    _dragging = true;
+    long fi, ch;
+    if ([self hitPoint:[self logicalPoint:ev] frag:&fi ch:&ch]) {
+        _selB = fi; _selBCh = ch; self.needsDisplay = YES;
+    }
+}
+
 - (BOOL)performKeyEquivalent:(NSEvent*)ev {
     if (ev.modifierFlags & NSEventModifierFlagCommand) {
         NSString* c = ev.charactersIgnoringModifiers;
@@ -96,6 +239,8 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
         if ([c isEqualToString:@"="] || [c isEqualToString:@"+"]) { [self zoomBy:1.1]; return YES; }
         if ([c isEqualToString:@"-"]) { [self zoomBy:1.0 / 1.1]; return YES; }
         if ([c isEqualToString:@"0"]) { [self zoomReset]; return YES; }
+        if ([c isEqualToString:@"a"]) { [self selectAll:nil]; return YES; }
+        if ([c isEqualToString:@"c"]) { [self copySelection]; return YES; }
     }
     return [super performKeyEquivalent:ev];
 }
@@ -140,16 +285,19 @@ static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:T
 }
 
 - (void)mouseUp:(NSEvent*)ev {
-    NSPoint p = [self convertPoint:ev.locationInWindow fromView:nil];
-    double lx = p.x / _zoom, ly = p.y / _zoom;
+    if (_dragging) { _dragging = false; return; } // a drag made a selection; keep it
+    // A plain click: follow a link if one was hit, and drop any selection.
+    NSPoint p = [self logicalPoint:ev];
     for (const auto& lk : _layout.links) {
         const auto& r = lk.rect;
-        if (lx >= r.x && lx <= r.x + r.w && ly >= r.y && ly <= r.y + r.h) {
+        if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) {
+            [self clearSelection];
             NSURL* url = [NSURL URLWithString:StrToNS(lk.href)];
             if (url) [[NSWorkspace sharedWorkspace] openURL:url];
             return;
         }
     }
+    if (ev.clickCount == 1) [self clearSelection];
 }
 @end
 
