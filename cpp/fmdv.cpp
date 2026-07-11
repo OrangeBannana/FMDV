@@ -2205,6 +2205,8 @@ static int Run(int argc, wchar_t** argv) {
 
 #ifdef FMDV_CONSOLE
     if (benchRender) return RunBenchRender(dumpWidth, dumpViewportH, scrollRuns);
+#else
+    (void)benchRender; (void)scrollRuns;
 #endif
 
     // headless PNG dump (visual test)

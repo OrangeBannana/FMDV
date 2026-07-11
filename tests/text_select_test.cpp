@@ -64,6 +64,28 @@ int main() {
     std::vector<SelFrag> tight = { {FromUtf8("foo"), 0, 24, 10}, {FromUtf8("bar"), 24, 24, 10} };
     check(u8(SelectionText(tight, 0, 0, 1, 3)) == "foobar", "select: touching fragments concatenate");
 
+    // ---- Unicode fixtures: offsets are UTF-16 code units (guide Phase 2) ----
+    // Emoji U+1F600 is a surrogate pair = 2 code units, so "a😀b" is 4 units
+    // and 'b' sits at code-unit offset 3 (not scalar offset 2).
+    std::vector<SelFrag> emoji = { {FromUtf8("a\xF0\x9F\x98\x80""b"), 0, 32, 10} };
+    check(emoji[0].text.size() == 4, "unicode: surrogate pair is 2 code units");
+    auto me = FindMatches(emoji, FromUtf8("b"));
+    check(me.size() == 1 && me[0].start == 3, "find: offset after emoji counts code units");
+    check(u8(SelectionText(emoji, 0, 1, 0, 3)) == "\xF0\x9F\x98\x80",
+          "select: code-unit range [1,3) is the whole emoji");
+    // Combining mark: "cafe" + U+0301 is 5 code units; a selection keeps both
+    // the base letter and its combining accent.
+    std::vector<SelFrag> comb = { {FromUtf8("cafe\xCC\x81"), 0, 40, 10} };
+    check(comb[0].text.size() == 5, "unicode: combining mark is its own code unit");
+    check(u8(SelectionText(comb, 0, 3, 0, 5)) == "e\xCC\x81",
+          "select: base letter + combining mark survive slicing");
+    // CJK (no spaces): offsets are straight code-unit positions.
+    std::vector<SelFrag> cjk = { {FromUtf8("\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E"
+                                           "\xE3\x83\x86\xE3\x82\xB9\xE3\x83\x88"), 0, 96, 10} };
+    auto mc = FindMatches(cjk, FromUtf8("\xE6\x9C\xAC\xE8\xAA\x9E"));
+    check(mc.size() == 1 && mc[0].frag == 0 && mc[0].start == 1 && mc[0].len == 2,
+          "find: CJK match at code-unit offset 1, len 2");
+
     std::printf("\n%s (%d failures)\n", failures ? "TESTS FAILED" : "ALL PASS", failures);
     return failures ? 1 : 0;
 }

@@ -21,3 +21,6 @@ bench/results/*.csv
 Thumbs.db
 desktop.ini
 *.tmp
+
+# Local agent session config
+/.claude/
