@@ -733,11 +733,24 @@ static bool SaveToFile() {
     int need = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0, nullptr, nullptr);
     std::vector<char> utf8(need);
     if (need) WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), utf8.data(), need, nullptr, nullptr);
-    HANDLE h = CreateFileW(g_filePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Write to a temp file and swap it into place: writing the target with
+    // CREATE_ALWAYS truncates first, so a crash or full disk mid-write would
+    // destroy the document. Same pattern the updater uses for the exe swap.
+    std::wstring tmp = g_filePath + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     DWORD wr = 0;
-    if (!utf8.empty()) WriteFile(h, utf8.data(), (DWORD)utf8.size(), &wr, nullptr);
+    BOOL wok = utf8.empty() ? TRUE : WriteFile(h, utf8.data(), (DWORD)utf8.size(), &wr, nullptr);
+    wok = wok && wr == (DWORD)utf8.size() && FlushFileBuffers(h);
     CloseHandle(h);
+    if (!wok) { DeleteFileW(tmp.c_str()); return false; }
+    // ReplaceFileW keeps the target's attributes/ACLs but requires it to
+    // exist; fall back to a plain move if the file vanished since load.
+    if (!ReplaceFileW(g_filePath.c_str(), tmp.c_str(), nullptr, 0, nullptr, nullptr) &&
+        !MoveFileExW(tmp.c_str(), g_filePath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(tmp.c_str());
+        return false;
+    }
     g_fileTime = FileMtime(g_filePath); // don't let our own write trigger a live-reload
     return true;
 }
@@ -1145,6 +1158,7 @@ static std::vector<ReleaseInfo> g_relPending; // worker output
 static std::vector<ReleaseInfo> g_releases;   // UI copy (main thread only)
 static bool g_relFetched = false, g_relFailed = false;
 static bool g_fetchRunning = false, g_installRunning = false;
+static bool g_autoInstallOnCheck = false; // pending check should auto-install (main thread only)
 static std::wstring g_banner;               // status bar text; empty = hidden
 static std::wstring g_installTag;           // tag being installed (main sets, banner reads)
 static std::wstring g_installUrl;           // url for InstallThread (main sets before spawn)
@@ -1166,26 +1180,17 @@ static const ReleaseInfo* NewestInstallable() {
     return best;
 }
 
-static DWORD WINAPI CheckThread(LPVOID autoInstall) {
+// Fetch-only: the auto-install decision runs on the main thread when
+// UPD_CHECK_DONE lands, so g_installTag/g_installUrl stay main-thread-owned
+// and a user-initiated install from the picker can't run concurrently with an
+// auto-install (both funnel through StartInstall's g_installRunning guard).
+static DWORD WINAPI CheckThread(LPVOID) {
     std::vector<ReleaseInfo> rel;
     bool ok = FetchReleases(rel);
     EnterCriticalSection(&g_updLock);
     g_relPending = rel;
     LeaveCriticalSection(&g_updLock);
     PostMessageW(g_mainHwnd, WM_APP_UPDATE, UPD_CHECK_DONE, ok ? 0 : 1);
-    if (ok && autoInstall) {
-        // install the newest exe-bearing release if it's newer than us
-        const ReleaseInfo* best = nullptr;
-        for (const auto& r : rel) {
-            if (r.exeUrl.empty()) continue;
-            if (!best || CompareVersions(r.tag, best->tag) > 0) best = &r;
-        }
-        if (best && CompareVersions(best->tag, CurrentVersion()) > 0) {
-            g_installTag = best->tag;
-            UpdateResult r = DownloadAndInstall(best->exeUrl);
-            PostMessageW(g_mainHwnd, WM_APP_UPDATE, r == UpdateResult::Ok ? UPD_INSTALL_OK : UPD_INSTALL_FAIL, (LPARAM)r);
-        }
-    }
     return 0;
 }
 
@@ -1195,11 +1200,25 @@ static DWORD WINAPI InstallThread(LPVOID) {
     return 0;
 }
 
+// Spawn the install worker for (tag, url). Main thread only; refuses while
+// another install is in flight. Returns true if the worker was started.
+static bool StartInstall(const std::wstring& tag, const std::wstring& url) {
+    if (g_installRunning || url.empty()) return false;
+    g_installTag = tag;
+    g_installUrl = url;
+    g_installRunning = true;
+    HANDLE h = CreateThread(nullptr, 0, InstallThread, nullptr, 0, nullptr);
+    if (!h) { g_installRunning = false; return false; }
+    CloseHandle(h);
+    return true;
+}
+
 static void StartUpdateCheck(bool autoInstall) {
     if (g_fetchRunning) return;
     g_fetchRunning = true;
-    HANDLE h = CreateThread(nullptr, 0, CheckThread, autoInstall ? (LPVOID)1 : nullptr, 0, nullptr);
-    if (h) CloseHandle(h); else g_fetchRunning = false;
+    g_autoInstallOnCheck = autoInstall;
+    HANDLE h = CreateThread(nullptr, 0, CheckThread, nullptr, 0, nullptr);
+    if (h) CloseHandle(h); else { g_fetchRunning = false; g_autoInstallOnCheck = false; }
 }
 
 // ---- update picker popup ----
@@ -1251,11 +1270,7 @@ static bool PickerInstallSelected() {
     }
     SavePrefs(g_prefs);
 
-    g_installTag = r.tag;
-    g_installUrl = r.exeUrl;
-    g_installRunning = true;
-    HANDLE h = CreateThread(nullptr, 0, InstallThread, nullptr, 0, nullptr);
-    if (h) CloseHandle(h); else g_installRunning = false;
+    StartInstall(r.tag, r.exeUrl);
     if (g_upHwnd) InvalidateRect(g_upHwnd, nullptr, FALSE);
     return true;
 }
@@ -1813,6 +1828,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (nw && CompareVersions(nw->tag, CurrentVersion()) > 0)
                     SetBanner(hwnd, nw->tag + L" available — Ctrl+U to update");
             }
+            if (g_relFetched && g_autoInstallOnCheck) {
+                // auto mode: install the newest exe-bearing release if newer
+                const ReleaseInfo* nw = NewestInstallable();
+                if (nw && CompareVersions(nw->tag, CurrentVersion()) > 0)
+                    StartInstall(nw->tag, nw->exeUrl);
+            }
+            g_autoInstallOnCheck = false;
             if (g_upHwnd) { // resize to fit the arrived list, keep top-right anchor
                 RECT wr; GetWindowRect(g_upHwnd, &wr);
                 int w = wr.right - wr.left;
