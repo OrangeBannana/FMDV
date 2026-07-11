@@ -615,6 +615,12 @@ is an environment limitation, not a work item.)
 | Windows layout-engine unification (§4) | ✅ done (2026-07-11, PNG-diff gated) |
 | Windows benchmark — layout/render (§5) | ✅ done (CI artifact + local desktop) |
 | Windows benchmark — GUI first-paint (§5) | ✅ done (local desktop, 2026-07-11) |
+| Final-pass code review + fixes (correctness / cleanup) | ✅ done (2026-07-11, CI green on HEAD — both `build` and `build-macos`) |
+
+The macOS port, the shared-core backend rewrite, and the Windows layout-engine
+refactor are **complete**. The only open items are not code: Developer ID
+signing + notarization (blocked on the maintainer's Apple credentials) and the
+small hands-on Mac QA list below.
 
 ### 1. Feature parity gaps — Windows has these; macOS does not yet
 
