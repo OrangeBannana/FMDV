@@ -9,7 +9,8 @@
 #   make check   build, then smoke-test parse + bench-parse on test.md
 #   make macos   build the native macOS binary (build/fmdv-macos)  [macOS only]
 #   make app     assemble + codesign build/FMDV.app                 [macOS only]
-#   make dist    zip the .app into build/FMDV-macos.zip (release)   [macOS only]
+#   make dist    zip the .app into build/FMDV-macos.zip (updater)   [macOS only]
+#   make dmg     drag-to-Applications build/FMDV-macos.dmg (release)[macOS only]
 #   make uitest  live-UI suite driving the real app (tests/run-tests.sh)
 #   make clean
 
@@ -29,7 +30,7 @@ MAC_DEPS := frontends/macos/mac_render.h core/layout.h core/markdown.h core/str.
 MAC_FRAMEWORKS := -framework Cocoa -framework CoreGraphics -framework CoreText -framework ImageIO
 MAC_BIN  := build/fmdv-macos
 
-.PHONY: cli macos app dist test uitest check clean
+.PHONY: cli macos app dist dmg test uitest check clean
 cli: $(CLI_BIN)
 
 $(CLI_BIN): $(CLI_SRCS) $(CLI_DEPS)
@@ -96,6 +97,24 @@ dist: $(APP)
 	rm -f $(DIST)
 	ditto -c -k --keepParent $(APP) $(DIST)
 	@echo "built $(DIST)"
+
+# Human-facing installer: a drag-to-Applications disk image for the Releases
+# page (the zip above stays the in-app updater's payload). Stages the signed
+# .app next to an /Applications symlink so the mounted window offers the
+# conventional drag target, then packs a compressed read-only image. No custom
+# background/icon layout — robust and dependency-free (hdiutil only). Inherits
+# the .app's signature; notarize the .dmg once Developer ID is available.
+DMG := build/FMDV-macos.dmg
+
+dmg: $(APP)
+	rm -rf build/dmg-stage $(DMG)
+	mkdir -p build/dmg-stage
+	cp -R $(APP) build/dmg-stage/
+	ln -s /Applications build/dmg-stage/Applications
+	hdiutil create -volname "FMDV $(VERSION)" -srcfolder build/dmg-stage \
+		-fs HFS+ -format UDZO -ov "$(DMG)" >/dev/null
+	rm -rf build/dmg-stage
+	@echo "built $(DMG) (version $(VERSION))"
 
 # --- unit tests: one binary per core module (tests/<name>_test.cpp) ---
 TEST_NAMES := str markdown edit_assist release_info layout text_select bench_log

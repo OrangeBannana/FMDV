@@ -565,7 +565,8 @@ Interpretation rules:
 > persistence (dark/zoom/split), the passive update-notify banner, and the
 > updater's **in-app install** (Cmd+U picker with auto-update / pin modes,
 > download + bundle swap — verified end-to-end against a local fixture server)
-> are all implemented, and CI attaches a `FMDV-macos.zip` release artifact.
+> are all implemented, and CI attaches `FMDV-macos.zip` (updater payload) and
+> `FMDV-macos.dmg` (drag-to-Applications installer) release artifacts.
 > What's left is not code: several live interactions still need a hands-on QA
 > pass, and distribution polish (Developer ID signing + notarization) needs
 > Apple credentials only the maintainer can create. The complete list is in
@@ -607,7 +608,7 @@ is an environment limitation, not a work item.)
 | Preferences persistence (dark / zoom / split) | ✅ done |
 | Updater — notify banner + launch-check preference | ✅ done |
 | Updater — auto-update / pin / in-app install | ✅ done (E2E-tested vs local fixture server) |
-| Packaging — macOS release artifact in CI (§3) | ✅ done (`FMDV-macos.zip`, signed when secrets set) |
+| Packaging — macOS release artifacts in CI (§3) | ✅ done (`FMDV-macos.zip` updater payload + `FMDV-macos.dmg` drag installer, signed when secrets set) |
 | Packaging — Developer ID signing + notarization (§3) | ⛔ needs maintainer's Apple credentials |
 | Live-UI test suite (`tests/run-tests.sh`, gating in CI) (§2) | ✅ done (76 checks via `--test-drive`) |
 | Hands-on Mac QA — mouse paths, Finder association, visuals (§2) | ⬜ small residual list |
@@ -692,6 +693,16 @@ Still hands-on (not reachable through synthesized keystrokes alone):
   match) and codesigns — ad-hoc by default, or with hardened runtime +
   timestamp when `FMDV_SIGN_ID` is set. This unblocked the updater's in-app
   install (§1).
+- ✅ **Drag-to-Applications DMG.** `make dmg` packs the same signed `.app` into
+  `build/FMDV-macos.dmg` — a staging folder with `FMDV.app` next to an
+  `/Applications` symlink, packed via `hdiutil` (`UDZO`, compressed read-only,
+  no extra dependencies), so the mounted window offers the conventional drag
+  target. This is the **human-facing** download on the Releases page; the zip
+  stays the **updater's** payload (unzip → verify → live-swap doesn't want a
+  disk image). CI builds + `hdiutil verify`s it and the `release` job attaches
+  it. No custom background/icon layout (kept robust for headless CI); the `.dmg`
+  inherits the `.app` signature and should be notarized + stapled once Developer
+  ID lands (below).
 - ⛔ **Developer ID signing + notarization — needs maintainer credentials.**
   Everything scriptable exists: CI signs when the `MACOS_CERT_P12` /
   `MACOS_CERT_PASSWORD` / `MACOS_SIGN_ID` repo secrets are configured (falls

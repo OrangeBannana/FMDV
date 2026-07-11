@@ -161,7 +161,7 @@ jobs:
       # falls back to an ad-hoc signature otherwise (runs locally, Gatekeeper
       # warns on other machines). Notarization is a follow-up once the
       # Developer ID cert exists — see scripts/notarize.sh.
-      - name: Build .app bundle + release zip
+      - name: Build .app bundle + release zip + dmg
         env:
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}          # base64 of the .p12 export
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }} # .p12 passphrase
@@ -190,13 +190,20 @@ jobs:
           pv=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/FMDV.app/Contents/Info.plist)
           test "$v" = "$pv" || { echo "version drift: version.h=$v plist=$pv"; exit 1; }
           test -f build/FMDV-macos.zip || { echo "release zip missing"; exit 1; }
-          echo ".app bundle + zip OK"
+          # Human-facing drag-to-Applications installer (packs the same signed
+          # .app; the zip stays the updater's payload).
+          make dmg
+          test -f build/FMDV-macos.dmg || { echo "release dmg missing"; exit 1; }
+          hdiutil verify build/FMDV-macos.dmg
+          echo ".app bundle + zip + dmg OK"
 
-      - name: Upload macOS app zip
+      - name: Upload macOS release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: fmdv-macos
-          path: build/FMDV-macos.zip
+          path: |
+            build/FMDV-macos.zip
+            build/FMDV-macos.dmg
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -219,4 +226,5 @@ jobs:
           files: |
             fmdv.exe
             FMDV-macos.zip
+            FMDV-macos.dmg
           generate_release_notes: true
