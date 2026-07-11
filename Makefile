@@ -66,17 +66,22 @@ $(APP): $(MAC_BIN) build/AppIcon.icns frontends/macos/Info.plist
 	printf 'APPL????' > $(APP)/Contents/PkgInfo
 	@echo "built $(APP)"
 
-TEST_BIN := build/text-select-test
-$(TEST_BIN): tests/text_select_test.cpp core/text_select.cpp core/text_select.h core/str.cpp core/str.h
-	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/text_select_test.cpp core/text_select.cpp core/str.cpp -o $(TEST_BIN)
+# --- unit tests: one binary per core module (tests/<name>_test.cpp) ---
+TEST_NAMES := str markdown edit_assist release_info layout text_select bench_log
+TEST_BINS  := $(TEST_NAMES:%=build/%-test)
+TEST_CORE  := core/str.cpp core/markdown.cpp core/edit_assist.cpp core/release_info.cpp core/layout.cpp core/text_select.cpp
+TEST_HDRS  := tests/test_check.h core/str.h core/markdown.h core/edit_assist.h core/release_info.h core/layout.h core/text_select.h core/bench_log.h
 
-test: $(TEST_BIN)
-	@$(TEST_BIN)
+build/%-test: tests/%_test.cpp $(TEST_CORE) $(TEST_HDRS)
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(TEST_CORE) -o $@
+
+test: $(TEST_BINS)
+	@fail=0; for t in $(TEST_BINS); do \
+	  echo "== $$t =="; ./$$t || fail=1; \
+	done; exit $$fail
 
 check: cli test
-	@echo "== unit tests (text_select) =="
-	@$(TEST_BIN) | tail -1
 	@echo "== parse test.md =="
 	@$(CLI_BIN) parse test.md | head -n 5
 	@echo "== bench-parse test.md =="

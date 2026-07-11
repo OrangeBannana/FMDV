@@ -31,6 +31,22 @@ jobs:
           if (-not (Test-Path cpp\fmdv.exe)) { throw "release exe missing" }
           if (-not (Test-Path cpp\fmdv_dbg.exe)) { throw "debug exe missing" }
 
+      # The same suites `make test` runs on macOS, but compiled with the
+      # Windows core string type (Str = std::wstring) — both 16-bit paths
+      # of core/str.h stay covered.
+      - name: Core unit tests (MinGW)
+        shell: pwsh
+        run: |
+          $gxx = "$env:RUNNER_TEMP\msys64\ucrt64\bin\g++.exe"
+          New-Item -ItemType Directory -Force build | Out-Null
+          $core = "core/str.cpp","core/markdown.cpp","core/edit_assist.cpp","core/release_info.cpp","core/layout.cpp","core/text_select.cpp"
+          foreach ($t in "str","markdown","edit_assist","release_info","layout","text_select","bench_log") {
+            & $gxx -std=c++17 -O2 -Wall -Wextra -Icore "tests/${t}_test.cpp" @core -o "build/${t}-test.exe"
+            if ($LASTEXITCODE) { throw "compile ${t}_test failed" }
+            & "build/${t}-test.exe"
+            if ($LASTEXITCODE) { throw "${t} tests failed" }
+          }
+
       - name: Headless checks (parser + renderer)
         shell: pwsh
         run: |

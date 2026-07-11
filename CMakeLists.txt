@@ -43,6 +43,14 @@ target_compile_definitions(fmdv-cli PRIVATE
   FMDV_COMMIT="${FMDV_COMMIT}"
   FMDV_BUILD="cmake")
 
+# --- core unit tests (also run by `make test`; here wired to ctest) ---
+enable_testing()
+foreach(t str markdown edit_assist release_info layout text_select bench_log)
+  add_executable(${t}-test tests/${t}_test.cpp)
+  target_link_libraries(${t}-test PRIVATE fmdv_core)
+  add_test(NAME ${t} COMMAND ${t}-test)
+endforeach()
+
 # --- macOS frontend (headless CoreText/CoreGraphics renderer for now) ---
 if(APPLE)
   add_executable(fmdv-macos

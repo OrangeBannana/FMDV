@@ -2,18 +2,12 @@
 // backs the macOS preview's Cmd+F and text selection/copy. Built and run by
 // `make check`. No UI — pure logic.
 #include "text_select.h"
-#include <cstdio>
+#include "test_check.h"
 #include <string>
 
 using namespace fmdv;
 
-static int failures = 0;
 static std::string u8(const Str& s) { return ToUtf8(s); }
-
-static void check(bool ok, const char* name) {
-    std::printf("%s  %s\n", ok ? "OK  " : "FAIL", name);
-    if (!ok) failures++;
-}
 
 // Build a fragment line: words laid out left-to-right with a space gap, one baseline.
 static void addLine(std::vector<SelFrag>& v, std::initializer_list<const char*> words,
@@ -86,6 +80,25 @@ int main() {
     check(mc.size() == 1 && mc[0].frag == 0 && mc[0].start == 1 && mc[0].len == 2,
           "find: CJK match at code-unit offset 1, len 2");
 
-    std::printf("\n%s (%d failures)\n", failures ? "TESTS FAILED" : "ALL PASS", failures);
-    return failures ? 1 : 0;
+    // ---- edge cases ----
+    check(FindMatches({}, FromUtf8("x")).empty(), "find: empty fragment list");
+    check(FindMatches(frags, FromUtf8("supercalifragilistic")).empty(),
+          "find: query longer than any fragment");
+    // non-overlapping scan: "aaa" contains "aa" once, not twice
+    std::vector<SelFrag> tri = { {FromUtf8("aaa"), 0, 24, 10} };
+    check(FindMatches(tri, FromUtf8("aa")).size() == 1, "find: matches don't overlap");
+    // case folding is ASCII-only: 'É' vs 'é' don't match
+    std::vector<SelFrag> acc = { {FromUtf8("\xC3\x89"), 0, 8, 10} }; // É
+    check(FindMatches(acc, FromUtf8("\xC3\xA9")).empty(), "find: folding is ASCII-only");
+
+    check(SelectionText({}, 0, 0, 0, 5).empty(), "select: empty fragment list");
+    check(u8(SelectionText(frags, 0, 0, 0, 999)) == "The",
+          "select: char offsets clamp to fragment length");
+    check(u8(SelectionText(frags, -3, 0, 0, 3)) == "The",
+          "select: negative start fragment clamps");
+    check(u8(SelectionText(frags, 6, 0, 999, 3)) == "dog",
+          "select: end fragment clamps to fragment count");
+    check(SelectionText(frags, 1, 2, 1, 2).empty(), "select: zero-width selection is empty");
+
+    return summary();
 }

@@ -635,7 +635,9 @@ is an environment limitation, not a work item.)
 
 ### 2. Live macOS interactions — compile + no-crash only (logic is unit-tested)
 
-The find/selection *logic* has unit tests (`tests/text_select_test.cpp`) and
+The shared core *logic* is unit-tested (`tests/` — parser, layout, edit
+helpers, release parsing, string conversion, find/selection; ≈98% line
+coverage, run on both CI jobs) and
 rendering/TOC/ghost-text are verified via PNG/live-capture, but these
 event-driven paths need a hands-on pass on a Mac desktop (no screen capture in
 CI):

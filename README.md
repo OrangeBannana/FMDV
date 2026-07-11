@@ -76,6 +76,12 @@ powershell -File tests\run-tests.ps1          # 73-check suite
 powershell -File tests\run-tests-hidden.ps1   # same, windows kept off-screen
 ```
 
+The shared `core/` has its own unit-test suites in [`tests/`](tests/) (parser,
+layout, edit helpers, release parsing, string conversion, find/selection,
+bench logging — ~240 checks, ≈98% line coverage of `core/`). Run them with
+`make test` (macOS/Linux) or `ctest` after a CMake build; CI runs them on both
+Windows (MinGW) and macOS.
+
 Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 `ucrt64`): have `g++` on `PATH`, set `FMDV_MINGW` to the toolchain's `bin`
 directory, or pass `-MinGW <path>` to `build.ps1`.
