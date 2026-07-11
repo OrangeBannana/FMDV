@@ -11,6 +11,7 @@
 #   make app     assemble + codesign build/FMDV.app                 [macOS only]
 #   make dist    zip the .app into build/FMDV-macos.zip (updater)   [macOS only]
 #   make dmg     drag-to-Applications build/FMDV-macos.dmg (release)[macOS only]
+#   make notarize  notarize + staple the zip & dmg (Developer ID)   [macOS only]
 #   make uitest  live-UI suite driving the real app (tests/run-tests.sh)
 #   make clean
 
@@ -30,7 +31,7 @@ MAC_DEPS := frontends/macos/mac_render.h core/layout.h core/markdown.h core/str.
 MAC_FRAMEWORKS := -framework Cocoa -framework CoreGraphics -framework CoreText -framework ImageIO
 MAC_BIN  := build/fmdv-macos
 
-.PHONY: cli macos app dist dmg test uitest check clean
+.PHONY: cli macos app dist dmg notarize test uitest check clean
 cli: $(CLI_BIN)
 
 $(CLI_BIN): $(CLI_SRCS) $(CLI_DEPS)
@@ -103,7 +104,7 @@ dist: $(APP)
 # .app next to an /Applications symlink so the mounted window offers the
 # conventional drag target, then packs a compressed read-only image. No custom
 # background/icon layout — robust and dependency-free (hdiutil only). Inherits
-# the .app's signature; notarize the .dmg once Developer ID is available.
+# the .app's signature; `make notarize` produces the notarized release .dmg.
 DMG := build/FMDV-macos.dmg
 
 dmg: $(APP)
@@ -115,6 +116,16 @@ dmg: $(APP)
 		-fs HFS+ -format UDZO -ov "$(DMG)" >/dev/null
 	rm -rf build/dmg-stage
 	@echo "built $(DMG) (version $(VERSION))"
+
+# Notarize + staple both release artifacts (zip + dmg) via scripts/notarize.sh.
+# Run after a Developer ID build: `make dist FMDV_SIGN_ID="Developer ID
+# Application: ..."`. Needs a Developer ID cert and stored notarytool
+# credentials — see the script header. Pass FMDV_NOTARY_PROFILE to override the
+# keychain profile (default: fmdv-notary).
+FMDV_NOTARY_PROFILE ?= fmdv-notary
+
+notarize:
+	scripts/notarize.sh "$(FMDV_NOTARY_PROFILE)"
 
 # --- unit tests: one binary per core module (tests/<name>_test.cpp) ---
 TEST_NAMES := str markdown edit_assist release_info layout text_select bench_log
