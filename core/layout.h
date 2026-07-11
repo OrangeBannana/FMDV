@@ -52,12 +52,18 @@ struct DrawCommand {
     enum Kind { FillRect, FrameRect, Line, Text };
     Kind kind = FillRect;
     RectF rect;        // FillRect/FrameRect: the box. Line: (x,y)->(w,h) as (x2,y2).
-                       // Text: x = rect.x (left), rect.y = baseline y, rect.h = line height.
+                       // Text: x = rect.x (left), rect.y = baseline y,
+                       // rect.w = run advance width, rect.h = the run's own font
+                       // height (frontends recover the top as baseline - ascent).
     Color color;
     FontSpec font;     // Text only
     Str text;          // Text only
-    bool underline = false; // Text: link underline
-    bool strike = false;    // Text: strikethrough
+    bool underline = false; // Text: link underline (links also get explicit Line cmds)
+    bool strike = false;    // Text: strikethrough (also emitted as a Line cmd)
+    bool spaceBefore = false; // Text: a space separated this run from the previous
+                              // one on the line (drives copy spacing)
+    bool selectable = true;   // Text: false for list markers (bullet/number),
+                              // which are drawn but not selectable/copyable
 };
 
 // A clickable link rectangle (document space) recorded during layout.
@@ -83,11 +89,18 @@ struct LayoutResult {
     std::vector<DrawCommand> cmds;
     std::vector<LinkHit> links;
     std::vector<HeadingRef> headings;
+    std::vector<double> blockTops; // document-space top y per doc.blocks[i]
+                                   // (TOC scroll anchors)
     double contentHeight = 0;
 };
 
 // Lay out `doc` at content width `width` (px) with `th`, measuring via `tm`.
+// `scale` multiplies the layout constants (padding/margins), rounded to whole
+// px the way the Win32 frontend always has (zoom * DPI); the measurer is
+// expected to return metrics for correspondingly scaled fonts. Frontends that
+// scale at paint time (macOS: CTM) pass 1.0.
 LayoutResult LayoutDocument(const Document& doc, double width,
-                            const LayoutTheme& th, TextMeasurer& tm);
+                            const LayoutTheme& th, TextMeasurer& tm,
+                            double scale = 1.0);
 
 } // namespace fmdv

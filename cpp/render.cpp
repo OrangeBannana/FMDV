@@ -110,10 +110,10 @@ static int TextW(HDC hdc, HFONT f, StrView s) {
 }
 
 // ---------------- GDI text measurer ----------------
-// fmdv::TextMeasurer over the font cache above (macOS impl guide, Phase 2 Step
-// 2a). Wraps the exact GetTextExtentPoint32W / GetTextMetricsW calls the layout
-// has always used, so routing measurement through it cannot move pixels. Font
-// px comes from the g_fonts cache (S()-scaled at creation), not FontSpec::px.
+// fmdv::TextMeasurer over the font cache above (macOS impl guide, Phase 2).
+// Wraps the exact GetTextExtentPoint32W / GetTextMetricsW calls the layout has
+// always used, so core layout driven by it reproduces the old engine's pixels.
+// Font px comes from the g_fonts cache (S()-scaled at creation), not FontSpec::px.
 static int RoleIdx(fmdv::FontRole r) {
     switch (r) {
         case fmdv::FontRole::Mono: return F_Mono;
@@ -170,231 +170,28 @@ int FragXAtChar(HDC hdc, const TextFrag& f, int ch) {
 }
 
 // ---------------- cached display list ----------------
-// Layout builds a list of draw commands in DOCUMENT space (y not scroll-adjusted)
-// once; painting culls to the viewport and offsets by scrollY. Scrolling reuses
-// the cached list instead of re-measuring/re-laying-out every frame.
+// Layout (in core/layout) produces draw commands in DOCUMENT space (y not
+// scroll-adjusted) once; they are translated to GDI-typed commands here, and
+// painting culls to the viewport and offsets by scrollY. Scrolling reuses the
+// cached list instead of re-measuring/re-laying-out every frame.
 
 enum CmdKind { C_RECT, C_FRAME, C_LINE, C_TEXT };
 struct DrawCmd {
     int kind;
-    int x, y, w, h;      // RECT/FRAME: x,y,w,h ; LINE: (x,y)->(w,h) ; TEXT: x,y + h=lineHeight
+    int x, y, w, h;      // RECT/FRAME: x,y,w,h ; LINE: (x,y)->(w,h) ; TEXT: x,y + h=run height
     COLORREF color;
     HFONT font;          // TEXT only
     std::wstring text;   // TEXT only
 };
 static std::vector<DrawCmd> g_cmds;
 
-// ---------------- layout primitives ----------------
+// ---------------- layout (shared core engine + GDI translation) ----------------
 
-namespace {
-
-const int PAD_X = 40;       // left/right page padding
-const int PAD_TOP = 32;
-
-struct Word {
-    std::wstring text;
-    HFONT font;
-    COLORREF color;
-    bool code = false;   // inline code background
-    bool link = false;   // underline
-    bool strike = false; // line-through
-    bool space = false;  // a space precedes this word in the source
-    std::wstring href;   // link target (for hit-testing)
-    int width = 0;
-    int height = 0;
-};
-
-struct Ctx {
-    GdiTextMeasurer* tm;           // all text metrics route through this (Step 2a)
-    int contentLeft;
-    int contentRight;
-    const Theme* th;
-    std::vector<LinkHit>* links;   // link hit rects (doc space)
-    std::vector<TextFrag>* frags;  // selectable text runs (doc space)
-};
-
-// FontSpec for a local role (px is informational; the measurer's font cache
-// applies the real S()-scaled size).
-fmdv::FontSpec specFor(int role, bool bold, bool italic) {
-    fmdv::FontRole r;
-    switch (role) {
-        case F_Mono: r = fmdv::FontRole::Mono; break;
-        case F_H1:   r = fmdv::FontRole::H1; break;
-        case F_H2:   r = fmdv::FontRole::H2; break;
-        case F_H3:   r = fmdv::FontRole::H3; break;
-        case F_H4:   r = fmdv::FontRole::H4; break;
-        case F_H5:   r = fmdv::FontRole::H5; break;
-        case F_H6:   r = fmdv::FontRole::H6; break;
-        default:     r = fmdv::FontRole::Body; break;
-    }
-    return fmdv::FontSpec{r, bold, italic, fmdv::RoleSizePx(r)};
+static fmdv::Color ToColor(COLORREF c) {
+    return fmdv::Color{ GetRValue(c), GetGValue(c), GetBValue(c), 255 };
 }
-
-// emit helpers (all coordinates in document space)
-void emitRect(int x, int y, int w, int h, COLORREF c)  { g_cmds.push_back({C_RECT,  x, y, w, h, c, nullptr, {}}); }
-void emitFrame(int x, int y, int w, int h, COLORREF c) { g_cmds.push_back({C_FRAME, x, y, w, h, c, nullptr, {}}); }
-void emitLine(int x1, int y1, int x2, int y2, COLORREF c) { g_cmds.push_back({C_LINE, x1, y1, x2, y2, c, nullptr, {}}); }
-void emitTextCmd(int x, int y, int h, const std::wstring& s, HFONT f, COLORREF c) {
-    g_cmds.push_back({C_TEXT, x, y, 0, h, c, f, s});
-}
-
-// Convert a run sequence into measured words (split on spaces).
-void buildWords(Ctx& cx, const std::vector<InlineRun>& runs, int role,
-                std::vector<Word>& words) {
-    bool pendingSpace = false; // whitespace seen since last emitted word (carries across runs)
-    for (const auto& r : runs) {
-        int useRole = r.code ? F_Mono : role;
-        fmdv::FontSpec spec = specFor(useRole, r.bold, r.italic);
-        HFONT f = cx.tm->font(spec);
-        COLORREF col = cx.th->text;
-        if (!r.href.empty()) col = cx.th->link;
-        else if (r.code) col = cx.th->codeText;
-
-        std::wstring cur;
-        auto flush = [&]() {
-            if (cur.empty()) return;
-            Word w; w.text = cur; w.font = f; w.color = col;
-            w.code = r.code; w.link = !r.href.empty(); w.strike = r.strike;
-            w.href = r.href;
-            w.space = pendingSpace;
-            w.width = (int)cx.tm->textWidth(spec, cur);
-            w.height = (int)cx.tm->lineHeight(spec);
-            words.push_back(w);
-            cur.clear();
-            pendingSpace = false;
-        };
-        for (wchar_t c : r.text) {
-            if (c == L' ' || c == L'\t') { flush(); pendingSpace = true; }
-            else cur += c;
-        }
-        flush();
-    }
-}
-
-// Emit one text run + record it as a selectable fragment (doc space).
-void emitRun(Ctx& cx, int x, int y, int widthPx, int height,
-             const std::wstring& s, HFONT font, COLORREF color, bool spaceBefore) {
-    emitTextCmd(x, y, height, s, font, color);
-    if (cx.frags)
-        cx.frags->push_back(TextFrag{ RECT{ x, y, x + widthPx, y + height }, s, font, spaceBefore });
-}
-
-// Lay out a wrapped run of words starting at x=indentLeft. Emits cmds. Returns y after.
-int layoutWords(Ctx& cx, std::vector<Word>& words, int indentLeft, int y) {
-    int spaceW = (int)cx.tm->textWidth(specFor(F_Body, false, false), L" ");
-    int x = indentLeft;
-    int lineStart = indentLeft;
-    int lineH = 0;
-    std::vector<Word*> line;
-
-    auto flushLine = [&]() {
-        if (line.empty()) { return; }
-        size_t n = line.size();
-        std::vector<int> dxs(n);
-        int dx = lineStart;
-        for (size_t i = 0; i < n; i++) {
-            if (i > 0 && line[i]->space) dx += spaceW;
-            dxs[i] = dx;
-            dx += line[i]->width;
-        }
-        auto topY = [&](Word* w) { return y + (lineH - w->height); };
-
-        // 1. inline-code backgrounds
-        for (size_t i = 0; i < n; i++) if (line[i]->code) {
-            int ty = topY(line[i]);
-            emitRect(dxs[i] - 2, ty, line[i]->width + 4, line[i]->height, cx.th->bg2);
-        }
-        // 2. text (group consecutive same-font+color words -> one run for natural spacing)
-        for (size_t i = 0; i < n; ) {
-            size_t j = i;
-            std::wstring s = line[i]->text;
-            while (j + 1 < n && line[j+1]->font == line[i]->font
-                             && line[j+1]->color == line[i]->color) {
-                j++;
-                s += (line[j]->space ? L" " : L"");
-                s += line[j]->text;
-            }
-            int fx = dxs[i], fy = topY(line[i]);
-            int wpx = dxs[j] + line[j]->width - fx;
-            emitRun(cx, fx, fy, wpx, line[i]->height, s, line[i]->font, line[i]->color,
-                    (i > 0 && line[i]->space));
-            i = j + 1;
-        }
-        // 3. strikethrough
-        for (size_t i = 0; i < n; i++) if (line[i]->strike) {
-            int my = topY(line[i]) + line[i]->height / 2;
-            emitLine(dxs[i], my, dxs[i] + line[i]->width, my, line[i]->color);
-        }
-        // 4. link underline + hit-rect (span consecutive same-href words)
-        for (size_t i = 0; i < n; ) {
-            if (line[i]->href.empty()) { i++; continue; }
-            size_t j = i;
-            while (j + 1 < n && line[j+1]->href == line[i]->href) j++;
-            int x0 = dxs[i], x1 = dxs[j] + line[j]->width;
-            int ty = topY(line[i]);
-            emitLine(x0, ty + line[i]->height - 2, x1, ty + line[i]->height - 2, line[i]->color);
-            if (cx.links)
-                cx.links->push_back(LinkHit{ RECT{ x0, ty, x1, ty + line[i]->height }, line[i]->href });
-            i = j + 1;
-        }
-        y += lineH;
-        line.clear(); lineH = 0; x = lineStart;
-    };
-
-    for (auto& w : words) {
-        int sp = (!line.empty() && w.space) ? spaceW : 0;
-        int need = sp + w.width;
-        if (!line.empty() && x + need > cx.contentRight) {
-            flushLine();
-        } else {
-            x += sp;
-        }
-        line.push_back(&w);
-        x += w.width;
-        if (w.height > lineH) lineH = w.height;
-    }
-    flushLine();
-    return y;
-}
-
-void hline(Ctx&, int l, int r, int y, COLORREF c) {
-    emitRect(l, y, r - l, 1, c);
-}
-
-// Greedy word-wrap of plain text to fit maxWidth. No mid-word breaking (matches
-// layoutWords' paragraph wrapping, which also never splits a word).
-std::vector<std::wstring> WrapCellText(GdiTextMeasurer& tm, const fmdv::FontSpec& f,
-                                       const std::wstring& text, int maxWidth) {
-    std::vector<std::wstring> lines;
-    std::vector<std::wstring> words; std::wstring cur;
-    for (wchar_t c : text) {
-        if (c == L' ' || c == L'\t') { if (!cur.empty()) { words.push_back(cur); cur.clear(); } }
-        else cur += c;
-    }
-    if (!cur.empty()) words.push_back(cur);
-    if (words.empty()) { lines.push_back(L""); return lines; }
-
-    int spaceW = (int)tm.textWidth(f, L" ");
-    std::wstring line = words[0];
-    int lineW = (int)tm.textWidth(f, line);
-    for (size_t i = 1; i < words.size(); i++) {
-        int wW = (int)tm.textWidth(f, words[i]);
-        if (lineW + spaceW + wW <= maxWidth) {
-            line += L" " + words[i];
-            lineW += spaceW + wW;
-        } else {
-            lines.push_back(line);
-            line = words[i];
-            lineW = wW;
-        }
-    }
-    lines.push_back(line);
-    return lines;
-}
-
-} // namespace
-
-// ---------------- layout (build cached display list) ----------------
+static COLORREF ToColorRef(const fmdv::Color& c) { return RGB(c.r, c.g, c.b); }
+static int Px(double v) { return (int)std::llround(v); }
 
 int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
                    std::vector<LinkHit>* links, std::vector<TextFrag>* frags,
@@ -404,249 +201,54 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
     if (frags) frags->clear();
     if (blockTops) blockTops->clear();
 
+    fmdv::LayoutTheme lth;
+    lth.bg = ToColor(th.bg);     lth.bg2 = ToColor(th.bg2);       lth.bg3 = ToColor(th.bg3);
+    lth.text = ToColor(th.text); lth.text2 = ToColor(th.text2);   lth.border = ToColor(th.border);
+    lth.link = ToColor(th.link); lth.codeText = ToColor(th.codeText); lth.sel = ToColor(th.sel);
+
+    // The measurer returns metrics for S()-scaled fonts, and core scales its
+    // layout constants by the same factor, so document space stays in device
+    // pixels exactly as the old GDI layout's did.
     GdiTextMeasurer tm(hdc);
-    Ctx cx;
-    cx.tm = &tm;
-    cx.contentLeft = S(PAD_X);
-    cx.contentRight = width - S(PAD_X);
-    cx.th = &th;
-    cx.links = links;
-    cx.frags = frags;
+    fmdv::LayoutResult res = fmdv::LayoutDocument(doc, width, lth, tm, g_scale);
 
-    int y = S(PAD_TOP);
-    int olCounter = 0; // running number for ordered lists
-
-    for (size_t bi = 0; bi < doc.blocks.size(); bi++) {
-        const Block& b = doc.blocks[bi];
-        if (blockTops) blockTops->push_back(y);
-        // maintain ordered-list counter
-        if (b.type == BlockType::ListItem && b.ordered) {
-            const Block* prev = (bi > 0) ? &doc.blocks[bi-1] : nullptr;
-            if (!prev || prev->type != BlockType::ListItem || !prev->ordered) olCounter = 1;
-            else olCounter++;
-        }
-        switch (b.type) {
-        case BlockType::Heading: {
-            int role = F_H1 + (b.level - 1);
-            if (role > F_H6) role = F_H6;
-            y += (b.level <= 2) ? S(24) : S(18); // top margin
-            std::vector<Word> words; buildWords(cx, b.runs, role, words);
-            y = layoutWords(cx, words, cx.contentLeft, y);
-            if (b.level <= 2) { // underline rule
-                y += S(6);
-                hline(cx, cx.contentLeft, cx.contentRight, y, th.border);
-                y += S(10);
-            } else {
-                y += S(8);
-            }
+    g_cmds.reserve(res.cmds.size());
+    for (const auto& c : res.cmds) {
+        switch (c.kind) {
+        case fmdv::DrawCommand::FillRect:
+            g_cmds.push_back({C_RECT, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
+                              ToColorRef(c.color), nullptr, {}});
             break;
-        }
-        case BlockType::Paragraph: {
-            std::vector<Word> words; buildWords(cx, b.runs, F_Body, words);
-            y = layoutWords(cx, words, cx.contentLeft, y);
-            y += S(16);
+        case fmdv::DrawCommand::FrameRect:
+            g_cmds.push_back({C_FRAME, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
+                              ToColorRef(c.color), nullptr, {}});
             break;
-        }
-        case BlockType::BlockQuote: {
-            std::vector<Word> words;
-            buildWords(cx, b.runs, F_Body, words);
-            for (auto& w : words) if (!w.link) w.color = th.text2;
-            int top = y;
-            int yy = layoutWords(cx, words, cx.contentLeft + S(16), y);
-            // left border bar
-            emitRect(cx.contentLeft, top - 2, S(4), (yy + 2) - (top - 2), th.border);
-            y = yy + S(16);
+        case fmdv::DrawCommand::Line:
+            g_cmds.push_back({C_LINE, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
+                              ToColorRef(c.color), nullptr, {}});
             break;
-        }
-        case BlockType::ListItem: {
-            int bulletX = cx.contentLeft + S(8) + b.level * S(24);
-            int indent = cx.contentLeft + S(24) + b.level * S(24);
-            if (b.taskState >= 0) indent = bulletX + S(24); // extra gap after checkbox
-            // bullet / number / checkbox
-            std::vector<Word> words; buildWords(cx, b.runs, F_Body, words);
-            fmdv::FontSpec bodySpec = specFor(F_Body, false, false);
-            HFONT bf = tm.font(bodySpec);
-            int lineH = words.empty() ? (int)tm.lineHeight(bodySpec) : 0;
-            for (auto& w : words) if (w.height > lineH) lineH = w.height;
-            if (b.taskState >= 0) {
-                emitFrame(bulletX, y + S(3), S(14), S(14), th.text2);
-                if (b.taskState == 1) { // checkmark
-                    emitLine(bulletX + S(3), y + S(10), bulletX + S(6), y + S(13), th.text2);
-                    emitLine(bulletX + S(6), y + S(13), bulletX + S(11), y + S(6), th.text2);
-                }
-            } else if (b.ordered) {
-                wchar_t num[16]; _snwprintf_s(num, 16, _TRUNCATE, L"%d.", olCounter);
-                emitTextCmd(bulletX, y, lineH, num, bf, th.text);
-            } else {
-                emitTextCmd(bulletX, y, lineH, L"\x2022", bf, th.text);
-            }
-            y = layoutWords(cx, words, indent, y);
-            y += S(6);
-            break;
-        }
-        case BlockType::CodeBlock: {
-            fmdv::FontSpec monoSpec = specFor(F_Mono, false, false);
-            HFONT mf = tm.font(monoSpec);
-            int fh = (int)tm.lineHeight(monoSpec);
-            // split code into lines
-            std::vector<std::wstring> lines; std::wstring cur;
-            for (wchar_t c : b.codeText) { if (c == L'\n') { lines.push_back(cur); cur.clear(); } else cur += c; }
-            lines.push_back(cur);
-            int lineH = fh + S(4);
-            int boxTop = y;
-            int boxH = (int)lines.size() * lineH + S(24);
-            emitRect(cx.contentLeft, boxTop, cx.contentRight - cx.contentLeft, boxH, th.bg2);
-            int ty = boxTop + S(12);
-            for (auto& ln : lines) {
-                int wpx = (int)tm.textWidth(monoSpec, ln);
-                emitRun(cx, cx.contentLeft + S(16), ty, wpx, fh, ln, mf, th.codeText, false);
-                ty += lineH;
-            }
-            y = boxTop + boxH + S(16);
-            break;
-        }
-        case BlockType::Table: {
-            int cols = (int)b.headers.size();
-            if (cols == 0) { break; }
-            int avail = cx.contentRight - cx.contentLeft;
-            fmdv::FontSpec bodySpec = specFor(F_Body, false, false);
-            fmdv::FontSpec boldSpec = specFor(F_Body, true, false);
-            HFONT bf = tm.font(bodySpec);
-            HFONT bfBold = tm.font(boldSpec);
-            int fh = (int)tm.lineHeight(bodySpec);
-            int cellPadX = S(8), cellPadY = S(7), lineGap = S(4), minColW = S(60);
-
-            auto cellText = [](const std::vector<InlineRun>& runs) {
-                std::wstring s; for (auto& r : runs) s += r.text; return s;
-            };
-
-            // 1. natural (unwrapped) content width per column, from header + all rows
-            std::vector<int> naturalPad(cols);
-            for (int c = 0; c < cols; c++) naturalPad[c] = (int)tm.textWidth(boldSpec, cellText(b.headers[c].runs)) + 2 * cellPadX;
-            for (auto& row : b.rows)
-                for (int c = 0; c < cols && c < (int)row.cells.size(); c++) {
-                    int w = (int)tm.textWidth(bodySpec, cellText(row.cells[c].runs)) + 2 * cellPadX;
-                    if (w > naturalPad[c]) naturalPad[c] = w;
-                }
-
-            // 2. column widths: stretch proportionally to fill available width when
-            // content fits; otherwise shrink proportionally (floor at minColW) and
-            // wrap cell text that no longer fits.
-            long long totalNatural = 0; for (int w : naturalPad) totalNatural += w;
-            if (totalNatural < 1) totalNatural = 1;
-            std::vector<int> colW(cols);
-            if (totalNatural <= avail) {
-                int surplus = avail - (int)totalNatural, used = 0;
-                for (int c = 0; c < cols; c++) {
-                    int share = (c == cols - 1) ? (surplus - used)
-                                                 : (int)(surplus * (long long)naturalPad[c] / totalNatural);
-                    used += share;
-                    colW[c] = naturalPad[c] + share;
-                }
-            } else {
-                // Shrink proportionally, but a naive single pass can push several
-                // columns below minColW and, once floored, their combined width can
-                // exceed avail (the exact overflow this feature exists to prevent).
-                // Iteratively floor columns that would go below minColW and
-                // redistribute the remaining width among the rest (same idea as
-                // CSS flexbox min-width negotiation) so the total never exceeds avail.
-                std::vector<bool> floored(cols, false);
-                int remainingAvail = avail;
-                long long remainingNatural = totalNatural;
-                for (int iter = 0; iter < cols; iter++) {
-                    bool changed = false;
-                    for (int c = 0; c < cols; c++) {
-                        if (floored[c]) continue;
-                        int w = (remainingNatural > 0)
-                            ? (int)((long long)naturalPad[c] * remainingAvail / remainingNatural)
-                            : minColW;
-                        if (w < minColW) {
-                            floored[c] = true;
-                            colW[c] = minColW;
-                            remainingAvail -= minColW;
-                            remainingNatural -= naturalPad[c];
-                            changed = true;
-                        }
-                    }
-                    if (!changed) break;
-                }
-                for (int c = 0; c < cols; c++)
-                    if (!floored[c])
-                        colW[c] = (remainingNatural > 0)
-                            ? (int)((long long)naturalPad[c] * remainingAvail / remainingNatural)
-                            : minColW;
-            }
-            std::vector<int> colX(cols + 1); colX[0] = cx.contentLeft;
-            for (int c = 0; c < cols; c++) colX[c+1] = colX[c] + colW[c];
-
-            // 3. wrap a row's cells to their column width; row height follows the tallest cell
-            auto wrapRow = [&](const std::vector<TableCell>& cells, const fmdv::FontSpec& f,
-                               std::vector<std::vector<std::wstring>>& outLines) {
-                int lineCount = 1;
-                outLines.assign(cols, {});
-                for (int c = 0; c < cols; c++) {
-                    std::wstring s = (c < (int)cells.size()) ? cellText(cells[c].runs) : L"";
-                    int maxW = colW[c] - 2 * cellPadX;
-                    if (maxW < S(10)) maxW = S(10);
-                    outLines[c] = WrapCellText(tm, f, s, maxW);
-                    if ((int)outLines[c].size() > lineCount) lineCount = (int)outLines[c].size();
-                }
-                return lineCount;
-            };
-            auto drawRow = [&](std::vector<std::vector<std::wstring>>& linesPerCol, int lineCount,
-                               int ry, bool bold, bool stripe) {
-                int rh = lineCount * fh + (lineCount - 1) * lineGap + 2 * cellPadY;
-                if (stripe) emitRect(cx.contentLeft, ry, colX[cols] - cx.contentLeft, rh, th.bg2);
-                const fmdv::FontSpec& fs = bold ? boldSpec : bodySpec;
-                HFONT f = bold ? bfBold : bf;
-                for (int c = 0; c < cols; c++) {
-                    int align = (c < (int)b.aligns.size()) ? b.aligns[c] : AlignLeft;
-                    for (int li = 0; li < (int)linesPerCol[c].size(); li++) {
-                        const std::wstring& s = linesPerCol[c][li];
-                        int tw = (int)tm.textWidth(fs, s);
-                        int tx = colX[c] + cellPadX;
-                        if (align == AlignCenter) tx = colX[c] + (colW[c] - tw) / 2;
-                        else if (align == AlignRight) tx = colX[c+1] - cellPadX - tw;
-                        // route through emitRun so cells are selectable; spaceBefore
-                        // separates columns on copy, wrapped continuation lines get
-                        // their own row (CopySelection inserts \n on a rc.top change)
-                        emitRun(cx, tx, ry + cellPadY + li * (fh + lineGap), tw, fh, s, f, th.text, c > 0 && li == 0);
-                    }
-                }
-                return rh;
-            };
-
-            int tableTop = y;
-            std::vector<std::vector<std::wstring>> hdrLines;
-            int hdrLineCount = wrapRow(b.headers, boldSpec, hdrLines);
-            y += drawRow(hdrLines, hdrLineCount, y, true, true);
-
-            std::vector<int> rowYs{ tableTop, y };
-            for (size_t ri = 0; ri < b.rows.size(); ri++) {
-                std::vector<std::vector<std::wstring>> lines;
-                int lc = wrapRow(b.rows[ri].cells, bodySpec, lines);
-                y += drawRow(lines, lc, y, false, (ri % 2 == 1));
-                rowYs.push_back(y);
-            }
-            int tableBottom = y;
-
-            // grid lines
-            for (int c = 0; c <= cols; c++) emitRect(colX[c], tableTop, 1, tableBottom - tableTop, th.border);
-            for (int ry : rowYs) hline(cx, cx.contentLeft, colX[cols], ry, th.border);
-
-            y = tableBottom + S(16);
-            break;
-        }
-        case BlockType::HRule: {
-            y += S(8);
-            hline(cx, cx.contentLeft, cx.contentRight, y, th.border);
-            y += S(16);
+        case fmdv::DrawCommand::Text: {
+            HFONT f = tm.font(c.font);
+            int x = Px(c.rect.x);
+            int top = Px(c.rect.y) - FontAscent(hdc, f); // rect.y is the baseline
+            int h = Px(c.rect.h);
+            g_cmds.push_back({C_TEXT, x, top, 0, h, ToColorRef(c.color), f, c.text});
+            if (frags && c.selectable)
+                frags->push_back(TextFrag{ RECT{ x, top, x + Px(c.rect.w), top + h },
+                                           c.text, f, c.spaceBefore });
             break;
         }
         }
     }
+    if (links)
+        for (const auto& l : res.links)
+            links->push_back(LinkHit{ RECT{ Px(l.rect.x), Px(l.rect.y),
+                                            Px(l.rect.x + l.rect.w), Px(l.rect.y + l.rect.h) },
+                                      l.href });
+    if (blockTops)
+        for (double t : res.blockTops) blockTops->push_back(Px(t));
 
-    return y + S(PAD_TOP);
+    return Px(res.contentHeight);
 }
 
 // ---------------- paint (cull cached list to viewport + selection) ----------------
