@@ -1,4 +1,5 @@
 #include "render.h"
+#include "layout.h"
 #include <map>
 #include <vector>
 #include <cwctype>
@@ -25,6 +26,7 @@ struct FontKey {
 
 static std::map<FontKey, HFONT> g_fonts;
 static std::map<HFONT, int> g_fontHeight; // cached tmHeight per font
+static std::map<HFONT, int> g_fontAscent; // cached tmAscent per font
 
 static void roleInfo(int role, const wchar_t** family, int* px, bool* forceBold) {
     *forceBold = false;
@@ -65,6 +67,7 @@ void FreeFontCache() {
     for (auto& kv : g_fonts) DeleteObject(kv.second);
     g_fonts.clear();
     g_fontHeight.clear();
+    g_fontAscent.clear();
 }
 
 void SetFontQuality(int quality) {
@@ -88,15 +91,52 @@ static int FontHeight(HDC hdc, HFONT f) {
     TEXTMETRICW tm; GetTextMetricsW(hdc, &tm);
     SelectObject(hdc, old);
     g_fontHeight[f] = tm.tmHeight;
+    g_fontAscent[f] = tm.tmAscent;
     return tm.tmHeight;
 }
 
-static int TextW(HDC hdc, HFONT f, const std::wstring& s) {
+static int FontAscent(HDC hdc, HFONT f) {
+    auto it = g_fontAscent.find(f);
+    if (it != g_fontAscent.end()) return it->second;
+    FontHeight(hdc, f); // fills both caches
+    return g_fontAscent[f];
+}
+
+static int TextW(HDC hdc, HFONT f, StrView s) {
     HFONT old = (HFONT)SelectObject(hdc, f);
-    SIZE sz; GetTextExtentPoint32W(hdc, s.c_str(), (int)s.size(), &sz);
+    SIZE sz; GetTextExtentPoint32W(hdc, s.data(), (int)s.size(), &sz);
     SelectObject(hdc, old);
     return sz.cx;
 }
+
+// ---------------- GDI text measurer ----------------
+// fmdv::TextMeasurer over the font cache above (macOS impl guide, Phase 2 Step
+// 2a). Wraps the exact GetTextExtentPoint32W / GetTextMetricsW calls the layout
+// has always used, so routing measurement through it cannot move pixels. Font
+// px comes from the g_fonts cache (S()-scaled at creation), not FontSpec::px.
+static int RoleIdx(fmdv::FontRole r) {
+    switch (r) {
+        case fmdv::FontRole::Mono: return F_Mono;
+        case fmdv::FontRole::H1:   return F_H1;
+        case fmdv::FontRole::H2:   return F_H2;
+        case fmdv::FontRole::H3:   return F_H3;
+        case fmdv::FontRole::H4:   return F_H4;
+        case fmdv::FontRole::H5:   return F_H5;
+        case fmdv::FontRole::H6:   return F_H6;
+        case fmdv::FontRole::Body: default: return F_Body;
+    }
+}
+
+class GdiTextMeasurer : public fmdv::TextMeasurer {
+public:
+    explicit GdiTextMeasurer(HDC hdc) : hdc_(hdc) {}
+    HFONT font(const fmdv::FontSpec& f) { return GetFont(RoleIdx(f.role), f.bold, f.italic); }
+    double textWidth(const fmdv::FontSpec& f, StrView s) override { return TextW(hdc_, font(f), s); }
+    double lineHeight(const fmdv::FontSpec& f) override { return FontHeight(hdc_, font(f)); }
+    double ascent(const fmdv::FontSpec& f) override { return FontAscent(hdc_, font(f)); }
+private:
+    HDC hdc_;
+};
 
 // ---------------- selection char/x mapping ----------------
 
@@ -165,13 +205,30 @@ struct Word {
 };
 
 struct Ctx {
-    HDC hdc;                       // for text measurement only
+    GdiTextMeasurer* tm;           // all text metrics route through this (Step 2a)
     int contentLeft;
     int contentRight;
     const Theme* th;
     std::vector<LinkHit>* links;   // link hit rects (doc space)
     std::vector<TextFrag>* frags;  // selectable text runs (doc space)
 };
+
+// FontSpec for a local role (px is informational; the measurer's font cache
+// applies the real S()-scaled size).
+fmdv::FontSpec specFor(int role, bool bold, bool italic) {
+    fmdv::FontRole r;
+    switch (role) {
+        case F_Mono: r = fmdv::FontRole::Mono; break;
+        case F_H1:   r = fmdv::FontRole::H1; break;
+        case F_H2:   r = fmdv::FontRole::H2; break;
+        case F_H3:   r = fmdv::FontRole::H3; break;
+        case F_H4:   r = fmdv::FontRole::H4; break;
+        case F_H5:   r = fmdv::FontRole::H5; break;
+        case F_H6:   r = fmdv::FontRole::H6; break;
+        default:     r = fmdv::FontRole::Body; break;
+    }
+    return fmdv::FontSpec{r, bold, italic, fmdv::RoleSizePx(r)};
+}
 
 // emit helpers (all coordinates in document space)
 void emitRect(int x, int y, int w, int h, COLORREF c)  { g_cmds.push_back({C_RECT,  x, y, w, h, c, nullptr, {}}); }
@@ -187,7 +244,8 @@ void buildWords(Ctx& cx, const std::vector<InlineRun>& runs, int role,
     bool pendingSpace = false; // whitespace seen since last emitted word (carries across runs)
     for (const auto& r : runs) {
         int useRole = r.code ? F_Mono : role;
-        HFONT f = GetFont(useRole, r.bold, r.italic);
+        fmdv::FontSpec spec = specFor(useRole, r.bold, r.italic);
+        HFONT f = cx.tm->font(spec);
         COLORREF col = cx.th->text;
         if (!r.href.empty()) col = cx.th->link;
         else if (r.code) col = cx.th->codeText;
@@ -199,8 +257,8 @@ void buildWords(Ctx& cx, const std::vector<InlineRun>& runs, int role,
             w.code = r.code; w.link = !r.href.empty(); w.strike = r.strike;
             w.href = r.href;
             w.space = pendingSpace;
-            w.width = TextW(cx.hdc, f, cur);
-            w.height = FontHeight(cx.hdc, f);
+            w.width = (int)cx.tm->textWidth(spec, cur);
+            w.height = (int)cx.tm->lineHeight(spec);
             words.push_back(w);
             cur.clear();
             pendingSpace = false;
@@ -223,7 +281,7 @@ void emitRun(Ctx& cx, int x, int y, int widthPx, int height,
 
 // Lay out a wrapped run of words starting at x=indentLeft. Emits cmds. Returns y after.
 int layoutWords(Ctx& cx, std::vector<Word>& words, int indentLeft, int y) {
-    int spaceW = TextW(cx.hdc, GetFont(F_Body, false, false), L" ");
+    int spaceW = (int)cx.tm->textWidth(specFor(F_Body, false, false), L" ");
     int x = indentLeft;
     int lineStart = indentLeft;
     int lineH = 0;
@@ -305,7 +363,8 @@ void hline(Ctx&, int l, int r, int y, COLORREF c) {
 
 // Greedy word-wrap of plain text to fit maxWidth. No mid-word breaking (matches
 // layoutWords' paragraph wrapping, which also never splits a word).
-std::vector<std::wstring> WrapCellText(HDC hdc, HFONT f, const std::wstring& text, int maxWidth) {
+std::vector<std::wstring> WrapCellText(GdiTextMeasurer& tm, const fmdv::FontSpec& f,
+                                       const std::wstring& text, int maxWidth) {
     std::vector<std::wstring> lines;
     std::vector<std::wstring> words; std::wstring cur;
     for (wchar_t c : text) {
@@ -315,11 +374,11 @@ std::vector<std::wstring> WrapCellText(HDC hdc, HFONT f, const std::wstring& tex
     if (!cur.empty()) words.push_back(cur);
     if (words.empty()) { lines.push_back(L""); return lines; }
 
-    int spaceW = TextW(hdc, f, L" ");
+    int spaceW = (int)tm.textWidth(f, L" ");
     std::wstring line = words[0];
-    int lineW = TextW(hdc, f, line);
+    int lineW = (int)tm.textWidth(f, line);
     for (size_t i = 1; i < words.size(); i++) {
-        int wW = TextW(hdc, f, words[i]);
+        int wW = (int)tm.textWidth(f, words[i]);
         if (lineW + spaceW + wW <= maxWidth) {
             line += L" " + words[i];
             lineW += spaceW + wW;
@@ -345,8 +404,9 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
     if (frags) frags->clear();
     if (blockTops) blockTops->clear();
 
+    GdiTextMeasurer tm(hdc);
     Ctx cx;
-    cx.hdc = hdc;
+    cx.tm = &tm;
     cx.contentLeft = S(PAD_X);
     cx.contentRight = width - S(PAD_X);
     cx.th = &th;
@@ -404,8 +464,9 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
             if (b.taskState >= 0) indent = bulletX + S(24); // extra gap after checkbox
             // bullet / number / checkbox
             std::vector<Word> words; buildWords(cx, b.runs, F_Body, words);
-            HFONT bf = GetFont(F_Body, false, false);
-            int lineH = words.empty() ? FontHeight(hdc, bf) : 0;
+            fmdv::FontSpec bodySpec = specFor(F_Body, false, false);
+            HFONT bf = tm.font(bodySpec);
+            int lineH = words.empty() ? (int)tm.lineHeight(bodySpec) : 0;
             for (auto& w : words) if (w.height > lineH) lineH = w.height;
             if (b.taskState >= 0) {
                 emitFrame(bulletX, y + S(3), S(14), S(14), th.text2);
@@ -424,8 +485,9 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
             break;
         }
         case BlockType::CodeBlock: {
-            HFONT mf = GetFont(F_Mono, false, false);
-            int fh = FontHeight(hdc, mf);
+            fmdv::FontSpec monoSpec = specFor(F_Mono, false, false);
+            HFONT mf = tm.font(monoSpec);
+            int fh = (int)tm.lineHeight(monoSpec);
             // split code into lines
             std::vector<std::wstring> lines; std::wstring cur;
             for (wchar_t c : b.codeText) { if (c == L'\n') { lines.push_back(cur); cur.clear(); } else cur += c; }
@@ -436,7 +498,7 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
             emitRect(cx.contentLeft, boxTop, cx.contentRight - cx.contentLeft, boxH, th.bg2);
             int ty = boxTop + S(12);
             for (auto& ln : lines) {
-                int wpx = TextW(hdc, mf, ln);
+                int wpx = (int)tm.textWidth(monoSpec, ln);
                 emitRun(cx, cx.contentLeft + S(16), ty, wpx, fh, ln, mf, th.codeText, false);
                 ty += lineH;
             }
@@ -447,9 +509,11 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
             int cols = (int)b.headers.size();
             if (cols == 0) { break; }
             int avail = cx.contentRight - cx.contentLeft;
-            HFONT bf = GetFont(F_Body, false, false);
-            HFONT bfBold = GetFont(F_Body, true, false);
-            int fh = FontHeight(hdc, bf);
+            fmdv::FontSpec bodySpec = specFor(F_Body, false, false);
+            fmdv::FontSpec boldSpec = specFor(F_Body, true, false);
+            HFONT bf = tm.font(bodySpec);
+            HFONT bfBold = tm.font(boldSpec);
+            int fh = (int)tm.lineHeight(bodySpec);
             int cellPadX = S(8), cellPadY = S(7), lineGap = S(4), minColW = S(60);
 
             auto cellText = [](const std::vector<InlineRun>& runs) {
@@ -458,10 +522,10 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
 
             // 1. natural (unwrapped) content width per column, from header + all rows
             std::vector<int> naturalPad(cols);
-            for (int c = 0; c < cols; c++) naturalPad[c] = TextW(hdc, bfBold, cellText(b.headers[c].runs)) + 2 * cellPadX;
+            for (int c = 0; c < cols; c++) naturalPad[c] = (int)tm.textWidth(boldSpec, cellText(b.headers[c].runs)) + 2 * cellPadX;
             for (auto& row : b.rows)
                 for (int c = 0; c < cols && c < (int)row.cells.size(); c++) {
-                    int w = TextW(hdc, bf, cellText(row.cells[c].runs)) + 2 * cellPadX;
+                    int w = (int)tm.textWidth(bodySpec, cellText(row.cells[c].runs)) + 2 * cellPadX;
                     if (w > naturalPad[c]) naturalPad[c] = w;
                 }
 
@@ -516,7 +580,7 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
             for (int c = 0; c < cols; c++) colX[c+1] = colX[c] + colW[c];
 
             // 3. wrap a row's cells to their column width; row height follows the tallest cell
-            auto wrapRow = [&](const std::vector<TableCell>& cells, HFONT f,
+            auto wrapRow = [&](const std::vector<TableCell>& cells, const fmdv::FontSpec& f,
                                std::vector<std::vector<std::wstring>>& outLines) {
                 int lineCount = 1;
                 outLines.assign(cols, {});
@@ -524,7 +588,7 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
                     std::wstring s = (c < (int)cells.size()) ? cellText(cells[c].runs) : L"";
                     int maxW = colW[c] - 2 * cellPadX;
                     if (maxW < S(10)) maxW = S(10);
-                    outLines[c] = WrapCellText(hdc, f, s, maxW);
+                    outLines[c] = WrapCellText(tm, f, s, maxW);
                     if ((int)outLines[c].size() > lineCount) lineCount = (int)outLines[c].size();
                 }
                 return lineCount;
@@ -533,12 +597,13 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
                                int ry, bool bold, bool stripe) {
                 int rh = lineCount * fh + (lineCount - 1) * lineGap + 2 * cellPadY;
                 if (stripe) emitRect(cx.contentLeft, ry, colX[cols] - cx.contentLeft, rh, th.bg2);
+                const fmdv::FontSpec& fs = bold ? boldSpec : bodySpec;
                 HFONT f = bold ? bfBold : bf;
                 for (int c = 0; c < cols; c++) {
                     int align = (c < (int)b.aligns.size()) ? b.aligns[c] : AlignLeft;
                     for (int li = 0; li < (int)linesPerCol[c].size(); li++) {
                         const std::wstring& s = linesPerCol[c][li];
-                        int tw = TextW(hdc, f, s);
+                        int tw = (int)tm.textWidth(fs, s);
                         int tx = colX[c] + cellPadX;
                         if (align == AlignCenter) tx = colX[c] + (colW[c] - tw) / 2;
                         else if (align == AlignRight) tx = colX[c+1] - cellPadX - tw;
@@ -553,13 +618,13 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
 
             int tableTop = y;
             std::vector<std::vector<std::wstring>> hdrLines;
-            int hdrLineCount = wrapRow(b.headers, bfBold, hdrLines);
+            int hdrLineCount = wrapRow(b.headers, boldSpec, hdrLines);
             y += drawRow(hdrLines, hdrLineCount, y, true, true);
 
             std::vector<int> rowYs{ tableTop, y };
             for (size_t ri = 0; ri < b.rows.size(); ri++) {
                 std::vector<std::vector<std::wstring>> lines;
-                int lc = wrapRow(b.rows[ri].cells, bf, lines);
+                int lc = wrapRow(b.rows[ri].cells, bodySpec, lines);
                 y += drawRow(lines, lc, y, false, (ri % 2 == 1));
                 rowYs.push_back(y);
             }

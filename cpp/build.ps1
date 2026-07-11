@@ -21,7 +21,8 @@ if ($LASTEXITCODE -ne 0) { Write-Host "windres FAILED"; exit 1 }
 
 # Shared platform-neutral core lives in ..\core (see docs/macos-implementation-guide.md).
 $srcs = @("fmdv.cpp", "render.cpp", "prefs.cpp", "updater.cpp",
-          "..\core\str.cpp", "..\core\markdown.cpp", "..\core\edit_assist.cpp", "..\core\release_info.cpp")
+          "..\core\str.cpp", "..\core\markdown.cpp", "..\core\edit_assist.cpp", "..\core\release_info.cpp",
+          "..\core\layout.cpp")
 
 $common = @(
     "-municode", "-std=c++17", "-Wall", "-Wextra", "-I..\core",
