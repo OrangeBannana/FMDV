@@ -64,10 +64,10 @@ content pipeline — consistent with FMDV's fast-first-paint goal.
 
 The macOS (`macos`) and Windows (`win32`) frontends emit the **same 15-column
 schema**, so their `layout_once` / `paint_viewport_avg` / `scroll_paint_avg`
-rows are directly comparable. Compare medians on similar hardware, noting that
-the two frontends use different layout engines (GDI vs the shared `core/layout`),
-so small metric differences are expected — compare structure and order of
-magnitude, not exact pixels.
+rows are directly comparable. Since 2026-07-11 both frontends also run the
+**same shared layout engine** (`core/layout`); only text measurement (GDI vs
+CoreText) and painting differ, so compare medians on similar hardware and
+expect small text-metric differences, not structural ones.
 
 The macOS rows are captured above. The **win32 headless layout/render rows are
 now produced in CI**: the `build` (windows-latest) job runs `fmdv_dbg.exe
@@ -77,12 +77,54 @@ the `win32` layout/render column here. The one metric CI cannot produce is **GUI
 first-paint/startup**, which needs a real Windows desktop with a window server
 (`--bench-startup`).
 
-## Pending
+## Windows — desktop baseline (`local-desktop`)
 
-- **Windows GUI first-paint** — `fmdv_dbg.exe … --bench-startup` needs a real
-  Windows desktop (CI has no window server). The layout/render rows are already
-  covered by the CI `win32-bench` artifact described above.
-- **Windows adoption of `core/layout`** — the shared engine currently backs the
-  macOS frontend; migrating `render.cpp` onto it is a separate, Windows-tested
-  step. Plan:
-  [render → core/layout migration](../../docs/render-core-layout-migration.md).
+Captured on a real Windows desktop (the metric CI cannot produce), including the
+Phase 1 regression check of the core split against pre-split `main`.
+
+- Machine: AMD Ryzen 7 5700U, Windows 11 Home (26200)
+- Toolchain: MSYS2 UCRT64 g++ 16.1.0, per `cpp/build.ps1`
+- Commit: `a96e8ac` (branch) vs `8aaaa9a` (main); warm runs
+
+**GUI first paint — regression check vs `main`** (release build, `test.md`,
+default window, same `FMDV_TIMING` instrument on both, 12 runs each):
+
+| Build | First-paint median | p95 |
+| --- | --- | --- |
+| `main` (pre-core-split, `8aaaa9a`) | 35.8 ms | 37.4 ms |
+| this branch (post-core-split) | 36.1 ms | 44.6 ms |
+
+Delta: **+0.2 ms (+0.6 %) median — within the Phase 1 budget** (<5 % or <5 ms).
+
+**`--bench-startup` schema rows** (release, `test.md`, 900×700, 12 runs):
+`first_paint` median 53.6 ms / p95 73.9 ms; `window_shown` median 47.2 ms.
+(Higher than the `FMDV_TIMING` numbers above because the elapsed clock starts at
+`process_start` and the run forces an explicit window size.)
+
+**`--bench-render`** (debug build, matching the CI `win32-bench` artifact;
+width 900, viewport 700, 200 scroll runs):
+
+| File | layout_once | paint_viewport_avg | scroll_paint_avg |
+| --- | --- | --- | --- |
+| `test.md` | 3.17 ms | 1.04 ms | 1.09 ms |
+| `README.md` | 16.2 ms (90 ms cold¹) | 2.51 ms | 4.51 ms |
+| `cpp/tests/stress.md` | 3.89 ms | 2.01 ms | 1.67 ms |
+
+¹ README embeds screenshots; the first layout pays a one-time PNG decode.
+`main` shows the same behavior (`--benchpaint`: ~20 ms warm), so this is
+pre-existing, not a core-split regression.
+
+**Post-layout-migration re-check** (same machine, after the win32 frontend
+adopted `core/layout` — the two frontends now share one layout engine):
+`--bench-startup` `first_paint` median 28.8 ms / p95 32.6 ms (12 runs, warm) —
+no regression vs the 53.6 ms pre-migration row above (laptop turbo variance
+makes the improvement hard to attribute; the budget check is what matters).
+`--bench-render` (debug): `test.md` layout 1.07 ms / viewport 0.46 ms /
+scroll 0.50 ms; `stress.md` 1.37 / 0.80 / 0.88 — unchanged or better, with
+byte-identical `--dump` PNGs.
+
+## Pending
+- Nothing — the Windows adoption of `core/layout` landed 2026-07-11
+  (PNG-diff-gated; see
+  [render → core/layout migration](../../docs/render-core-layout-migration.md)),
+  so both frontends now measure the same shared layout engine.

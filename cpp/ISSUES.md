@@ -132,6 +132,11 @@ _(none)_
 - WM_PRINTCLIENT bypasses WM_CTLCOLOREDIT (PrintWindow showed light editor in dark mode) — testing artifact only; real on-screen grab confirmed correct dark theming.
 
 ## Notes / decisions
+- `core/layout` migration landed (2026-07-11): the win32 layout now runs the
+  shared engine; `render.cpp` translates the core display list into its cached
+  GDI command list and paints as before. Two PNG-diff-gated steps (byte-identical
+  `--dump` output, 71/71 suite, bench unchanged-or-better) — see
+  [docs/render-core-layout-migration.md](../docs/render-core-layout-migration.md).
 - Portable MinGW unzipped locally on the original dev machine (MSI installers blocked by policy).
 - Testing relies on `--dump` PNG output since no screen access.
 - Coexists with the working Go/WebView2 build until P7; root `fmdv.exe` stays the

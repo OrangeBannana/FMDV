@@ -88,7 +88,8 @@ This directory is the Win32 frontend; the platform-neutral parts live in
 See [../docs/macos-implementation-guide.md](../docs/macos-implementation-guide.md).
 
 - `fmdv.cpp` — WinMain, window/message loop, input, editor, scrolling, PNG dump
-- `render.h/.cpp` — font cache + layout/draw engine
+- `render.h/.cpp` — font cache, GDI text measurer, core-display-list → GDI
+  translation, viewport-culled painting, selection hit-testing
 - `prefs.h/.cpp` — preference persistence
 - `theme.h` — light/dark palettes
 - `updater.h/.cpp` — GitHub API fetch + in-place exe swap
@@ -96,6 +97,8 @@ See [../docs/macos-implementation-guide.md](../docs/macos-implementation-guide.m
 
 Shared core (`../core/`):
 - `markdown.h/.cpp` — parser (text → Document)
+- `layout.h/.cpp` — layout engine (Document → draw commands); shared with the
+  macOS frontend, measured through a per-frontend `TextMeasurer`
 - `edit_assist.h/.cpp` — autocomplete, list continuation, table generation
 - `release_info.h/.cpp` — release JSON parsing + version comparison
 - `bench_log.h` — structured benchmark logging schema

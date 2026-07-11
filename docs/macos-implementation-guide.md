@@ -551,11 +551,12 @@ Interpretation rules:
 
 ## Recommended Milestones
 
-> **Status (updated 2026-07-08).** Milestones 2–6 and 8–12 are complete and green
-> in CI (Windows build + a `macos-latest` job that builds the CLI and the AppKit
-> app, runs the unit tests, and renders fixtures). Milestones 1, 7, and 13 have
-> Windows-side remainders (benchmark capture and the GDI→`core/layout` migration
-> — see Remaining Work §4/§5). The macOS app opens files, renders (light/dark),
+> **Status (updated 2026-07-11).** Milestones 1–13 are complete: CI is green on
+> both jobs (Windows build + a `macos-latest` job that builds the CLI and the
+> AppKit app, runs the unit tests, and renders fixtures), the Windows desktop
+> benchmarks are captured (milestone 1/13, see `bench/results/README.md`), and
+> the GDI→`core/layout` migration landed PNG-diff-gated on a real Windows
+> desktop (milestone 7 — see Remaining Work §4/§5). The macOS app opens files, renders (light/dark),
 > scrolls, zooms, selects/copies, follows links, finds (Cmd+F), shows a TOC
 > sidebar (Cmd+Shift+O), and has a lazy split editor with ghost-text
 > autocomplete, list continuation, and table insert.
@@ -606,9 +607,9 @@ is an environment limitation, not a work item.)
 | Updater — auto-update / pin / in-app install | ⛔ blocked by packaging (§3) |
 | Hands-on Mac QA of live interactions (§2) | ⬜ needs a Mac desktop |
 | Packaging — code signing / notarization + release artifact (§3) | ⬜ todo |
-| Windows layout-engine unification (§4) | ⬜ planned (Windows-tested) |
-| Windows benchmark — layout/render (§5) | 🔄 captured via CI artifact |
-| Windows benchmark — GUI first-paint (§5) | ⬜ needs a Windows desktop |
+| Windows layout-engine unification (§4) | ✅ done (2026-07-11, PNG-diff gated) |
+| Windows benchmark — layout/render (§5) | ✅ done (CI artifact + local desktop) |
+| Windows benchmark — GUI first-paint (§5) | ✅ done (local desktop, 2026-07-11) |
 
 ### 1. Feature parity gaps — Windows has these; macOS does not yet
 
@@ -663,23 +664,23 @@ CI):
 
 ### 4. Architecture / optional
 
-- ⬜ **Unify the layout engines.** Milestone 7 (`core/layout`) currently backs
-  only the macOS frontend; Windows still lays out in its GDI `render.cpp`.
-  Migrating `render.cpp` onto `core/layout` would give one shared layout path
-  (and is the last structural item in "Definition of Done"). Optional — Windows
-  works as-is. A concrete, code-grounded step-by-step plan (Step 2a/2b, the
-  specific divergences to resolve, and the PNG-diff gates) is written up in
-  [render → core/layout migration](render-core-layout-migration.md). It is a
-  **Windows-tested** change and hasn't been started — there is no Windows
-  toolchain here to compile it or run the mandatory PNG diff.
+- ✅ **Unify the layout engines.** Done (2026-07-11): `cpp/render.cpp` now
+  calls `fmdv::LayoutDocument` and translates the display list into its cached
+  GDI command list; `core/layout` was rewritten as a faithful, integer-exact
+  port of the original GDI layout (including content-aware table sizing and
+  cell wrapping, which macOS therefore gains for free). Both frontends share
+  one layout engine — the last structural item in "Definition of Done". Landed
+  as two PNG-diff-gated steps on a real Windows desktop; details in
+  [render → core/layout migration](render-core-layout-migration.md).
 
 ### 5. Benchmarks
 
-- 🔄 **Windows baseline.** The win32 headless **layout/render** rows now come from
-  CI — the `build` job prints them and uploads a `win32-bench` artifact (see
-  `bench/results/README.md`). Remaining: **GUI first-paint/startup**
-  (`--bench-startup`), which needs a real Windows desktop (CI has no window
-  server). The macOS and CLI columns are already recorded.
+- ✅ **Windows baseline.** The win32 headless **layout/render** rows come from
+  CI (`win32-bench` artifact), and the **GUI first-paint/startup** rows were
+  captured on a real Windows 11 desktop (2026-07-11), including the pre- vs
+  post-core-split regression check (+0.6 % median — within budget) and a
+  post-layout-migration re-check (no regression). All recorded in
+  `bench/results/README.md` alongside the macOS and CLI columns.
 
 ### 6. Known minor limitations (not necessarily blockers)
 

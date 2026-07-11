@@ -1,6 +1,32 @@
 # Migrating the Windows renderer onto `core/layout`
 
-**Status: planned, not started. This is a Windows-tested change** — it rewrites
+> **Status: DONE (2026-07-11).** Landed as two commits on this branch, each
+> behind the mandatory gate, verified on a real Windows 11 desktop (MSYS2
+> UCRT64 g++ 16.1):
+>
+> - **Step 2a** — `GdiTextMeasurer` routes all layout text metrics through
+>   `fmdv::TextMeasurer`; display-list construction unchanged. Gate: `--dump`
+>   PNGs byte-identical (test.md light/dark/scrolled + stress.md).
+> - **Step 2b** — `core/layout` rewritten as a faithful, integer-exact port of
+>   the GDI layout (Windows semantics are the reference: scaled constants via
+>   the old S() rounding, floored divisions, bottom-aligned line boxes, run
+>   grouping, content-aware table sizing + cell wrapping, blockTops). The Win32
+>   `LayoutDocument` now calls it and translates the display list; `PaintDocument`,
+>   selection, find, and TOC code are untouched. Gate: PNG diff byte-identical
+>   again, full 71-check suite green, `--bench-render` unchanged-or-better,
+>   `--bench-startup` first-paint median within budget (28.8 ms post vs
+>   35.8 ms pre-core-split main baseline; no regression).
+>
+> The divergences called out below were resolved as predicted: tables were the
+> largest sub-task (ported into `core/layout` before 2b), TOC anchors took
+> option (b) (`LayoutResult.blockTops`), zoom kept the bake-scale-into-metrics
+> model (`scale` parameter, default 1.0 for macOS/CLI), and font quality stayed
+> in the frontend's font cache. Selection hit-testing still measures via
+> GDI (`FragCharAtX`/`FragXAtChar` on the translated frags), unchanged.
+>
+> The section below is kept as the original plan for reference.
+
+**This was a Windows-tested change** — it rewrites
 the Win32/GDI layout path (`cpp/render.cpp`) and must be verified with the
 headless `--dump` PNG diff on a Windows build at each step. It cannot be done or
 verified on macOS, and it is the highest-impact regression risk in the guide's
