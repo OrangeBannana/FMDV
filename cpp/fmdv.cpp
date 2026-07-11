@@ -755,6 +755,15 @@ static bool SaveToFile() {
     return true;
 }
 
+// A failed save must be visible and non-destructive: surface the error and (for
+// Save & Close) keep the editor open so the unsaved edits aren't lost.
+static void ReportSaveError(HWND hwnd) {
+    MessageBoxW(hwnd,
+        L"FMDV couldn't write the file. Check its permissions and free disk "
+        L"space; your edits are still open in the editor.",
+        L"Couldn't save the file", MB_OK | MB_ICONWARNING);
+}
+
 // ---------------- markdown autocomplete (ghost text) ----------------
 //
 // The suggestion is drawn as a gray-italic OVERLAY at the caret — it is never
@@ -1796,8 +1805,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (g_hEdit) InvalidateRect(g_hEdit, nullptr, TRUE);
                 if (g_findHwnd) InvalidateRect(g_findHwnd, nullptr, TRUE);
                 return 0;
-            case ID_SAVE:       if (g_editing) SaveToFile(); return 0;
-            case ID_SAVE_CLOSE: if (g_editing) { SaveToFile(); ToggleEditor(hwnd); } return 0;
+            case ID_SAVE:       if (g_editing && !SaveToFile()) ReportSaveError(hwnd); return 0;
+            case ID_SAVE_CLOSE: if (g_editing) { if (SaveToFile()) ToggleEditor(hwnd); else ReportSaveError(hwnd); } return 0;
             case ID_ZOOM_IN:    ApplyZoom(hwnd, g_zoomPct + 10); return 0;
             case ID_ZOOM_OUT:   ApplyZoom(hwnd, g_zoomPct - 10); return 0;
             case ID_ZOOM_RESET: ApplyZoom(hwnd, 100); return 0;

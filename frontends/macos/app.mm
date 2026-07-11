@@ -1006,28 +1006,50 @@ static void StartTestDriver(FMDVAppDelegate* delegate); // --test-drive stdin lo
     [self layoutPanes];
 }
 
+// Write the editor buffer to disk; returns NO on any write error so callers can
+// alert and keep the editor open. Assumes there's something to save (editor open
+// with a file). Writes to a temp file and renames into place so a crash or full
+// disk mid-write can't truncate the document.
+- (BOOL)writeDocToDisk {
+    std::string text = _textView.string.UTF8String ?: ""; // NSTextView already uses LF
+    std::string tmp = _file + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) return NO;
+    bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+    ok = (std::fclose(f) == 0) && ok;
+    if (ok) ok = (std::rename(tmp.c_str(), _file.c_str()) == 0);
+    if (!ok) { std::remove(tmp.c_str()); return NO; }
+    _fileMtime = FileModTime(_file); // our own save shouldn't trigger a live reload
+    return YES;
+}
+// A failed save must be visible and non-destructive: the edits stay in the open
+// editor rather than being silently lost when a reopen reloads from disk.
+- (void)reportSaveFailure {
+    NSBeep();
+    if (getenv("FMDV_TEST_DRIVE")) return; // headless suite: no modal to block on
+    NSAlert* a = [[NSAlert alloc] init];
+    a.messageText = @"Couldn’t save the file";
+    a.informativeText = @"FMDV couldn’t write the file. Check its permissions and "
+                        @"free disk space; your edits are still open in the editor.";
+    [a addButtonWithTitle:@"OK"];
+    [a runModal];
+    [a release];
+}
 - (void)saveDoc:(id)sender {
     (void)sender;
     // Only the editor has anything to save; a Cmd+S in preview mode used to
     // rewrite the file from its own (CR-stripped) contents, silently
     // normalizing it on disk. Matches the Win32 guard (ID_SAVE: if editing).
     if (!_editing || _file.empty()) return;
-    std::string text = _textView.string.UTF8String ?: "";
-    // NSTextView already uses LF; write as UTF-8. Write to a temp file and
-    // rename into place so a crash or full disk mid-write can't truncate the
-    // document.
-    std::string tmp = _file + ".tmp";
-    FILE* f = std::fopen(tmp.c_str(), "wb");
-    if (!f) return;
-    bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
-    ok = (std::fclose(f) == 0) && ok;
-    if (ok) ok = (std::rename(tmp.c_str(), _file.c_str()) == 0);
-    if (!ok) { std::remove(tmp.c_str()); return; }
-    _fileMtime = FileModTime(_file); // our own save shouldn't trigger a live reload
+    if (![self writeDocToDisk]) [self reportSaveFailure];
 }
 - (void)saveAndClose:(id)sender {
-    [self saveDoc:sender];
-    if (_editing) [self toggleEditor:sender]; // save & close editor (Windows Ctrl+Shift+S)
+    (void)sender;
+    if (!_editing || _file.empty()) return;
+    // Close only on success (Windows Ctrl+Shift+S); a failed save keeps the
+    // editor open so the unsaved edits aren't lost to a reload-from-disk.
+    if ([self writeDocToDisk]) [self toggleEditor:sender];
+    else [self reportSaveFailure];
 }
 - (void)insertTable:(id)sender { (void)sender; if (_editing && _textView) [_textView insertTableMarkdown]; }
 
@@ -1537,6 +1559,10 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
         [_window setContentSize:NSMakeSize(wh[0].doubleValue, wh[1].doubleValue)];
         [_window layoutIfNeeded];
         return @"ok";
+    }
+    if ([cmd isEqualToString:@"save-close"]) { // invoke saveAndClose: directly —
+        [self saveAndClose:nil];               // synthetic Cmd+Shift+S can't be told
+        return @"ok";                          // apart from Cmd+S (both keyEquivalent "s")
     }
     if ([cmd isEqualToString:@"capture"]) return [self testCapture:arg];
     if ([cmd isEqualToString:@"quit"]) {

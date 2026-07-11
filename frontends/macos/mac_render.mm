@@ -211,6 +211,14 @@ void BenchLayoutRender(const Document& doc, double width, bool dark, int runs,
     CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGContextRef ctx = CGBitmapContextCreate(nullptr, W, H, 8, 0, cs, kCGImageAlphaPremultipliedLast);
     CGColorSpaceRelease(cs);
+    // A degenerate size (e.g. --width 0) yields a null context; don't paint into
+    // it. Report the layout timing we already have and a zero render median.
+    if (!ctx) {
+        std::sort(lt.begin(), lt.end());
+        layoutMedianMs = lt[lt.size() / 2];
+        renderMedianMs = 0;
+        return;
+    }
     for (int i = 0; i < runs; i++) {
         double t0 = NowMonotonicMs();
         PaintLayout(ctx, H, r, th, tm);

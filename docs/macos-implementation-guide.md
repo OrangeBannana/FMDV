@@ -610,7 +610,7 @@ is an environment limitation, not a work item.)
 | Updater — auto-update / pin / in-app install | ✅ done (E2E-tested vs local fixture server) |
 | Packaging — macOS release artifacts in CI (§3) | ✅ done (`FMDV-macos.zip` updater payload + `FMDV-macos.dmg` drag installer, signed when secrets set) |
 | Packaging — Developer ID signing + notarization (§3) | ⛔ needs maintainer's Apple credentials |
-| Live-UI test suite (`tests/run-tests.sh`, gating in CI) (§2) | ✅ done (76 checks via `--test-drive`) |
+| Live-UI test suite (`tests/run-tests.sh`, gating in CI) (§2) | ✅ done (88 checks via `--test-drive`) |
 | Hands-on Mac QA — mouse paths, Finder association, visuals (§2) | ⬜ small residual list |
 | Windows layout-engine unification (§4) | ✅ done (2026-07-11, PNG-diff gated) |
 | Windows benchmark — layout/render (§5) | ✅ done (CI artifact + local desktop) |
@@ -659,15 +659,17 @@ analog of the Win32 suite (`cpp/tests/run-tests.ps1`). The app gains a
 main thread as **real NSEvents** routed through the normal dispatch (window
 `performKeyEquivalent` → menu → `sendEvent` → first responder), each answered
 synchronously on stdout, so the suite needs no sleeps, no Accessibility/TCC
-permission, and runs gating on hosted `macos-latest` runners. 76 checks:
+permission, and runs gating on hosted `macos-latest` runners. 88 checks:
 parser, headless render dumps, dark/zoom keys, TOC toggle + 3-pane, find bar
 (type/step/wraparound/Esc), select-all + copy across all block types
-(pasteboard-verified), save round-trip, all ghost-text autocomplete triggers,
-list continuation, Cmd+T table insert, live reload on external edit, and the
-full updater flow against a localhost fixture server (picker open/list/Esc,
-notify banner, auto-mode download + bundle swap, `.old` sweep). A `capture`
-command screenshots the live window via `cacheDisplayInRect:` (no Screen
-Recording permission needed) for visual checks.
+(pasteboard-verified), reflow-on-resize (content re-wraps to the new width),
+save round-trip, save-failure handling (editor stays open, edits intact), all
+ghost-text autocomplete triggers, list continuation, Cmd+T table insert, live
+reload on external edit, and the full updater flow against a localhost fixture
+server (picker open/list/Esc, notify banner that tracks the window bottom on
+resize, auto-mode download + bundle swap, `.old` sweep). A `capture` command
+screenshots the live window via `cacheDisplayInRect:` (no Screen Recording
+permission needed) for visual checks.
 
 Still hands-on (not reachable through synthesized keystrokes alone):
 

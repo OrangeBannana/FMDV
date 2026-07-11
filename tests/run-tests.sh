@@ -222,6 +222,32 @@ check "save normalized LF" "$([ "$(grep -c $'\r' "$FIX/save.md")" = 0 ] && echo 
 stop_app
 
 echo
+echo "Save failure handling (editor stays open, edits intact):"
+# `save-close` invokes saveAndClose: directly: a synthetic Cmd+Shift+S can't be
+# distinguished from Cmd+S (both menu items use keyEquivalent "s"), so routing it
+# through NSEvents would exercise plain Save instead. (Same reason the find suite
+# uses `find-step` for Shift+Enter.)
+mkdir -p "$FIX/rodir"
+printf '# Keep Me\n' > "$FIX/rodir/ro.md"
+start_app "$FIX/rodir/ro.md"
+cmd "key cmd+e"; cmd "type # edit"
+chmod 0500 "$FIX/rodir"                 # dir unwritable → temp-file create fails
+cmd "save-close"                        # save & close attempt
+cmd "query editor"; eq "editor stays open when save fails" "$R" "1"
+chmod 0700 "$FIX/rodir"                 # restore for read + cleanup
+eq "file unchanged after failed save" "$(cat "$FIX/rodir/ro.md")" "# Keep Me"
+stop_app
+# the success path of save & close writes the file and closes the editor
+printf '# sc\n' > "$FIX/sc.md"
+start_app "$FIX/sc.md"
+cmd "key cmd+e"; cmd "key cmd+a"; cmd "type # Closed And Saved"
+cmd "query editor"; eq "editor open before save & close" "$R" "1"
+cmd "save-close"
+cmd "query editor"; eq "save & close closes the editor on success" "$R" "0"
+has "save & close wrote the edit" "$(cat "$FIX/sc.md")" "Closed And Saved"
+stop_app
+
+echo
 echo "Markdown autocomplete (ghost text):"
 ac() { # ac <name> <typed> <press-tab 0|1> <want-file-content>
     : > "$FIX/ac.md"

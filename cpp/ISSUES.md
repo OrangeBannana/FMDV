@@ -132,11 +132,23 @@ _(none)_
 - WM_PRINTCLIENT bypasses WM_CTLCOLOREDIT (PrintWindow showed light editor in dark mode) — testing artifact only; real on-screen grab confirmed correct dark theming.
 
 ## Notes / decisions
+- Final-pass review fixes (2026-07-11): a medium-depth review before declaring
+  the port/rewrite/refactor done surfaced two issues, both fixed and tested.
+  (1) A failed editor save was silent and, via Save & Close, discarded the
+  unsaved edits when a reopen reloaded from disk. Save now reports the error and
+  Save & Close keeps the editor open on failure — on both platforms (macOS
+  `reportSaveFailure`/`writeDocToDisk`; Win32 `ReportSaveError`, and
+  `ID_SAVE_CLOSE` now toggles only when `SaveToFile()` succeeds). (2) macOS
+  `BenchLayoutRender` could paint into a NULL `CGContextRef` for a degenerate
+  size (`--bench-render --width 0`); it now guards like `RenderMarkdownToPng`.
+  New macOS checks cover the save-failure path (editor stays open, file intact)
+  and the success close; a `save-close` test command invokes `saveAndClose:`
+  directly since a synthetic Cmd+Shift+S can't be told apart from Cmd+S.
 - macOS live-UI suite landed (2026-07-11): `tests/run-tests.sh` is this
   suite's AppKit analog — the app's `--test-drive` stdin channel executes
   commands as real NSEvents with synchronous replies (no Accessibility
   permission), so unlike the Windows UI suite it runs *gating* on hosted CI.
-  76 checks mirroring the sections below, incl. a full updater install E2E
+  88 checks mirroring the sections below, incl. a full updater install E2E
   against a localhost fixture server.
 - macOS in-app updater landed (2026-07-11): tagged releases now also carry
   `FMDV-macos.zip` (CI `make dist`), `core/release_info` parses its asset URL
