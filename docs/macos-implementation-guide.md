@@ -710,8 +710,8 @@ Still hands-on (not reachable through synthesized keystrokes alone):
   port of the original GDI layout (including content-aware table sizing and
   cell wrapping, which macOS therefore gains for free). Both frontends share
   one layout engine — the last structural item in "Definition of Done". Landed
-  as two PNG-diff-gated steps on a real Windows desktop; details in
-  [render → core/layout migration](render-core-layout-migration.md).
+  as two PNG-diff-gated steps on a real Windows desktop; the step-by-step
+  record is in [cpp/ISSUES.md](../cpp/ISSUES.md).
 
 ### 5. Benchmarks
 

@@ -125,6 +125,5 @@ byte-identical `--dump` PNGs.
 
 ## Pending
 - Nothing — the Windows adoption of `core/layout` landed 2026-07-11
-  (PNG-diff-gated; see
-  [render → core/layout migration](../../docs/render-core-layout-migration.md)),
-  so both frontends now measure the same shared layout engine.
+  (PNG-diff-gated; see [cpp/ISSUES.md](../../cpp/ISSUES.md)), so both frontends
+  now measure the same shared layout engine.

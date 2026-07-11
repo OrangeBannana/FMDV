@@ -84,8 +84,9 @@ Put `fmdv.exe` somewhere stable first (e.g. `%LOCALAPPDATA%\Programs\FMDV\`).
 
 ## Source layout
 This directory is the Win32 frontend; the platform-neutral parts live in
-[`../core/`](../core/) and are shared with the CLI (and the future macOS app).
-See [../docs/macos-implementation-guide.md](../docs/macos-implementation-guide.md).
+[`../core/`](../core/) and are shared with the CLI and the macOS app
+([`../frontends/macos/`](../frontends/macos/)). See
+[../docs/macos-implementation-guide.md](../docs/macos-implementation-guide.md).
 
 - `fmdv.cpp` — WinMain, window/message loop, input, editor, scrolling, PNG dump
 - `render.h/.cpp` — font cache, GDI text measurer, core-display-list → GDI

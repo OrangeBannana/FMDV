@@ -145,9 +145,16 @@ _(none)_
   Windows code is unaffected beyond the extra (ignored) `macUrl` field.
 - `core/layout` migration landed (2026-07-11): the win32 layout now runs the
   shared engine; `render.cpp` translates the core display list into its cached
-  GDI command list and paints as before. Two PNG-diff-gated steps (byte-identical
-  `--dump` output, 71/71 suite, bench unchanged-or-better) — see
-  [docs/render-core-layout-migration.md](../docs/render-core-layout-migration.md).
+  GDI command list and paints as before. Two PNG-diff-gated steps on a real
+  Windows 11 desktop (MSYS2 UCRT64 g++ 16.1) — Step 2a routed metrics through
+  `GdiTextMeasurer` (display list unchanged), Step 2b swapped the layout body
+  for `fmdv::LayoutDocument`. `core/layout` was rewritten as an integer-exact
+  port of the GDI layout (Windows semantics are the reference: scaled `S()`
+  constants, floored divisions, content-aware table sizing + cell wrapping),
+  TOC anchors moved to `LayoutResult.blockTops`, zoom stays baked into metrics
+  via the `scale` parameter, and selection hit-testing still measures via GDI.
+  Gate held: byte-identical `--dump` output, 71/71 suite, bench
+  unchanged-or-better, first-paint within budget.
 - Portable MinGW unzipped locally on the original dev machine (MSI installers blocked by policy).
 - Testing relies on `--dump` PNG output since no screen access.
 - Coexists with the working Go/WebView2 build until P7; root `fmdv.exe` stays the
