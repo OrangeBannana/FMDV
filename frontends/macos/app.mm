@@ -95,6 +95,7 @@ struct Frag {
 - (bool)findBarVisible;
 - (NSString*)findLabelText;
 - (void)stepFind:(int)dir;
+- (NSString*)laidOutInfo; // "<laidOutWidth> <contentHeight>", to probe reflow
 @end
 
 @implementation FMDVPreviewView
@@ -148,7 +149,28 @@ struct Frag {
 - (void)toggleDark { _dark = !_dark; [self savePrefs]; [self relayout]; }
 - (void)zoomBy:(double)f { _zoom = std::min(3.0, std::max(0.5, _zoom * f)); [self savePrefs]; [self relayout]; }
 - (void)zoomReset { _zoom = 1.0; [self savePrefs]; [self relayout]; }
-- (void)viewDidMoveToSuperview { [self relayout]; }
+- (void)viewDidMoveToSuperview {
+    // Reflow when the enclosing NSClipView resizes (window resize, scroller
+    // show/hide), matching the Windows frontend's WM_SIZE relayout. NSClipView
+    // doesn't reliably forward resizeWithOldSuperviewSize: to its document view,
+    // so observe the clip view's frame changes directly.
+    NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
+    [nc removeObserver:self name:NSViewFrameDidChangeNotification object:nil];
+    NSView* clip = self.superview; // the enclosing NSClipView
+    if (clip) {
+        clip.postsFrameChangedNotifications = YES;
+        [nc addObserver:self selector:@selector(clipViewFrameChanged:)
+                   name:NSViewFrameDidChangeNotification object:clip];
+    }
+    [self relayout];
+}
+- (void)clipViewFrameChanged:(NSNotification*)n {
+    (void)n;
+    if (self.superview && self.superview.bounds.size.width != _laidOutWidth) [self relayout];
+    // Keep the floating find bar glued to its top-right anchor on any resize
+    // (a height-only change doesn't relayout but still moves the anchor).
+    if (_findBar && !_findBar.hidden) [self positionFindBar];
+}
 - (void)resizeWithOldSuperviewSize:(NSSize)old {
     [super resizeWithOldSuperviewSize:old];
     if (self.superview && self.superview.bounds.size.width != _laidOutWidth) [self relayout];
@@ -409,6 +431,10 @@ struct Frag {
     [sv reflectScrolledClipView:clip];
 }
 - (std::vector<fmdv::HeadingRef>)headings { return _layout.headings; }
+- (NSString*)laidOutInfo {
+    return [NSString stringWithFormat:@"%d %d", (int)std::llround(_laidOutWidth),
+                                               (int)std::llround(_layout.contentHeight)];
+}
 - (void)scrollToDocY:(double)docY {
     NSScrollView* sv = self.enclosingScrollView;
     if (!sv) return;
@@ -472,6 +498,10 @@ struct Frag {
         }
     }
     if (ev.clickCount == 1) [self clearSelection];
+}
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [super dealloc];
 }
 @end
 
@@ -797,8 +827,17 @@ static void StartTestDriver(FMDVAppDelegate* delegate); // --test-drive stdin lo
     [_container addSubview:_previewScroll];
     [_window setContentView:_container];
     [self layoutPanes];
+    // Keep the floating update banner glued to its bottom anchor on resize; like
+    // the Windows frontend, which repaints the strip from the live client size
+    // every WM_PAINT, it must track the window instead of drifting.
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(windowResized:)
+                                                 name:NSWindowDidResizeNotification object:_window];
     [_window makeKeyAndOrderFront:nil];
     [_window makeFirstResponder:_preview];
+}
+- (void)windowResized:(NSNotification*)n {
+    (void)n;
+    if (_updateBanner && !_updateBanner.hidden) [self positionUpdateBanner];
 }
 
 // Position the optional TOC sidebar (left) and the main pane (preview or editor
@@ -1431,6 +1470,12 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     if ([what isEqualToString:@"installing"]) return _installRunning ? @"1" : @"0";
     if ([what isEqualToString:@"headings"]) // parsed-document probe (live reload tests)
         return [NSString stringWithFormat:@"%zu", [_preview headings].size()];
+    if ([what isEqualToString:@"laidout"]) return [_preview laidOutInfo]; // "<width> <height>"
+    if ([what isEqualToString:@"bannerpos"]) { // "<banner.origin.y> <scrollHeight>", to probe tracking
+        if (!_updateBanner || _updateBanner.hidden || !_previewScroll) return @"hidden";
+        return [NSString stringWithFormat:@"%d %d", (int)std::llround(_updateBanner.frame.origin.y),
+                                                    (int)std::llround(_previewScroll.bounds.size.height)];
+    }
     return nil;
 }
 
@@ -1484,6 +1529,13 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     }
     if ([cmd isEqualToString:@"find-step"]) { // Shift+Enter path: synthetic events can't
         [_preview stepFind:(int)arg.integerValue]; // set NSApp.currentEvent's shift flag
+        return @"ok";
+    }
+    if ([cmd isEqualToString:@"resize"]) { // "resize W H" — drive a window resize (WM_SIZE analog)
+        NSArray<NSString*>* wh = [arg componentsSeparatedByString:@" "];
+        if (wh.count != 2 || !_window) return @"err bad resize";
+        [_window setContentSize:NSMakeSize(wh[0].doubleValue, wh[1].doubleValue)];
+        [_window layoutIfNeeded];
         return @"ok";
     }
     if ([cmd isEqualToString:@"capture"]) return [self testCapture:arg];

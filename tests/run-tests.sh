@@ -185,6 +185,31 @@ check "copy: multi-line" "$([ "$(printf '%s' "$GOT" | wc -l | tr -d ' ')" -ge 8 
 stop_app
 
 echo
+echo "Reflow on resize (WM_SIZE analog):"
+cat > "$FIX/reflow.md" <<'EOF'
+# Reflow
+
+This is a fairly long paragraph of body text that wraps to a different number of
+lines depending on the available content width, so a narrower window produces a
+taller laid-out document than a wide one — no maximum content width, matching the
+Windows frontend which reflows on every WM_SIZE.
+
+A second paragraph so the wide/narrow height difference is unambiguous and easy to
+assert on from the harness driving this window over its stdin channel.
+EOF
+start_app "$FIX/reflow.md"
+cmd "resize 1000 700"; cmd "query laidout"; WIDE=$R
+eq "layout tracks the new width (wide)" "${WIDE%% *}" "1000"
+WIDE_H=${WIDE#* }
+cmd "resize 480 700"; cmd "query laidout"; NARROW=$R
+eq "layout tracks the new width (narrow)" "${NARROW%% *}" "480"
+NARROW_H=${NARROW#* }
+check "narrower width reflows taller" "$([ "$NARROW_H" -gt "$WIDE_H" ] && echo 1 || echo 0)" "wide=$WIDE_H narrow=$NARROW_H"
+cmd "resize 1000 700"; cmd "query laidout"
+eq "widening reflows back to the wide height" "$R" "$WIDE"
+stop_app
+
+echo
 echo "Save round-trip:"
 printf '# Original\n' > "$FIX/save.md"
 start_app "$FIX/save.md"
@@ -297,6 +322,12 @@ poll "query releases" "2"
 eq "release list arrives" "$R" "2"
 poll "query banner" "FMDV v9.9.9 is available"
 has "notify banner appears (newer release)" "$R" "available"
+# banner tracks the bottom edge on resize (its origin.y stays scrollHeight-44,
+# vs. Windows repainting the strip from the live client size each WM_PAINT)
+banner_pinned() { cmd "query bannerpos"; set -- $R; [ "$1" = "$(( $2 - 44 ))" ] && echo 1 || echo 0; }
+cmd "resize 900 640"; check "banner pinned to bottom (tall)"  "$(banner_pinned)" "got '$R'"
+cmd "resize 700 900"; check "banner tracks a taller resize"    "$(banner_pinned)" "got '$R'"
+cmd "resize 800 500"; check "banner tracks a shorter resize"   "$(banner_pinned)" "got '$R'"
 cmd "key esc"; cmd "query picker"; eq "Esc closes the picker" "$R" "0"
 stop_app
 
