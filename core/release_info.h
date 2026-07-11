@@ -10,10 +10,12 @@
 struct ReleaseInfo {
     Str tag;     // release tag, e.g. U16("v1.0.0")
     Str exeUrl;  // browser_download_url of the fmdv.exe asset ("" if none)
+    Str macUrl;  // browser_download_url of the FMDV-macos.zip asset ("" if none)
 };
 
-// Extract tag + fmdv.exe asset URL pairs from a GitHub releases JSON payload
-// (UTF-8), newest first. Returns false if no releases were found.
+// Extract tag + installable asset URLs (fmdv.exe, FMDV-macos.zip) from a
+// GitHub releases JSON payload (UTF-8), newest first. Returns false if no
+// releases were found.
 bool ParseReleasesJson(const std::string& json, std::vector<ReleaseInfo>& out);
 
 // Compare dotted versions; a leading 'v'/'V' is ignored and non-numeric

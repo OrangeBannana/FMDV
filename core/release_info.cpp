@@ -9,6 +9,11 @@ bool ParseReleasesJson(const std::string& json, std::vector<ReleaseInfo>& out) {
     static const char* TAG = "\"tag_name\":\"";
     static const char* URL = "\"browser_download_url\":\"";
     static const char* EXE = "/fmdv.exe";
+    static const char* MAC = "/FMDV-macos.zip";
+    auto endsWith = [](const std::string& s, const char* suf) {
+        size_t n = strlen(suf);
+        return s.size() > n && s.compare(s.size() - n, n, suf) == 0;
+    };
     size_t pos = 0;
     while ((pos = json.find(TAG, pos)) != std::string::npos) {
         pos += strlen(TAG);
@@ -24,11 +29,9 @@ bool ParseReleasesJson(const std::string& json, std::vector<ReleaseInfo>& out) {
             size_t ue = json.find('"', us);
             if (ue == std::string::npos) break;
             std::string cand = json.substr(us, ue - us);
-            if (cand.size() > strlen(EXE) &&
-                cand.compare(cand.size() - strlen(EXE), strlen(EXE), EXE) == 0) {
-                r.exeUrl = FromUtf8(cand);
-                break;
-            }
+            if (r.exeUrl.empty() && endsWith(cand, EXE)) r.exeUrl = FromUtf8(cand);
+            else if (r.macUrl.empty() && endsWith(cand, MAC)) r.macUrl = FromUtf8(cand);
+            if (!r.exeUrl.empty() && !r.macUrl.empty()) break;
             u = json.find(URL, ue);
         }
         out.push_back(std::move(r));

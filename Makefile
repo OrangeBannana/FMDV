@@ -8,7 +8,9 @@
 #   make cli     build build/fmdv-cli
 #   make check   build, then smoke-test parse + bench-parse on test.md
 #   make macos   build the native macOS binary (build/fmdv-macos)  [macOS only]
-#   make app     assemble build/FMDV.app (icon from cpp/fmdv.ico)   [macOS only]
+#   make app     assemble + codesign build/FMDV.app                 [macOS only]
+#   make dist    zip the .app into build/FMDV-macos.zip (release)   [macOS only]
+#   make uitest  live-UI suite driving the real app (tests/run-tests.sh)
 #   make clean
 
 CXX      ?= c++
@@ -27,7 +29,7 @@ MAC_DEPS := frontends/macos/mac_render.h core/layout.h core/markdown.h core/str.
 MAC_FRAMEWORKS := -framework Cocoa -framework CoreGraphics -framework CoreText -framework ImageIO
 MAC_BIN  := build/fmdv-macos
 
-.PHONY: cli macos app test check clean
+.PHONY: cli macos app dist test uitest check clean
 cli: $(CLI_BIN)
 
 $(CLI_BIN): $(CLI_SRCS) $(CLI_DEPS)
@@ -57,14 +59,43 @@ build/AppIcon.icns: cpp/fmdv.ico
 	done
 	iconutil -c icns build/AppIcon.iconset -o build/AppIcon.icns
 
-$(APP): $(MAC_BIN) build/AppIcon.icns frontends/macos/Info.plist
+# App version comes from cpp/version.h (single source of truth); the bundled
+# Info.plist is patched to match so the in-app updater's version compare and
+# the plist never drift.
+VERSION := $(shell awk -F'"' '/define FMDV_VERSION_STR/{print $$2}' cpp/version.h)
+
+# Code signing: set FMDV_SIGN_ID to a "Developer ID Application: ..." identity
+# for a distributable build (hardened runtime + timestamp, ready for
+# notarization via scripts/notarize.sh). Unset it and the bundle is ad-hoc
+# signed, which runs locally and supports the in-app updater's signature check
+# but will trip Gatekeeper on other machines.
+FMDV_SIGN_ID ?=
+
+$(APP): $(MAC_BIN) build/AppIcon.icns frontends/macos/Info.plist cpp/version.h
 	rm -rf $(APP)
 	@mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp $(MAC_BIN) $(APP)/Contents/MacOS/FMDV
 	cp build/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
 	cp frontends/macos/Info.plist $(APP)/Contents/Info.plist
+	/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(VERSION)" $(APP)/Contents/Info.plist
 	printf 'APPL????' > $(APP)/Contents/PkgInfo
-	@echo "built $(APP)"
+	@if [ -n "$(FMDV_SIGN_ID)" ]; then \
+	  codesign --force --sign "$(FMDV_SIGN_ID)" --options runtime --timestamp $(APP); \
+	else \
+	  codesign --force --sign - $(APP); \
+	fi
+	codesign --verify $(APP)
+	@echo "built $(APP) (version $(VERSION), signed: $(if $(FMDV_SIGN_ID),$(FMDV_SIGN_ID),ad-hoc))"
+
+# Release artifact: the zip GitHub releases carry and the in-app updater
+# downloads. ditto preserves the bundle structure, resource forks, and the
+# code signature (plain `zip` can break signed bundles).
+DIST := build/FMDV-macos.zip
+
+dist: $(APP)
+	rm -f $(DIST)
+	ditto -c -k --keepParent $(APP) $(DIST)
+	@echo "built $(DIST)"
 
 # --- unit tests: one binary per core module (tests/<name>_test.cpp) ---
 TEST_NAMES := str markdown edit_assist release_info layout text_select bench_log
@@ -80,6 +111,9 @@ test: $(TEST_BINS)
 	@fail=0; for t in $(TEST_BINS); do \
 	  echo "== $$t =="; ./$$t || fail=1; \
 	done; exit $$fail
+
+uitest:
+	./tests/run-tests.sh
 
 check: cli test
 	@echo "== parse test.md =="

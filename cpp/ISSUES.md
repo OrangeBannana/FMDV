@@ -132,6 +132,17 @@ _(none)_
 - WM_PRINTCLIENT bypasses WM_CTLCOLOREDIT (PrintWindow showed light editor in dark mode) — testing artifact only; real on-screen grab confirmed correct dark theming.
 
 ## Notes / decisions
+- macOS live-UI suite landed (2026-07-11): `tests/run-tests.sh` is this
+  suite's AppKit analog — the app's `--test-drive` stdin channel executes
+  commands as real NSEvents with synchronous replies (no Accessibility
+  permission), so unlike the Windows UI suite it runs *gating* on hosted CI.
+  76 checks mirroring the sections below, incl. a full updater install E2E
+  against a localhost fixture server.
+- macOS in-app updater landed (2026-07-11): tagged releases now also carry
+  `FMDV-macos.zip` (CI `make dist`), `core/release_info` parses its asset URL
+  alongside `fmdv.exe` (`ReleaseInfo.macUrl`), and the AppKit frontend gained
+  the full Ctrl+U parity set — picker, auto-update/pin, download + bundle swap.
+  Windows code is unaffected beyond the extra (ignored) `macUrl` field.
 - `core/layout` migration landed (2026-07-11): the win32 layout now runs the
   shared engine; `render.cpp` translates the core display list into its cached
   GDI command list and paints as before. Two PNG-diff-gated steps (byte-identical

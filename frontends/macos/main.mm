@@ -90,6 +90,9 @@ int main(int argc, char** argv) {
             runs = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--dark") == 0) {
             dark = true;
+        } else if (std::strcmp(argv[i], "--test-drive") == 0) {
+            // stdin command channel for tests/run-tests.sh (see app.mm)
+            setenv("FMDV_TEST_DRIVE", "1", 1);
         } else if (argv[i][0] != '-' && !file) {
             file = argv[i];
         }

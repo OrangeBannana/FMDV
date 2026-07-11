@@ -24,3 +24,6 @@ desktop.ini
 
 # Local agent session config
 /.claude/
+
+# OS / macOS cruft
+.DS_Store

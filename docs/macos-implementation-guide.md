@@ -561,13 +561,15 @@ Interpretation rules:
 > sidebar (Cmd+Shift+O), and has a lazy split editor with ghost-text
 > autocomplete, list continuation, and table insert.
 >
-> **The port is not yet at full Windows parity.** Live reload, preferences
-> persistence (dark/zoom/split), and the passive update-notify banner have since
-> been implemented; the remaining reduced piece is the updater's **in-app
-> install** (auto-update / pin), which is blocked by packaging. Several live
-> interactions have only been compile/no-crash checked, and packaging
-> (signing/notarization, a macOS release artifact) is not done. The complete,
-> honest list is in **[Remaining Work](#remaining-work)** below.
+> **Feature parity is now complete** (2026-07-11): live reload, preferences
+> persistence (dark/zoom/split), the passive update-notify banner, and the
+> updater's **in-app install** (Cmd+U picker with auto-update / pin modes,
+> download + bundle swap — verified end-to-end against a local fixture server)
+> are all implemented, and CI attaches a `FMDV-macos.zip` release artifact.
+> What's left is not code: several live interactions still need a hands-on QA
+> pass, and distribution polish (Developer ID signing + notarization) needs
+> Apple credentials only the maintainer can create. The complete list is in
+> **[Remaining Work](#remaining-work)** below.
 
 1. `bench/logging`: add unified benchmark logging and capture Windows baseline.
 2. `core/string-type`: choose the core string type (Phase 0.5) and migrate the
@@ -596,7 +598,7 @@ shippable. Status key: ⬜ todo · 🔄 in progress · ✅ done · ⛔ blocked. 
 kind, most impactful first. (Excludes running the app on a Windows machine, which
 is an environment limitation, not a work item.)
 
-### At a glance (updated 2026-07-08)
+### At a glance (updated 2026-07-11)
 
 | Area | Status |
 | --- | --- |
@@ -604,9 +606,11 @@ is an environment limitation, not a work item.)
 | Live reload on external change | ✅ done |
 | Preferences persistence (dark / zoom / split) | ✅ done |
 | Updater — notify banner + launch-check preference | ✅ done |
-| Updater — auto-update / pin / in-app install | ⛔ blocked by packaging (§3) |
-| Hands-on Mac QA of live interactions (§2) | ⬜ needs a Mac desktop |
-| Packaging — code signing / notarization + release artifact (§3) | ⬜ todo |
+| Updater — auto-update / pin / in-app install | ✅ done (E2E-tested vs local fixture server) |
+| Packaging — macOS release artifact in CI (§3) | ✅ done (`FMDV-macos.zip`, signed when secrets set) |
+| Packaging — Developer ID signing + notarization (§3) | ⛔ needs maintainer's Apple credentials |
+| Live-UI test suite (`tests/run-tests.sh`, gating in CI) (§2) | ✅ done (76 checks via `--test-drive`) |
+| Hands-on Mac QA — mouse paths, Finder association, visuals (§2) | ⬜ small residual list |
 | Windows layout-engine unification (§4) | ✅ done (2026-07-11, PNG-diff gated) |
 | Windows benchmark — layout/render (§5) | ✅ done (CI artifact + local desktop) |
 | Windows benchmark — GUI first-paint (§5) | ✅ done (local desktop, 2026-07-11) |
@@ -625,44 +629,78 @@ is an environment limitation, not a work item.)
   fields. An explicit `--dark` flag still forces dark for that launch. Update
   mode/pin are not persisted (the macOS updater is check-and-link, not install).
   *(Compiles + launches clean; restore-on-relaunch wants a hands-on pass.)*
-- 🔄 **Updater (partial).** Done: the passive "update available" banner on launch
-  (Windows `UPDATE_NOTIFY` parity) — a silent GitHub check shows a dismissible
-  top banner only when a newer release exists — plus a persisted "Check for
-  Updates on Launch" preference (`FMDVUpdateNotify`) and the manual Cmd+U check.
-  Still missing vs Windows: **auto-update**, **pin/downgrade**, and **in-app
-  install** (exe swap). Those are blocked by code signing + the absence of a
-  macOS release artifact (see §3), so they can't be closed on this branch.
+- ✅ **Updater (full Windows parity, 2026-07-11).** Cmd+U opens a release
+  picker (↑/↓ + Enter installs, double-click installs, `A` toggles
+  auto-update, Esc closes, closes on focus loss — mirroring the Win32 popup).
+  Installing downloads the release's `FMDV-macos.zip`, unzips with `ditto`,
+  sanity-checks bundle id + binary + code signature, strips quarantine, and
+  swaps the running `.app` (live → `.old`, download → live, rollback on
+  failure) exactly like the Win32 exe swap; the leftover `.old` is swept on
+  the next launch. Modes mirror Windows prefs (`FMDVUpdateMode`/`FMDVPinTag`):
+  notify banners (with an **Update** button when the release carries a mac
+  asset, falling back to **View Releases…** when it doesn't), auto installs
+  the newest on the launch check, pin holds a tag and skips the check;
+  installing an older release from the picker pins it, installing the newest
+  clears the pin. Core parses the `FMDV-macos.zip` asset URL alongside
+  `fmdv.exe` (`ReleaseInfo.macUrl`, unit-tested). Test hooks:
+  `FMDV_VERSION_OVERRIDE` (Windows parity) and `FMDV_RELEASES_URL` (point the
+  fetch at a fixture server). *CI-covered end-to-end by `tests/run-tests.sh`
+  (§2) against a localhost fixture server: picker opens and lists releases,
+  the notify banner appears, auto mode downloads and swaps the bundle
+  (1.1.0 → fixture 9.9.9), the swapped app renders, and `.old` is swept on
+  the next launch; pin mode verified to skip the check.*
 
-### 2. Live macOS interactions — compile + no-crash only (logic is unit-tested)
+### 2. Live macOS interactions — mostly automated (2026-07-11)
 
-The shared core *logic* is unit-tested (`tests/` — parser, layout, edit
-helpers, release parsing, string conversion, find/selection; ≈98% line
-coverage, run on both CI jobs) and
-rendering/TOC/ghost-text are verified via PNG/live-capture, but these
-event-driven paths need a hands-on pass on a Mac desktop (no screen capture in
-CI):
+**`tests/run-tests.sh` now drives the real AppKit app in CI** — the macOS
+analog of the Win32 suite (`cpp/tests/run-tests.ps1`). The app gains a
+`--test-drive` flag (see `app.mm`): stdin line commands are executed on the
+main thread as **real NSEvents** routed through the normal dispatch (window
+`performKeyEquivalent` → menu → `sendEvent` → first responder), each answered
+synchronously on stdout, so the suite needs no sleeps, no Accessibility/TCC
+permission, and runs gating on hosted `macos-latest` runners. 76 checks:
+parser, headless render dumps, dark/zoom keys, TOC toggle + 3-pane, find bar
+(type/step/wraparound/Esc), select-all + copy across all block types
+(pasteboard-verified), save round-trip, all ghost-text autocomplete triggers,
+list continuation, Cmd+T table insert, live reload on external edit, and the
+full updater flow against a localhost fixture server (picker open/list/Esc,
+notify banner, auto-mode download + bundle swap, `.old` sweep). A `capture`
+command screenshots the live window via `cacheDisplayInRect:` (no Screen
+Recording permission needed) for visual checks.
 
-- ⬜ Selection drag (mouse-down → drag → copy), double/triple-click, auto-scroll.
-- ⬜ Find bar: typing, Enter/Shift+Enter stepping + wraparound, Esc to close.
-- ⬜ Cmd+U live network fetch + result alert.
-- ⬜ Full editor session: type → reparse → list continuation → save → table insert.
-- ⬜ TOC sidebar + split-editor pane resizing.
-- ⬜ `.md` double-click file association (Info.plist `CFBundleDocumentTypes`).
-- ⬜ Live reload: confirm the preview visibly refreshes on an external edit (the
-  reparse path is smoke-tested; the visual update isn't screenshot-verified).
-- ⬜ Preferences: toggle dark/zoom, drag the editor split, relaunch, and confirm
-  each is restored.
-- ⬜ Update banner: confirm it appears when a newer release exists, "View
-  Releases…" opens the page, ✕ dismisses, and the launch-check preference
-  toggles it off.
+Still hands-on (not reachable through synthesized keystrokes alone):
+
+- ⬜ Mouse paths: selection drag / double- / triple-click, auto-scroll while
+  dragging, link clicks, TOC + split-divider drag resizing. (The driver could
+  grow `click`/`drag` commands later; Cmd+A/Cmd+C selection is covered.)
+- ⬜ `.md` double-click file association from Finder (Apple Event delivery).
+- ⬜ Cmd+U against the live GitHub API (fixture-server path is CI-covered;
+  live fetches stay manual per the test-lane policy above).
+- ⬜ Preferences restored across relaunch (dark/zoom/split) — automatable
+  later by pointing the suite at a scratch defaults domain.
+- ⬜ Banner button clicks (Update / View Releases… / Relaunch / ✕) — the
+  install itself is covered via auto mode; the buttons are one-line actions.
+- ⬜ Visual appearance pass of the picker/banner (use the driver's `capture`).
 
 ### 3. Packaging / distribution
 
-- ⬜ **Code signing + notarization.** The `.app` is unsigned → Gatekeeper warns
-  on first launch.
-- ⬜ **macOS release artifact.** The CI `release` job is Windows-only (attaches
-  `fmdv.exe`). Add a DMG or zipped `.app` and attach it to tagged releases. This
-  also unblocks the updater's in-app install (§1).
+- ✅ **macOS release artifact (2026-07-11).** `make dist` zips the `.app` into
+  `build/FMDV-macos.zip` (via `ditto`, which preserves the signature); the
+  `build-macos` CI job builds + verifies it and the `release` job attaches it
+  to tagged releases alongside `fmdv.exe`. `make app` now also patches the
+  bundle's `CFBundleShortVersionString` from `cpp/version.h` (CI asserts they
+  match) and codesigns — ad-hoc by default, or with hardened runtime +
+  timestamp when `FMDV_SIGN_ID` is set. This unblocked the updater's in-app
+  install (§1).
+- ⛔ **Developer ID signing + notarization — needs maintainer credentials.**
+  Everything scriptable exists: CI signs when the `MACOS_CERT_P12` /
+  `MACOS_CERT_PASSWORD` / `MACOS_SIGN_ID` repo secrets are configured (falls
+  back to ad-hoc, which runs locally and satisfies the updater's signature
+  check but trips Gatekeeper on other machines), and `scripts/notarize.sh`
+  submits + staples. Blocked on two one-time maintainer steps it documents:
+  create a **Developer ID Application** certificate (the present "Apple
+  Development"/"Apple Distribution" identities can't notarize) and store
+  notarytool credentials (`xcrun notarytool store-credentials`).
 
 ### 4. Architecture / optional
 

@@ -14,6 +14,7 @@
 #include "release_info.h"
 #include "text_select.h"
 #include "str.h"
+#include "../../cpp/version.h" // FMDV_VERSION_STR — single source of truth
 
 static std::string ReadFileUtf8(const char* path) {
     std::string out;
@@ -34,12 +35,13 @@ static Str NSStringToStr(NSString* s) { return FromUtf8(s.UTF8String ? s.UTF8Str
 static NSString* StrToNS(const Str& s) { return [NSString stringWithUTF8String:ToUtf8(s).c_str()]; }
 
 // Persisted UI preferences. macOS uses NSUserDefaults; the Win32 app stores the
-// same fields in %APPDATA%\fmdv\prefs.txt (dark / zoom / split). Update mode+pin
-// are Windows-only for now (the macOS updater is check-and-link, not install).
+// same fields in %APPDATA%\fmdv\prefs.txt (dark / zoom / split / update mode+pin).
 static NSString* const kPrefDark         = @"FMDVDark";
 static NSString* const kPrefZoomPct      = @"FMDVZoomPct";
 static NSString* const kPrefSplitPct     = @"FMDVSplitPct";
 static NSString* const kPrefUpdateNotify = @"FMDVUpdateNotify"; // check on launch (default on)
+static NSString* const kPrefUpdateMode   = @"FMDVUpdateMode";   // "notify" (default) / "auto" / "pin"
+static NSString* const kPrefPinTag       = @"FMDVPinTag";       // tag held by "pin" mode
 
 // File modification time (seconds since reference date; 0 if missing). Backs the
 // live-reload poll — the Win32 app watches the same mtime via a 500ms WM_TIMER.
@@ -79,6 +81,8 @@ struct Frag {
     std::vector<fmdv::FindMatch> _matches;
     long _curMatch;
 }
+// Directory of the open document; scheme-less link hrefs resolve against it.
+@property (nonatomic, copy) NSString* baseDir;
 - (instancetype)initWithDoc:(const Document&)doc dark:(bool)dark;
 - (void)setDoc:(const Document&)doc;
 - (bool)dark;
@@ -87,6 +91,10 @@ struct Frag {
 - (void)zoomReset;
 - (void)scrollToDocY:(double)docY;
 - (std::vector<fmdv::HeadingRef>)headings;
+// test-driver introspection (--test-drive)
+- (bool)findBarVisible;
+- (NSString*)findLabelText;
+- (void)stepFind:(int)dir;
 @end
 
 @implementation FMDVPreviewView
@@ -323,6 +331,8 @@ struct Frag {
     [self.window makeFirstResponder:self];
     self.needsDisplay = YES;
 }
+- (bool)findBarVisible { return _findBar && !_findBar.hidden; }
+- (NSString*)findLabelText { return _findLabel ? _findLabel.stringValue : @""; }
 - (void)updateFindLabel {
     if (!_findLabel) return;
     if (!_matches.empty())
@@ -429,6 +439,26 @@ struct Frag {
     [super keyDown:ev];
 }
 
+// Open a link target. Absolute URLs (http:, mailto:, ...) go straight to the
+// workspace. A scheme-less href (docs/guide.md, /tmp/x.md) used to be fed to
+// URLWithString:, which yields a schemeless NSURL that openURL: silently
+// drops — treat those as file paths, resolved against the open document's
+// directory (Windows gets the same case for free via ShellExecute).
+- (void)openLink:(NSString*)href {
+    if (href.length == 0) return;
+    NSURL* url = [NSURL URLWithString:href];
+    if (url && url.scheme.length) { [[NSWorkspace sharedWorkspace] openURL:url]; return; }
+    NSString* path = href;
+    NSRange hash = [path rangeOfString:@"#"];
+    if (hash.location != NSNotFound) path = [path substringToIndex:hash.location];
+    if (path.length == 0) return; // pure in-page anchor: no jump support yet
+    path = [path stringByRemovingPercentEncoding] ?: path;
+    if (!path.absolutePath && self.baseDir.length)
+        path = [self.baseDir stringByAppendingPathComponent:path];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:path])
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]];
+}
+
 - (void)mouseUp:(NSEvent*)ev {
     if (_dragging) { _dragging = false; return; } // a drag made a selection; keep it
     // A plain click: follow a link if one was hit, and drop any selection.
@@ -437,8 +467,7 @@ struct Frag {
         const auto& r = lk.rect;
         if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) {
             [self clearSelection];
-            NSURL* url = [NSURL URLWithString:StrToNS(lk.href)];
-            if (url) [[NSWorkspace sharedWorkspace] openURL:url];
+            [self openLink:StrToNS(lk.href)];
             return;
         }
     }
@@ -449,6 +478,7 @@ struct Frag {
 // ---------------- source editor (list continuation via core/edit_assist) ----
 
 @interface FMDVTextView : NSTextView
+- (NSString*)ghostText; // test-driver introspection (--test-drive)
 @end
 
 @implementation FMDVTextView {
@@ -456,6 +486,7 @@ struct Frag {
     NSInteger _ghostCaret;  // caret offset within _ghost after Tab-commit
 }
 - (void)dealloc { [_ghost release]; [super dealloc]; }
+- (NSString*)ghostText { return _ghost ?: @""; }
 
 // ---- markdown autocomplete ghost text (Windows: gray overlay, Tab commits) ----
 - (void)setGhost:(NSString*)g caret:(NSInteger)c {
@@ -591,6 +622,118 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
 }
 @end
 
+// ---------------- update picker (Windows Ctrl+U popup) ----------------
+
+// Release list inside the updates panel. Same interaction model as the Win32
+// picker: ↑/↓ select, Enter (or double-click) installs, 'A' toggles
+// auto-update, Esc closes. Rows mark latest / current / "no app" (release
+// without a FMDV-macos.zip asset — the macOS analog of "no exe").
+@interface FMDVUpdateListView : NSView
+@property (nonatomic, copy) void (^onInstall)(long row);
+@property (nonatomic, copy) void (^onToggleAuto)(void);
+@property (nonatomic, copy) void (^onClose)(void);
+- (void)setReleases:(const std::vector<ReleaseInfo>&)rel fetched:(bool)fetched failed:(bool)failed
+            current:(const Str&)cur modeLine:(NSString*)modeLine status:(NSString*)status;
+- (double)desiredHeight;
+@end
+
+@implementation FMDVUpdateListView {
+    std::vector<ReleaseInfo> _rel;
+    bool _fetched, _failed;
+    Str _cur;
+    NSString* _modeLine;
+    NSString* _status;   // install progress/result line ("" = hidden)
+    long _sel;
+}
+static const double UP_PAD = 12, UP_ROW = 24;
+- (void)dealloc { [_modeLine release]; [_status release]; [super dealloc]; }
+- (BOOL)isFlipped { return YES; }
+- (BOOL)acceptsFirstResponder { return YES; }
+- (long)rows { return (long)_rel.size() < 8 ? (long)_rel.size() : 8; } // Windows: UpRows()
+- (void)setReleases:(const std::vector<ReleaseInfo>&)rel fetched:(bool)fetched failed:(bool)failed
+            current:(const Str&)cur modeLine:(NSString*)modeLine status:(NSString*)status {
+    _rel = rel; _fetched = fetched; _failed = failed; _cur = cur;
+    if (modeLine != _modeLine) { [_modeLine release]; _modeLine = [modeLine copy]; }
+    if (status != _status) { [_status release]; _status = [status copy]; }
+    if (_sel >= [self rows]) _sel = [self rows] ? [self rows] - 1 : 0;
+    self.needsDisplay = YES;
+}
+- (double)desiredHeight {
+    long body = [self rows] ? [self rows] : 1;               // list or one message line
+    return UP_PAD * 2 + UP_ROW * (2 + body) + (_status.length ? UP_ROW : 0);
+}
+- (long)newestInstallable {
+    long best = -1;
+    for (long i = 0; i < (long)_rel.size(); i++) {
+        if (_rel[i].macUrl.empty()) continue;
+        if (best < 0 || CompareVersions(_rel[i].tag, _rel[best].tag) > 0) best = i;
+    }
+    return best;
+}
+- (void)drawRect:(NSRect)r {
+    (void)r;
+    [[NSColor controlBackgroundColor] set]; NSRectFill(self.bounds);
+    NSColor* fg = [NSColor labelColor];
+    NSColor* dim = [NSColor secondaryLabelColor];
+    NSDictionary* head = @{NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],
+                           NSForegroundColorAttributeName: fg};
+    NSDictionary* body = @{NSFontAttributeName: [NSFont systemFontOfSize:13], NSForegroundColorAttributeName: fg};
+    NSDictionary* mut  = @{NSFontAttributeName: [NSFont systemFontOfSize:13], NSForegroundColorAttributeName: dim};
+    double y = UP_PAD;
+    [[NSString stringWithFormat:@"FMDV %s — releases", FMDV_VERSION_STR]
+        drawAtPoint:NSMakePoint(UP_PAD, y) withAttributes:head]; y += UP_ROW;
+    [(_modeLine ?: @"") drawAtPoint:NSMakePoint(UP_PAD, y) withAttributes:mut]; y += UP_ROW;
+
+    if (!_fetched) {
+        [(_failed ? @"couldn't reach GitHub" : @"checking…") drawAtPoint:NSMakePoint(UP_PAD, y) withAttributes:mut];
+        y += UP_ROW;
+    } else if (_rel.empty()) {
+        [@"no releases found" drawAtPoint:NSMakePoint(UP_PAD, y) withAttributes:mut];
+        y += UP_ROW;
+    } else {
+        long newest = [self newestInstallable];
+        for (long i = 0; i < [self rows]; i++, y += UP_ROW) {
+            if (i == _sel) {
+                [[NSColor selectedContentBackgroundColor] set];
+                NSRectFill(NSMakeRect(UP_PAD / 2, y - 2, self.bounds.size.width - UP_PAD, UP_ROW - 4));
+            }
+            const ReleaseInfo& rel = _rel[i];
+            NSMutableString* line = [NSMutableString stringWithString:StrToNS(rel.tag)];
+            if (i == newest) [line appendString:@"  · latest"];
+            if (CompareVersions(rel.tag, _cur) == 0) [line appendString:@"  · current"];
+            if (rel.macUrl.empty()) [line appendString:@"  · no app"];
+            NSDictionary* attrs = rel.macUrl.empty() ? mut
+                : (i == _sel ? @{NSFontAttributeName: [NSFont systemFontOfSize:13],
+                                 NSForegroundColorAttributeName: [NSColor alternateSelectedControlTextColor]} : body);
+            [line drawAtPoint:NSMakePoint(UP_PAD, y) withAttributes:attrs];
+        }
+    }
+    if (_status.length) [_status drawAtPoint:NSMakePoint(UP_PAD, y) withAttributes:mut];
+}
+- (void)keyDown:(NSEvent*)ev {
+    NSString* ch = ev.charactersIgnoringModifiers;
+    switch (ch.length ? [ch characterAtIndex:0] : 0) {
+        case NSDownArrowFunctionKey: if (_sel + 1 < [self rows]) _sel++; break;
+        case NSUpArrowFunctionKey:   if (_sel > 0) _sel--; break;
+        case NSCarriageReturnCharacter: if (self.onInstall) self.onInstall(_sel); return;
+        case 'a': case 'A': if (self.onToggleAuto) self.onToggleAuto(); return;
+        case 0x1B: if (self.onClose) self.onClose(); return; // Esc
+        default: [super keyDown:ev]; return;
+    }
+    self.needsDisplay = YES;
+}
+- (long)rowAtPoint:(NSPoint)p {
+    long i = (long)std::floor((p.y - (UP_PAD + 2 * UP_ROW)) / UP_ROW);
+    return (i >= 0 && i < [self rows]) ? i : -1;
+}
+- (void)mouseDown:(NSEvent*)ev {
+    long i = [self rowAtPoint:[self convertPoint:ev.locationInWindow fromView:nil]];
+    if (i < 0) return;
+    _sel = i; self.needsDisplay = YES;
+    if (ev.clickCount >= 2 && self.onInstall) self.onInstall(_sel);
+}
+@end
+
 // ---------------- window controller / app delegate ----------------
 
 @interface FMDVAppDelegate : NSObject <NSApplicationDelegate, NSTextViewDelegate, NSSplitViewDelegate> {
@@ -610,10 +753,20 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
     NSTimer* _watchTimer;       // 500ms file-change poll
     NSView* _updateBanner;      // passive "update available" strip (notify mode)
     NSTextField* _updateLabel;  // banner text
+    NSButton* _bannerButton;    // banner action ("View Releases…" / "Relaunch")
+    NSPanel* _updPanel;         // Cmd+U release picker (Windows Ctrl+U popup)
+    FMDVUpdateListView* _updList;
+    std::vector<ReleaseInfo> _updReleases; // picker rows (main thread only)
+    bool _updFetched, _updFailed, _updFetchRunning;
+    bool _updAutoInstallOnCheck; // pending check should auto-install (auto mode launch check)
+    bool _installRunning;       // one install at a time (Windows g_installRunning)
+    Str _installTag;            // tag being installed (status/banner text)
 }
 - (instancetype)initWithFile:(const char*)file dark:(bool)dark;
 - (void)openPath:(NSString*)path;
 @end
+
+static void StartTestDriver(FMDVAppDelegate* delegate); // --test-drive stdin loop (defined below)
 
 @implementation FMDVAppDelegate
 - (instancetype)initWithFile:(const char*)file dark:(bool)dark {
@@ -672,6 +825,7 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
     [self ensureWindow];
     _opened = true;
     _file = path.UTF8String ? path.UTF8String : "";
+    _preview.baseDir = path.stringByDeletingLastPathComponent; // relative links resolve here
     Document doc = ParseMarkdown(LoadDoc(ReadFileUtf8(_file.c_str())));
     [_preview setDoc:doc];
     if (_textView) [_textView setString:StrToNS(LoadDoc(ReadFileUtf8(_file.c_str())))];
@@ -701,16 +855,24 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
 }
 
 - (BOOL)application:(NSApplication*)app openFile:(NSString*)filename {
-    (void)app; [self openPath:filename]; return YES;
+    (void)app;
+    // AppKit also routes stray command-line words here (e.g. the value of an
+    // NSUserDefaults argument-domain pair like `-FMDVDark 1`); don't let a
+    // non-file clobber the document that's already open.
+    if (![[NSFileManager defaultManager] isReadableFileAtPath:filename]) return NO;
+    [self openPath:filename];
+    return YES;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)n {
     (void)n;
     [NSApp activateIgnoringOtherApps:YES];
-    // Passive update check runs after first paint (Windows: async, post-paint).
+    if (getenv("FMDV_TEST_DRIVE")) StartTestDriver(self);
+    // Passive update check runs after first paint (Windows: async, post-paint);
+    // same for sweeping up a previous update's leftover <bundle>.old.
     __unsafe_unretained FMDVAppDelegate* weak = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ [weak maybeCheckUpdatesOnLaunch]; });
+                   dispatch_get_main_queue(), ^{ [weak cleanupOldBundle]; [weak maybeCheckUpdatesOnLaunch]; });
     if (_opened) return;                         // openFile: already loaded a document
     if (!_file.empty()) {
         NSString* f = [NSString stringWithUTF8String:_file.c_str()];
@@ -807,11 +969,21 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
 
 - (void)saveDoc:(id)sender {
     (void)sender;
-    if (_file.empty()) return;
-    std::string text = _editing ? std::string(_textView.string.UTF8String ?: "") : ToUtf8(LoadDoc(ReadFileUtf8(_file.c_str())));
-    // NSTextView already uses LF; write as UTF-8.
-    FILE* f = std::fopen(_file.c_str(), "wb");
-    if (f) { std::fwrite(text.data(), 1, text.size(), f); std::fclose(f); }
+    // Only the editor has anything to save; a Cmd+S in preview mode used to
+    // rewrite the file from its own (CR-stripped) contents, silently
+    // normalizing it on disk. Matches the Win32 guard (ID_SAVE: if editing).
+    if (!_editing || _file.empty()) return;
+    std::string text = _textView.string.UTF8String ?: "";
+    // NSTextView already uses LF; write as UTF-8. Write to a temp file and
+    // rename into place so a crash or full disk mid-write can't truncate the
+    // document.
+    std::string tmp = _file + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) return;
+    bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+    ok = (std::fclose(f) == 0) && ok;
+    if (ok) ok = (std::rename(tmp.c_str(), _file.c_str()) == 0);
+    if (!ok) { std::remove(tmp.c_str()); return; }
     _fileMtime = FileModTime(_file); // our own save shouldn't trigger a live reload
 }
 - (void)saveAndClose:(id)sender {
@@ -820,64 +992,288 @@ static const double TOC_ROW = 26, TOC_TOP = 12, TOC_PADX = 14;
 }
 - (void)insertTable:(id)sender { (void)sender; if (_editing && _textView) [_textView insertTableMarkdown]; }
 
-// Updates (Windows Ctrl+U). macOS can't swap a running, unsigned binary and the
-// releases carry no macOS asset, so this checks GitHub (shared core parse +
-// version compare) and links to the releases page rather than installing.
+// Updates (Windows Ctrl+U): release picker + in-app install. Releases carry a
+// FMDV-macos.zip asset (CI `make dist`); installing downloads it, unzips, and
+// swaps the running .app bundle the way the Win32 updater swaps fmdv.exe.
+// Modes mirror Windows prefs: notify (default, passive banner), auto (install
+// newest on the launch check), pin (hold a tag; no launch check).
 - (NSString*)currentVersion {
+    const char* o = getenv("FMDV_VERSION_OVERRIDE"); // test hook (Windows parity)
+    if (o && o[0]) return [NSString stringWithUTF8String:o];
     NSString* v = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-    return v.length ? v : @"1.1.0";
+    return v.length ? v : @FMDV_VERSION_STR; // raw fmdv-macos binary: no bundle plist
 }
 - (NSURLRequest*)releasesRequest {
-    NSURL* url = [NSURL URLWithString:@"https://api.github.com/repos/OrangeBannana/FMDV/releases?per_page=30"];
-    NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
+    const char* o = getenv("FMDV_RELEASES_URL"); // test hook: point at a local fixture server
+    NSString* u = (o && o[0]) ? [NSString stringWithUTF8String:o]
+        : @"https://api.github.com/repos/OrangeBannana/FMDV/releases?per_page=30";
+    NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:u]];
     [req setValue:[@"fmdv-macos/" stringByAppendingString:[self currentVersion]] forHTTPHeaderField:@"User-Agent"];
+    req.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
     return req;
 }
-// Newest release tag if it's newer than the running version, else nil.
-static NSString* NewerTag(const std::string& json, const Str& cur) {
-    std::vector<ReleaseInfo> rel;
-    ParseReleasesJson(json, rel);
-    const ReleaseInfo* newest = nullptr;
-    for (const auto& r : rel) if (!newest || CompareVersions(r.tag, newest->tag) > 0) newest = &r;
-    return (newest && CompareVersions(newest->tag, cur) > 0) ? StrToNS(newest->tag) : nil;
+
+// ---- update mode (NSUserDefaults; Windows: updateMode/pinTag in prefs.txt) ----
+- (NSString*)updateMode {
+    NSString* m = [[NSUserDefaults standardUserDefaults] stringForKey:kPrefUpdateMode];
+    return ([m isEqualToString:@"auto"] || [m isEqualToString:@"pin"]) ? m : @"notify";
 }
-- (void)checkUpdates:(id)sender {
-    (void)sender;
+- (void)setUpdateMode:(NSString*)mode pin:(NSString*)tag {
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    [ud setObject:mode forKey:kPrefUpdateMode];
+    if (tag.length) [ud setObject:tag forKey:kPrefPinTag];
+    else [ud removeObjectForKey:kPrefPinTag];
+}
+
+// Newest release with a macOS asset (API order isn't trusted; Windows parity).
+- (const ReleaseInfo*)newestInstallable {
+    const ReleaseInfo* best = nullptr;
+    for (const auto& r : _updReleases) {
+        if (r.macUrl.empty()) continue;
+        if (!best || CompareVersions(r.tag, best->tag) > 0) best = &r;
+    }
+    return best;
+}
+
+// The bundle an install may swap: the running .app, when its parent directory
+// is writable. A raw fmdv-macos binary (make macos) has no bundle, so the
+// picker degrades to opening the releases page.
+- (NSString*)installableBundlePath {
+    NSString* p = [NSBundle mainBundle].bundlePath;
+    if (![p.pathExtension isEqualToString:@"app"]) return nil;
+    if (![[NSFileManager defaultManager] isWritableFileAtPath:p.stringByDeletingLastPathComponent]) return nil;
+    return p;
+}
+
+// ---- fetch (one in flight; decision runs on the main thread when it lands,
+// mirroring the Win32 CheckThread → UPD_CHECK_DONE split) ----
+- (void)fetchReleases {
+    if (_updFetchRunning) return;
+    _updFetchRunning = true;
     __unsafe_unretained FMDVAppDelegate* weak = self;
     NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:[self releasesRequest]
         completionHandler:^(NSData* data, NSURLResponse* resp, NSError* err) {
             (void)resp; (void)err;
             NSData* d = [data retain];
-            dispatch_async(dispatch_get_main_queue(), ^{ [weak showUpdateResult:d]; [d release]; });
+            dispatch_async(dispatch_get_main_queue(), ^{ [weak releasesArrived:d]; [d release]; });
         }];
     [task resume];
 }
-- (void)showUpdateResult:(NSData*)data {
+- (void)releasesArrived:(NSData*)data {
+    _updFetchRunning = false;
     std::string json;
     if (data.length) json.assign((const char*)data.bytes, data.length);
     std::vector<ReleaseInfo> rel;
-    ParseReleasesJson(json, rel);
-    Str cur = NSStringToStr([self currentVersion]);
-    const ReleaseInfo* newest = nullptr;
-    for (const auto& r : rel) if (!newest || CompareVersions(r.tag, newest->tag) > 0) newest = &r;
+    bool ok = !json.empty() && ParseReleasesJson(json, rel);
+    _updReleases = rel;
+    _updFetched = ok;
+    _updFailed = !ok;
+    bool autoInstall = _updAutoInstallOnCheck;
+    _updAutoInstallOnCheck = false;
+    [self refreshUpdatePicker];
+    if (!ok) return;
 
-    NSAlert* a = [[NSAlert alloc] init];
-    a.messageText = [NSString stringWithFormat:@"FMDV %@", [self currentVersion]];
-    if (rel.empty()) {
-        a.informativeText = @"Couldn't reach GitHub releases.";
-    } else if (newest && CompareVersions(newest->tag, cur) > 0) {
-        a.informativeText = [NSString stringWithFormat:
-            @"%@ is available. In-app update isn't supported on macOS yet — open the releases page to download.",
-            StrToNS(newest->tag)];
-    } else {
-        a.informativeText = @"You have the latest version.";
+    Str cur = NSStringToStr([self currentVersion]);
+    const ReleaseInfo* nw = [self newestInstallable];
+    bool newer = nw && CompareVersions(nw->tag, cur) > 0;
+    if (autoInstall) {                       // auto mode's launch check
+        if (newer) [self startInstall:*nw];
+        return;
     }
-    [a addButtonWithTitle:@"OK"];
-    [a addButtonWithTitle:@"View Releases…"];
-    NSModalResponse r = [a runModal];
-    if (r == NSAlertSecondButtonReturn)
-        [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/OrangeBannana/FMDV/releases"]];
-    [a release];
+    if (newer && [[self updateMode] isEqualToString:@"notify"] && !_installRunning) {
+        [self showBanner:[NSString stringWithFormat:@"FMDV %@ is available", StrToNS(nw->tag)]
+             buttonTitle:@"Update" action:@selector(installNewest:)];
+    } else if (!nw && [[self updateMode] isEqualToString:@"notify"]) {
+        // no release carries a macOS asset yet: keep the old check-and-link
+        // banner pointing at the releases page for any newer tag
+        const ReleaseInfo* any = nullptr;
+        for (const auto& r : _updReleases) if (!any || CompareVersions(r.tag, any->tag) > 0) any = &r;
+        if (any && CompareVersions(any->tag, cur) > 0)
+            [self showBanner:[NSString stringWithFormat:@"FMDV %@ is available", StrToNS(any->tag)]
+                 buttonTitle:@"View Releases…" action:@selector(openReleasesPage:)];
+    }
+}
+
+// ---- install: download zip → unzip → swap the bundle ----
+
+// Run a system tool to completion; true on exit 0.
+static bool RunTool(NSString* path, NSArray<NSString*>* args) {
+    NSTask* t = [[NSTask alloc] init];
+    t.launchPath = path;
+    t.arguments = args;
+    t.standardOutput = [NSPipe pipe];
+    t.standardError = [NSPipe pipe];
+    bool ok = false;
+    @try { [t launch]; [t waitUntilExit]; ok = (t.terminationStatus == 0); }
+    @catch (NSException* e) { (void)e; }
+    [t release];
+    return ok;
+}
+
+// Unzip the downloaded FMDV-macos.zip and swap it in place of the running
+// bundle. Mirrors the Win32 exe swap: live bundle → <bundle>.old (renaming a
+// running image is fine on macOS; open files follow the inode), the download
+// moves into the live path, and a failed move rolls back. Runs off the main
+// thread; pure file/subprocess work.
+static bool SwapInDownloadedBundle(NSString* zipPath, NSString* bundlePath) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                     [NSString stringWithFormat:@"fmdv-update-%@", [NSUUID UUID].UUIDString]];
+    if (![fm createDirectoryAtPath:tmp withIntermediateDirectories:YES attributes:nil error:nil]) return false;
+    NSString* newApp = [tmp stringByAppendingPathComponent:@"FMDV.app"];
+    NSString* old = [bundlePath stringByAppendingString:@".old"];
+    bool ok = false;
+    do {
+        if (!RunTool(@"/usr/bin/ditto", @[@"-x", @"-k", zipPath, tmp])) break;
+        // sanity: our app, with a runnable binary — not an error page (Windows: MZ check)
+        NSDictionary* plist = [NSDictionary dictionaryWithContentsOfFile:
+                               [newApp stringByAppendingPathComponent:@"Contents/Info.plist"]];
+        if (![plist[@"CFBundleIdentifier"] isEqual:@"com.orangebannana.fmdv"]) break;
+        if (![fm isExecutableFileAtPath:[newApp stringByAppendingPathComponent:@"Contents/MacOS/FMDV"]]) break;
+        // any valid signature (Developer ID or ad-hoc) has page hashes, so a
+        // truncated or tampered download fails here
+        if (!RunTool(@"/usr/bin/codesign", @[@"--verify", @"--deep", newApp])) break;
+        // strip a quarantine xattr if the download carried one, or Gatekeeper
+        // re-prompts for the app the user already runs (standard updater step)
+        RunTool(@"/usr/bin/xattr", @[@"-dr", @"com.apple.quarantine", newApp]);
+        [fm removeItemAtPath:old error:nil];
+        if (![fm moveItemAtPath:bundlePath toPath:old error:nil]) break;
+        if (![fm moveItemAtPath:newApp toPath:bundlePath error:nil]) {
+            [fm moveItemAtPath:old toPath:bundlePath error:nil]; // roll back
+            break;
+        }
+        ok = true;
+    } while (0);
+    [fm removeItemAtPath:tmp error:nil];
+    return ok;
+}
+
+// Kick off the download+swap worker for one release. Main thread only; one
+// install at a time (Windows StartInstall's g_installRunning guard).
+- (void)startInstall:(const ReleaseInfo&)r {
+    if (_installRunning || r.macUrl.empty()) return;
+    NSString* bundle = [self installableBundlePath];
+    if (!bundle) { [self openReleasesPage:nil]; return; } // nothing swappable here
+    _installRunning = true;
+    _installTag = r.tag;
+    [self refreshUpdatePicker];
+    NSURL* url = [NSURL URLWithString:StrToNS(r.macUrl)];
+    __unsafe_unretained FMDVAppDelegate* weak = self;
+    NSURLSessionDownloadTask* task = [[NSURLSession sharedSession] downloadTaskWithURL:url
+        completionHandler:^(NSURL* loc, NSURLResponse* resp, NSError* err) {
+            (void)resp;
+            // already off the main thread; do the file work right here
+            bool ok = (loc && !err) && SwapInDownloadedBundle(loc.path, bundle);
+            dispatch_async(dispatch_get_main_queue(), ^{ [weak installFinished:ok]; });
+        }];
+    [task resume];
+}
+- (void)installFinished:(bool)ok {
+    _installRunning = false;
+    if (ok)
+        [self showBanner:[NSString stringWithFormat:@"%@ installed — takes effect on next launch", StrToNS(_installTag)]
+             buttonTitle:@"Relaunch" action:@selector(relaunch:)];
+    else
+        [self showBanner:@"update failed — check github.com/OrangeBannana/FMDV/releases"
+             buttonTitle:@"View Releases…" action:@selector(openReleasesPage:)];
+    [self refreshUpdatePicker];
+}
+- (void)installNewest:(id)sender { // banner "Update" button
+    (void)sender;
+    const ReleaseInfo* nw = [self newestInstallable];
+    if (nw) [self startInstall:*nw];
+    else [self checkUpdates:sender]; // banner outlived the release list: re-check
+}
+- (void)relaunch:(id)sender {
+    (void)sender;
+    NSString* bundle = [NSBundle mainBundle].bundlePath;
+    NSArray* args = _file.empty()
+        ? @[@"-n", bundle]
+        : @[@"-n", bundle, @"--args", [NSString stringWithUTF8String:_file.c_str()]];
+    [NSTask launchedTaskWithLaunchPath:@"/usr/bin/open" arguments:args];
+    [NSApp terminate:nil];
+}
+// Windows CleanupOldExe: drop the leftover <bundle>.old from a previous swap.
+- (void)cleanupOldBundle {
+    NSString* p = [NSBundle mainBundle].bundlePath;
+    if ([p.pathExtension isEqualToString:@"app"])
+        [[NSFileManager defaultManager] removeItemAtPath:[p stringByAppendingString:@".old"] error:nil];
+}
+
+// ---- Cmd+U picker panel ----
+- (NSString*)pickerModeLine {
+    NSString* mode = [self updateMode];
+    if ([mode isEqualToString:@"pin"]) {
+        NSString* pin = [[NSUserDefaults standardUserDefaults] stringForKey:kPrefPinTag] ?: @"?";
+        return [NSString stringWithFormat:@"pinned to %@   ·   [A] auto-update: off", pin];
+    }
+    return [NSString stringWithFormat:@"[A] auto-update: %@",
+            [mode isEqualToString:@"auto"] ? @"on" : @"off"];
+}
+- (void)refreshUpdatePicker {
+    if (!_updList) return;
+    NSString* status = _installRunning
+        ? [NSString stringWithFormat:@"installing %@…", StrToNS(_installTag)] : @"";
+    [_updList setReleases:_updReleases fetched:_updFetched failed:_updFailed
+                  current:NSStringToStr([self currentVersion])
+                 modeLine:[self pickerModeLine] status:status];
+    if (_updPanel && _updPanel.visible) [self positionUpdatePicker];
+}
+- (void)positionUpdatePicker { // top-right of the main window (Windows anchor)
+    if (!_window || !_updPanel) return;
+    double w = 340, h = [_updList desiredHeight] + 24; // + title bar
+    NSRect wf = _window.frame;
+    [_updPanel setFrame:NSMakeRect(NSMaxX(wf) - w - 16, NSMaxY(wf) - h - 8, w, h) display:YES];
+}
+- (void)pickerLostKey:(NSNotification*)n { (void)n; [_updPanel orderOut:nil]; } // Windows WM_KILLFOCUS
+- (void)closeUpdatePicker { [_updPanel orderOut:nil]; [_window makeKeyWindow]; }
+- (void)pickerInstallRow:(long)row {
+    if (_installRunning || row < 0 || row >= (long)_updReleases.size()) return;
+    const ReleaseInfo r = _updReleases[row]; // copy; install runs async
+    if (r.macUrl.empty()) return;
+    // pin semantics (Windows PickerInstallSelected): anything but the newest
+    // installable pins that tag; installing the newest clears a pin
+    const ReleaseInfo* newest = [self newestInstallable];
+    if (newest && CompareVersions(r.tag, newest->tag) < 0)
+        [self setUpdateMode:@"pin" pin:StrToNS(r.tag)];
+    else if ([[self updateMode] isEqualToString:@"pin"])
+        [self setUpdateMode:@"notify" pin:nil];
+    [self startInstall:r];
+    [self refreshUpdatePicker];
+}
+- (void)toggleAutoUpdate { // 'A' in the picker: auto ↔ notify, clears a pin
+    bool on = [[self updateMode] isEqualToString:@"auto"];
+    [self setUpdateMode:(on ? @"notify" : @"auto") pin:nil];
+    [self refreshUpdatePicker];
+}
+- (void)checkUpdates:(id)sender { // menu "Check for Updates…" (Cmd+U)
+    (void)sender;
+    [self ensureWindow];
+    if (!_updPanel) {
+        _updPanel = [[NSPanel alloc]
+            initWithContentRect:NSMakeRect(0, 0, 340, 140)
+                      styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                 NSWindowStyleMaskUtilityWindow)
+                        backing:NSBackingStoreBuffered defer:NO];
+        _updPanel.title = @"Updates";
+        _updPanel.releasedWhenClosed = NO;
+        _updList = [[FMDVUpdateListView alloc] initWithFrame:[_updPanel.contentView bounds]];
+        _updList.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        __unsafe_unretained FMDVAppDelegate* weak = self;
+        _updList.onInstall = ^(long row) { [weak pickerInstallRow:row]; };
+        _updList.onToggleAuto = ^{ [weak toggleAutoUpdate]; };
+        _updList.onClose = ^{ [weak closeUpdatePicker]; };
+        [_updPanel.contentView addSubview:_updList];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pickerLostKey:)
+                                                     name:NSWindowDidResignKeyNotification object:_updPanel];
+    }
+    _updFetched = false;
+    _updFailed = false;
+    [self refreshUpdatePicker];
+    [self positionUpdatePicker];
+    [_updPanel makeKeyAndOrderFront:nil];
+    [_updPanel makeFirstResponder:_updList];
+    [self fetchReleases];
 }
 
 // Passive notify (Windows: banner in UPDATE_NOTIFY mode). On launch, if enabled,
@@ -895,22 +1291,10 @@ static NSString* NewerTag(const std::string& json, const Str& cur) {
     if (!now && _updateBanner) _updateBanner.hidden = YES;
 }
 - (void)maybeCheckUpdatesOnLaunch {
-    if (![self updateNotifyEnabled]) return;
-    __unsafe_unretained FMDVAppDelegate* weak = self;
-    Str cur = NSStringToStr([self currentVersion]);
-    NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:[self releasesRequest]
-        completionHandler:^(NSData* data, NSURLResponse* resp, NSError* err) {
-            (void)resp; (void)err;
-            if (!data.length) return;            // offline: stay silent
-            NSData* d = [data retain];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                std::string json((const char*)d.bytes, d.length);
-                [d release];
-                NSString* tag = NewerTag(json, cur);
-                if (tag) [weak showUpdateBanner:tag];
-            });
-        }];
-    [task resume];
+    if (![self updateNotifyEnabled]) return;                  // launch checks disabled
+    if ([[self updateMode] isEqualToString:@"pin"]) return;   // pinned: no check (Windows parity)
+    _updAutoInstallOnCheck = [[self updateMode] isEqualToString:@"auto"];
+    [self fetchReleases]; // releasesArrived: banners (notify) or installs (auto)
 }
 - (void)openReleasesPage:(id)sender {
     (void)sender;
@@ -922,7 +1306,10 @@ static NSString* NewerTag(const std::string& json, const Str& cur) {
     double w = _updateBanner.frame.size.width, sw = _previewScroll.bounds.size.width;
     _updateBanner.frame = NSMakeRect((sw - w) / 2, _previewScroll.bounds.size.height - 44, w, 34);
 }
-- (void)showUpdateBanner:(NSString*)tag {
+// One floating strip, reused for every update message: "vX available · Update",
+// "vX installed · Relaunch", "update failed · View Releases…". The button's
+// title/action swap per message; ✕ always dismisses.
+- (void)showBanner:(NSString*)text buttonTitle:(NSString*)title action:(SEL)action {
     [self ensureWindow];
     if (!_previewScroll) return;
     if (!_updateBanner) {
@@ -936,22 +1323,198 @@ static NSString* NewerTag(const std::string& json, const Str& cur) {
         _updateLabel.textColor = [NSColor whiteColor];
         _updateLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
         [_updateBanner addSubview:_updateLabel];
-        NSButton* view = [[NSButton alloc] initWithFrame:NSMakeRect(228, 5, 118, 24)];
-        [view setTitle:@"View Releases…"]; [view setBezelStyle:NSBezelStyleRounded];
-        [view setTarget:self]; [view setAction:@selector(openReleasesPage:)];
-        [_updateBanner addSubview:view]; [view release];
+        _bannerButton = [[NSButton alloc] initWithFrame:NSMakeRect(228, 5, 118, 24)];
+        [_bannerButton setBezelStyle:NSBezelStyleRounded];
+        [_bannerButton setTarget:self];
+        [_updateBanner addSubview:_bannerButton];
         NSButton* x = [[NSButton alloc] initWithFrame:NSMakeRect(352, 6, 22, 22)];
         [x setTitle:@"✕"]; [x setBordered:NO];
         [x setTarget:self]; [x setAction:@selector(dismissUpdateBanner:)];
+        [x setAutoresizingMask:NSViewMinXMargin];
         [_updateBanner addSubview:x]; [x release];
     }
-    _updateLabel.stringValue = [NSString stringWithFormat:@"FMDV %@ is available", tag];
+    _updateLabel.stringValue = text;
+    [_bannerButton setTitle:title];
+    [_bannerButton setAction:action];
+    // fit the strip to its content: label · button · ✕
+    [_updateLabel sizeToFit];
+    double lw = _updateLabel.frame.size.width;
+    [_bannerButton sizeToFit];
+    double bw = std::max(90.0, _bannerButton.frame.size.width + 16);
+    _updateLabel.frame = NSMakeRect(12, 8, lw, 20);
+    _bannerButton.frame = NSMakeRect(12 + lw + 10, 5, bw, 24);
+    double total = 12 + lw + 10 + bw + 6 + 22 + 6;
+    NSRect bf = _updateBanner.frame; bf.size.width = total; _updateBanner.frame = bf;
     if (_updateBanner.superview != _previewScroll)
         [_previewScroll addFloatingSubview:_updateBanner forAxis:NSEventGestureAxisVertical];
     _updateBanner.hidden = NO;
     [self positionUpdateBanner];
 }
+
+// ---------------- test driver (--test-drive) ----------------
+// The macOS analog of the Win32 suite's PostMessage/SendMessage driving
+// (cpp/tests/run-tests.ps1): tests/run-tests.sh pipes line commands into stdin
+// and reads one ok/err reply per command from stdout. Keystrokes are real
+// NSEvents pushed through the same dispatch as user input — window
+// performKeyEquivalent → menu → sendEvent → first responder — so shortcuts,
+// ghost-text, list continuation, and the find bar are exercised end to end.
+// Needs no Accessibility/TCC permission, so it runs on hosted CI.
+
+// "cmd+shift+s", "tab", "x" → characters + keyCode + modifier flags.
+static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
+                         NSEventModifierFlags* flags) {
+    static const struct { const char* n; unichar c; unsigned short k; } KEYS[] = {
+        {"enter", '\r', 36},  {"tab", '\t', 48},  {"esc", 27, 53},  {"space", ' ', 49},
+        {"up", NSUpArrowFunctionKey, 126},   {"down", NSDownArrowFunctionKey, 125},
+        {"left", NSLeftArrowFunctionKey, 123}, {"right", NSRightArrowFunctionKey, 124},
+        {"home", NSHomeFunctionKey, 115},    {"end", NSEndFunctionKey, 119},
+        {"pgup", NSPageUpFunctionKey, 116},  {"pgdn", NSPageDownFunctionKey, 121},
+    };
+    *flags = 0;
+    NSArray<NSString*>* parts = [spec componentsSeparatedByString:@"+"];
+    // a bare "+" (zoom key) splits to empty parts; treat it as the literal char
+    NSString* name = parts.lastObject.length ? parts.lastObject : @"+";
+    for (NSUInteger i = 0; i + 1 < parts.count && parts[i].length; i++) {
+        if ([parts[i] isEqualToString:@"cmd"])        *flags |= NSEventModifierFlagCommand;
+        else if ([parts[i] isEqualToString:@"shift"]) *flags |= NSEventModifierFlagShift;
+        else if ([parts[i] isEqualToString:@"alt"])   *flags |= NSEventModifierFlagOption;
+        else if ([parts[i] isEqualToString:@"ctrl"])  *flags |= NSEventModifierFlagControl;
+        else return false;
+    }
+    for (const auto& k : KEYS)
+        if ([name isEqualToString:@(k.n)]) {
+            *chars = [NSString stringWithCharacters:&k.c length:1];
+            *code = k.k;
+            return true;
+        }
+    if (name.length != 1) return false;
+    *chars = name;
+    *code = 0;
+    return true;
+}
+
+// Deliver one keystroke the way NSApplication routes a real one. The update
+// picker panel is targeted while visible (it would be the key window).
+- (void)testSendChars:(NSString*)chars code:(unsigned short)code flags:(NSEventModifierFlags)flags {
+    NSWindow* win = (_updPanel && _updPanel.visible) ? (NSWindow*)_updPanel : _window;
+    if (!win) return;
+    NSEvent* ev = [NSEvent keyEventWithType:NSEventTypeKeyDown
+                                   location:NSZeroPoint
+                              modifierFlags:flags
+                                  timestamp:[NSProcessInfo processInfo].systemUptime
+                               windowNumber:win.windowNumber
+                                    context:nil
+                                 characters:chars
+                charactersIgnoringModifiers:chars
+                                  isARepeat:NO
+                                    keyCode:code];
+    if ((flags & NSEventModifierFlagCommand) &&
+        ([win performKeyEquivalent:ev] || [[NSApp mainMenu] performKeyEquivalent:ev]))
+        return;
+    [win sendEvent:ev];
+}
+
+- (NSString*)testQuery:(NSString*)what {
+    if ([what isEqualToString:@"editor"])   return _editing ? @"1" : @"0";
+    if ([what isEqualToString:@"findbar"])  return [_preview findBarVisible] ? @"1" : @"0";
+    if ([what isEqualToString:@"findlabel"]) return [_preview findLabelText];
+    if ([what isEqualToString:@"toc"])      return (_tocVisible && _tocView && !_tocView.hidden) ? @"1" : @"0";
+    if ([what isEqualToString:@"picker"])   return (_updPanel && _updPanel.visible) ? @"1" : @"0";
+    if ([what isEqualToString:@"releases"]) return [NSString stringWithFormat:@"%zu", _updReleases.size()];
+    if ([what isEqualToString:@"banner"])
+        return (_updateBanner && !_updateBanner.hidden) ? _updateLabel.stringValue : @"";
+    if ([what isEqualToString:@"title"])    return _window ? _window.title : @"";
+    if ([what isEqualToString:@"dark"])     return [_preview dark] ? @"1" : @"0";
+    if ([what isEqualToString:@"ghost"])    return _textView ? [_textView ghostText] : @"";
+    if ([what isEqualToString:@"editor-text"]) return _textView ? _textView.string : @"";
+    if ([what isEqualToString:@"version"])  return [self currentVersion];
+    if ([what isEqualToString:@"installing"]) return _installRunning ? @"1" : @"0";
+    if ([what isEqualToString:@"headings"]) // parsed-document probe (live reload tests)
+        return [NSString stringWithFormat:@"%zu", [_preview headings].size()];
+    return nil;
+}
+
+- (NSString*)testCapture:(NSString*)path {
+    if (!_window) return @"err no window";
+    NSView* v = _window.contentView;
+    NSBitmapImageRep* rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
+    if (!rep) return @"err capture";
+    [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
+    NSData* png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    return [png writeToFile:path atomically:YES] ? @"ok" : @"err write";
+}
+
+// Execute one command line; returns the reply ("ok", "ok <data>", "err <why>").
+- (NSString*)testCommand:(NSString*)line {
+    NSRange sp = [line rangeOfString:@" "];
+    NSString* cmd = sp.location == NSNotFound ? line : [line substringToIndex:sp.location];
+    NSString* arg = sp.location == NSNotFound ? @"" : [line substringFromIndex:sp.location + 1];
+
+    if ([cmd isEqualToString:@"key"]) {
+        NSString* chars; unsigned short code; NSEventModifierFlags flags;
+        if (!ParseKeySpec(arg, &chars, &code, &flags)) return @"err bad key spec";
+        [self testSendChars:chars code:code flags:flags];
+        return @"ok";
+    }
+    if ([cmd isEqualToString:@"type"]) { // \n → Enter keystroke, \t → Tab, \\ → backslash
+        for (NSUInteger i = 0; i < arg.length; i++) {
+            unichar c = [arg characterAtIndex:i];
+            unsigned short code = 0;
+            if (c == '\\' && i + 1 < arg.length) {
+                unichar n = [arg characterAtIndex:++i];
+                if (n == 'n') { c = '\r'; code = 36; }
+                else if (n == 't') { c = '\t'; code = 48; }
+                else c = n;
+            }
+            [self testSendChars:[NSString stringWithCharacters:&c length:1] code:code flags:0];
+        }
+        return @"ok";
+    }
+    if ([cmd isEqualToString:@"query"]) {
+        NSString* v = [self testQuery:arg];
+        if (!v) return @"err unknown query";
+        v = [v stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
+        v = [v stringByReplacingOccurrencesOfString:@"\n" withString:@"\\n"];
+        return [@"ok " stringByAppendingString:v];
+    }
+    if ([cmd isEqualToString:@"caret"]) {
+        if (!_textView) return @"err no editor";
+        [_textView setSelectedRange:NSMakeRange((NSUInteger)arg.integerValue, 0)];
+        return @"ok";
+    }
+    if ([cmd isEqualToString:@"find-step"]) { // Shift+Enter path: synthetic events can't
+        [_preview stepFind:(int)arg.integerValue]; // set NSApp.currentEvent's shift flag
+        return @"ok";
+    }
+    if ([cmd isEqualToString:@"capture"]) return [self testCapture:arg];
+    if ([cmd isEqualToString:@"quit"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+        return @"ok";
+    }
+    return @"err unknown command";
+}
 @end
+
+// Reads stdin line-by-line on a worker queue; each command runs synchronously
+// on the main thread and its reply is flushed before the next line is read, so
+// the shell suite never races the UI. EOF (harness died) quits the app.
+static void StartTestDriver(FMDVAppDelegate* delegate) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        char buf[8192];
+        while (fgets(buf, sizeof buf, stdin)) {
+            NSString* line = [[NSString stringWithUTF8String:buf]
+                stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+            if (!line.length) continue;
+            __block NSString* resp = nil;
+            dispatch_sync(dispatch_get_main_queue(), ^{ resp = [[delegate testCommand:line] retain]; });
+            std::fprintf(stdout, "%s\n", resp.UTF8String);
+            std::fflush(stdout);
+            [resp release];
+            if ([line isEqualToString:@"quit"]) return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+    });
+}
 
 // ---------------- menu ----------------
 
