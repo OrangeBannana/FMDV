@@ -709,17 +709,22 @@ Still hands-on (not reachable through synthesized keystrokes alone):
   stays the **updater's** payload (unzip → verify → live-swap doesn't want a
   disk image). CI builds + `hdiutil verify`s it and the `release` job attaches
   it. No custom background/icon layout (kept robust for headless CI); the `.dmg`
-  inherits the `.app` signature and should be notarized + stapled once Developer
-  ID lands (below).
+  inherits the `.app` signature and is notarized + stapled by
+  `scripts/notarize.sh` (below), which rebuilds it from the stapled app and
+  signs the image itself.
 - ⛔ **Developer ID signing + notarization — needs maintainer credentials.**
   Everything scriptable exists: CI signs when the `MACOS_CERT_P12` /
   `MACOS_CERT_PASSWORD` / `MACOS_SIGN_ID` repo secrets are configured (falls
   back to ad-hoc, which runs locally and satisfies the updater's signature
   check but trips Gatekeeper on other machines), and `scripts/notarize.sh`
-  submits + staples. Blocked on two one-time maintainer steps it documents:
-  create a **Developer ID Application** certificate (the present "Apple
-  Development"/"Apple Distribution" identities can't notarize) and store
-  notarytool credentials (`xcrun notarytool store-credentials`).
+  notarizes + staples **both** release artifacts — the zip (staple the app,
+  re-zip) and the dmg (rebuild from the stapled app, sign the image, notarize,
+  staple). Blocked only on two one-time maintainer steps it documents: create a
+  **Developer ID Application** certificate (the present "Apple Development" /
+  "Apple Distribution" identities can't notarize) and store notarytool
+  credentials (`xcrun notarytool store-credentials`). Release flow once those
+  exist: `make dist FMDV_SIGN_ID="Developer ID Application: … (TEAMID)"` then
+  `scripts/notarize.sh`.
 
 ### 4. Architecture / optional
 
