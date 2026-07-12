@@ -567,9 +567,10 @@ Interpretation rules:
 > download + bundle swap — verified end-to-end against a local fixture server)
 > are all implemented, and CI attaches `FMDV-macos.zip` (updater payload) and
 > `FMDV-macos.dmg` (drag-to-Applications installer) release artifacts.
-> What's left is not code: several live interactions still need a hands-on QA
-> pass, and distribution polish (Developer ID signing + notarization) needs
-> Apple credentials only the maintainer can create. The complete list is in
+> Distribution is fully signed: Developer ID signing + notarization is set up
+> and verified end-to-end (2026-07-11) — a notarized, stapled `.dmg` and `.zip`
+> open on other Macs without a Gatekeeper warning. What's left is not code: a few
+> live interactions still want a hands-on QA pass. The complete list is in
 > **[Remaining Work](#remaining-work)** below.
 
 1. `bench/logging`: add unified benchmark logging and capture Windows baseline.
@@ -609,7 +610,7 @@ is an environment limitation, not a work item.)
 | Updater — notify banner + launch-check preference | ✅ done |
 | Updater — auto-update / pin / in-app install | ✅ done (E2E-tested vs local fixture server) |
 | Packaging — macOS release artifacts in CI (§3) | ✅ done (`FMDV-macos.zip` updater payload + `FMDV-macos.dmg` drag installer, signed when secrets set) |
-| Packaging — Developer ID signing + notarization (§3) | ⛔ needs maintainer's Apple credentials |
+| Packaging — Developer ID signing + notarization (§3) | ✅ done (2026-07-11, verified end-to-end: signed + notarized + stapled, `spctl` → "Notarized Developer ID"; manual release via `make dist FMDV_SIGN_ID=… && make notarize`) |
 | Live-UI test suite (`tests/run-tests.sh`, gating in CI) (§2) | ✅ done (88 checks via `--test-drive`) |
 | Hands-on Mac QA — mouse paths, Finder association, visuals (§2) | ⬜ small residual list |
 | Windows layout-engine unification (§4) | ✅ done (2026-07-11, PNG-diff gated) |
@@ -618,9 +619,11 @@ is an environment limitation, not a work item.)
 | Final-pass code review + fixes (correctness / cleanup) | ✅ done (2026-07-11, CI green on HEAD — both `build` and `build-macos`) |
 
 The macOS port, the shared-core backend rewrite, and the Windows layout-engine
-refactor are **complete**. The only open items are not code: Developer ID
-signing + notarization (blocked on the maintainer's Apple credentials) and the
-small hands-on Mac QA list below.
+refactor are **complete**, and Developer ID signing + notarization is set up and
+verified end-to-end (2026-07-11). The only remaining item is not code: the small
+hands-on Mac QA list below. (Notarization runs as a manual local release step —
+`make dist FMDV_SIGN_ID=… && make notarize` — rather than in CI, by choice;
+automating it is an optional follow-up needing notary secrets in the repo.)
 
 ### 1. Feature parity gaps — Windows has these; macOS does not yet
 
@@ -712,19 +715,19 @@ Still hands-on (not reachable through synthesized keystrokes alone):
   inherits the `.app` signature and is notarized + stapled by
   `scripts/notarize.sh` (below), which rebuilds it from the stapled app and
   signs the image itself.
-- ⛔ **Developer ID signing + notarization — needs maintainer credentials.**
-  Everything scriptable exists: CI signs when the `MACOS_CERT_P12` /
-  `MACOS_CERT_PASSWORD` / `MACOS_SIGN_ID` repo secrets are configured (falls
-  back to ad-hoc, which runs locally and satisfies the updater's signature
-  check but trips Gatekeeper on other machines), and `scripts/notarize.sh`
-  notarizes + staples **both** release artifacts — the zip (staple the app,
-  re-zip) and the dmg (rebuild from the stapled app, sign the image, notarize,
-  staple). Blocked only on two one-time maintainer steps it documents: create a
-  **Developer ID Application** certificate (the present "Apple Development" /
-  "Apple Distribution" identities can't notarize) and store notarytool
-  credentials (`xcrun notarytool store-credentials`). Release flow once those
-  exist: `make dist FMDV_SIGN_ID="Developer ID Application: … (TEAMID)"` then
-  `scripts/notarize.sh`.
+- ✅ **Developer ID signing + notarization (2026-07-11).** Set up and verified
+  end-to-end: a Developer ID Application cert signs the `.app` (hardened runtime
+  + secure timestamp via `make app`/`make dist` with `FMDV_SIGN_ID`), and
+  `scripts/notarize.sh` (`make notarize`) notarizes + staples **both** release
+  artifacts — the zip (staple the app, re-zip) and the dmg (rebuild from the
+  stapled app, sign the image, notarize, staple). Confirmed with
+  `xcrun stapler validate` (app + dmg) and `spctl -a -vv` → "accepted,
+  source=Notarized Developer ID". Release flow: `make dist FMDV_SIGN_ID=…` then
+  `make notarize` (start from `make clean` so the signing recipe actually runs;
+  a stale bundle is skipped). This runs as a manual local step; CI still ad-hoc
+  signs unless the `MACOS_CERT_P12` / `MACOS_CERT_PASSWORD` / `MACOS_SIGN_ID`
+  secrets are set, and auto-notarize in CI (adding notary secrets to the release
+  job) is an optional follow-up, deferred by choice.
 
 ### 4. Architecture / optional
 
