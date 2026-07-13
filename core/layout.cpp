@@ -332,7 +332,11 @@ LayoutResult LayoutDocument(const Document& doc, double width,
                 textCmd(cx, bulletX, y + bodyAsc, tm.textWidth(body, bullet), lineH,
                         bullet, body, th.text, false, false);
             }
-            y = layoutWords(cx, words, indent, y);
+            // An empty item (marker with no text) still reserves its marker's
+            // line height; layoutWords returns y unchanged for zero words, which
+            // would let the checkbox/bullet overlap the next block.
+            if (words.empty()) y += lineH;
+            else y = layoutWords(cx, words, indent, y);
             y += Sc(cx, 6);
             break;
         }

@@ -160,6 +160,19 @@ int main() {
         check(countKind(r, DrawCommand::FrameRect) == 1, "task: checked frame");
         check(countKind(r, DrawCommand::Line) == 2, "task: checkmark is two lines");
     }
+    {
+        // Empty items (marker, no text) must still reserve a line so their
+        // checkbox/bullet doesn't overlap following content (regression).
+        LayoutResult r = lay("- [x]\n- [x]\n\nAfter");
+        check(r.taskHits.size() == 2, "empty-task: two checkboxes emitted");
+        if (r.taskHits.size() == 2)
+            check(r.taskHits[1].rect.y >= r.taskHits[0].rect.y + r.taskHits[0].rect.h,
+                  "empty-task: second checkbox is below the first (no overlap)");
+        const DrawCommand* after = firstText(r, "After");
+        check(after && r.taskHits.size() == 2 &&
+                  after->rect.y > r.taskHits[1].rect.y + r.taskHits[1].rect.h,
+              "empty-task: following paragraph sits below the checkboxes");
+    }
 
     // ---- code block ----
     {
