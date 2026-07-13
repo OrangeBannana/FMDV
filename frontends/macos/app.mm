@@ -97,6 +97,13 @@ struct Frag {
 - (NSString*)findLabelText;
 - (void)stepFind:(int)dir;
 - (NSString*)laidOutInfo; // "<laidOutWidth> <contentHeight>", to probe reflow
+- (NSString*)selectedString;         // current selection text ("" if none)
+- (long)fragCount;                   // number of selectable fragments
+- (NSString*)fragText:(long)i;       // text of fragment i ("" if out of range)
+- (long)selectionRectCount;          // number of selection highlight rectangles
+// Window-space point inside fragment `i` at horizontal fraction `fx` (0=left,
+// 1=right), vertically centered — used to synthesize mouse events at known text.
+- (NSPoint)windowPointInFrag:(long)i xFrac:(double)fx;
 @end
 
 @implementation FMDVPreviewView
@@ -270,6 +277,21 @@ struct Frag {
     if (!_hasSel) return @"";
     long a, aCh, b, bCh; [self normSelA:&a aCh:&aCh b:&b bCh:&bCh];
     return StrToNS(fmdv::SelectionText([self selFrags], a, aCh, b, bCh));
+}
+// ---- test-driver introspection (--test-drive) ----
+- (long)fragCount { return (long)_frags.size(); }
+- (NSString*)fragText:(long)i {
+    if (i < 0 || i >= (long)_frags.size()) return @"";
+    return StrToNS(_frags[i].text);
+}
+- (long)selectionRectCount { return (long)[self selectionRects].size(); }
+- (NSPoint)windowPointInFrag:(long)i xFrac:(double)fx {
+    if (i < 0 || i >= (long)_frags.size()) return NSZeroPoint;
+    const fmdv::RectF& b = _frags[i].box;                 // document space
+    double vx = (b.x + b.w * fx) * _zoom;                 // -> view space (zoom applied)
+    double vy = (b.y + b.h * 0.5) * _zoom;
+    [self scrollRectToVisible:NSMakeRect(vx - 1, vy - 1, 2, 2)];
+    return [self convertPoint:NSMakePoint(vx, vy) toView:nil]; // -> window space
 }
 - (void)copySelection {
     NSString* s = [self selectedString];
@@ -1519,6 +1541,14 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     if ([what isEqualToString:@"headings"]) // parsed-document probe (live reload tests)
         return [NSString stringWithFormat:@"%zu", [_preview headings].size()];
     if ([what isEqualToString:@"laidout"]) return [_preview laidOutInfo]; // "<width> <height>"
+    if ([what isEqualToString:@"selection"]) return [_preview selectedString]; // preview selection text
+    if ([what isEqualToString:@"clipboard"]) {                                  // general pasteboard string
+        NSString* s = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+        return s ? s : @"";
+    }
+    if ([what isEqualToString:@"fragcount"]) return [NSString stringWithFormat:@"%ld", [_preview fragCount]];
+    if ([what isEqualToString:@"selrects"])  return [NSString stringWithFormat:@"%ld", [_preview selectionRectCount]];
+    if ([what hasPrefix:@"fragtext "])       return [_preview fragText:[what substringFromIndex:9].integerValue];
     if ([what isEqualToString:@"bannerpos"]) { // "<banner.origin.y> <scrollHeight>", to probe tracking
         if (!_updateBanner || _updateBanner.hidden || !_previewScroll) return @"hidden";
         return [NSString stringWithFormat:@"%d %d", (int)std::llround(_updateBanner.frame.origin.y),
@@ -1537,11 +1567,53 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     return [png writeToFile:path atomically:YES] ? @"ok" : @"err write";
 }
 
+// A mouse NSEvent at a window-space point (the mouse analog of testSendChars).
+- (NSEvent*)testMouseEvent:(NSEventType)type at:(NSPoint)loc clicks:(NSInteger)clicks {
+    return [NSEvent mouseEventWithType:type location:loc modifierFlags:0
+                             timestamp:[NSProcessInfo processInfo].systemUptime
+                          windowNumber:_window ? _window.windowNumber : 0
+                               context:nil eventNumber:0 clickCount:clicks pressure:1.0];
+}
+// Click the center of fragment i with the given clickCount (1/2/3 = char/word/
+// line). Delivered to the preview's real handlers, so makeFirstResponder and the
+// word/quote/line selection branches run exactly as for a user click — without
+// depending on the window being on-screen or hit-testing.
+- (NSString*)testClickFrag:(long)i clicks:(NSInteger)clicks {
+    if (!_preview) return @"err no preview";
+    if (i < 0 || i >= [_preview fragCount]) return @"err frag out of range";
+    NSPoint p = [_preview windowPointInFrag:i xFrac:0.5];
+    [_preview mouseDown:[self testMouseEvent:NSEventTypeLeftMouseDown at:p clicks:clicks]];
+    [_preview mouseUp:[self testMouseEvent:NSEventTypeLeftMouseUp at:p clicks:clicks]];
+    return @"ok";
+}
+// Drag-select from the left edge of frag i to the right edge of frag j, so the
+// resulting selection is exactly the text of fragments i..j.
+- (NSString*)testDragFromFrag:(long)i toFrag:(long)j {
+    if (!_preview) return @"err no preview";
+    long n = [_preview fragCount];
+    if (i < 0 || j < 0 || i >= n || j >= n) return @"err frag out of range";
+    NSPoint a = [_preview windowPointInFrag:i xFrac:0.02];
+    NSPoint b = [_preview windowPointInFrag:j xFrac:0.98];
+    [_preview mouseDown:[self testMouseEvent:NSEventTypeLeftMouseDown at:a clicks:1]];
+    [_preview mouseDragged:[self testMouseEvent:NSEventTypeLeftMouseDragged at:b clicks:1]];
+    [_preview mouseUp:[self testMouseEvent:NSEventTypeLeftMouseUp at:b clicks:1]];
+    return @"ok";
+}
+
 // Execute one command line; returns the reply ("ok", "ok <data>", "err <why>").
 - (NSString*)testCommand:(NSString*)line {
     NSRange sp = [line rangeOfString:@" "];
     NSString* cmd = sp.location == NSNotFound ? line : [line substringToIndex:sp.location];
     NSString* arg = sp.location == NSNotFound ? @"" : [line substringFromIndex:sp.location + 1];
+
+    if ([cmd isEqualToString:@"click-frag"])       return [self testClickFrag:arg.integerValue clicks:1];
+    if ([cmd isEqualToString:@"dblclick-frag"])    return [self testClickFrag:arg.integerValue clicks:2];
+    if ([cmd isEqualToString:@"tripleclick-frag"]) return [self testClickFrag:arg.integerValue clicks:3];
+    if ([cmd isEqualToString:@"drag-frag"]) {
+        NSArray<NSString*>* ij = [arg componentsSeparatedByString:@" "];
+        if (ij.count != 2) return @"err bad drag-frag";
+        return [self testDragFromFrag:ij[0].integerValue toFrag:ij[1].integerValue];
+    }
 
     if ([cmd isEqualToString:@"key"]) {
         NSString* chars; unsigned short code; NSEventModifierFlags flags;

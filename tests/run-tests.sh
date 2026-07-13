@@ -48,6 +48,11 @@ stop_app() {
     APP_PID=""
 }
 alive() { kill -0 "$APP_PID" 2>/dev/null && echo 1 || echo 0; }
+frag_with() { # substring -> index of the first selectable fragment containing it (-1 if none)
+    local n i; cmd "query fragcount"; n=$R
+    for ((i=0; i<n; i++)); do cmd "query fragtext $i"; case "$R" in *"$1"*) printf '%s' "$i"; return;; esac; done
+    printf -- -1
+}
 
 cleanup() {
     [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null
@@ -182,6 +187,40 @@ has "copy: code text"  "$GOT" "print("
 has "copy: table cells" "$GOT" "Cell A1"
 has "copy: link text"  "$GOT" "Example Link"
 check "copy: multi-line" "$([ "$(printf '%s' "$GOT" | wc -l | tr -d ' ')" -ge 8 ] && echo 1 || echo 0)"
+stop_app
+
+echo
+echo "Mouse selection (click / double / triple / drag / quoted phrase):"
+cat > "$FIX/sel.md" <<'EOF'
+# Sel
+
+alpha beta gamma
+
+He said "hello world" now
+EOF
+start_app "$FIX/sel.md"
+cmd "resize 900 700"                     # keep the whole fixture on-screen for hit points
+PARA=$(frag_with "alpha beta gamma")     # a plain paragraph fragment
+QUOTE=$(frag_with "hello world")         # the fragment with a quoted phrase
+check "located paragraph fragment" "$([ "$PARA" -ge 0 ] && echo 1 || echo 0)" "PARA=$PARA"
+check "located quoted fragment"    "$([ "$QUOTE" -ge 0 ] && echo 1 || echo 0)" "QUOTE=$QUOTE"
+# double-click selects the word under the cursor (center of the line = "beta")
+cmd "dblclick-frag $PARA"; cmd "query selection"; eq "double-click selects a word" "$R" "beta"
+cmd "query selrects"; check "double-click draws a highlight" "$([ "${R:-0}" -ge 1 ] && echo 1 || echo 0)" "selrects=$R"
+# triple-click selects the whole line
+cmd "tripleclick-frag $PARA"; cmd "query selection"; eq "triple-click selects the line" "$R" "alpha beta gamma"
+# double-click inside quotes selects the quoted phrase (marks excluded)
+cmd "dblclick-frag $QUOTE"; cmd "query selection"; eq "double-click selects quoted phrase" "$R" "hello world"
+# Cmd+C copies the live selection to the pasteboard (Edit-menu -> copy: routing)
+cmd "key cmd+c"; cmd "query clipboard"; eq "Cmd+C copies the selection" "$R" "hello world"
+# drag from one paragraph to the next spans both lines
+cmd "drag-frag $PARA $QUOTE"; cmd "query selection"
+has "drag selects across lines (start)" "$R" "alpha beta gamma"
+has "drag selects across lines (end)"   "$R" "now"
+# a single click clears the selection (and its highlight)
+cmd "click-frag $PARA"; cmd "query selection"; eq "single click clears selection" "$R" ""
+cmd "query selrects"; eq "cleared selection draws no highlight" "$R" "0"
+check "window survives mouse selection" "$(alive)"
 stop_app
 
 echo
