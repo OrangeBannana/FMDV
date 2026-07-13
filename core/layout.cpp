@@ -214,35 +214,45 @@ double layoutWords(Ctx& cx, std::vector<Word>& words, double indentLeft, double 
     return y;
 }
 
-// Greedy word-wrap of plain text to fit maxWidth. No mid-word breaking (matches
-// layoutWords' paragraph wrapping, which also never splits a word).
+// Greedy word-wrap of plain text to fit maxWidth. Words wrap on spaces; a single
+// token wider than maxWidth is broken character by character (overflow-wrap) so a
+// cell never spills past its column into the next one.
 std::vector<Str> WrapCellText(TextMeasurer& tm, const FontSpec& f, const Str& text,
                               double maxWidth) {
-    std::vector<Str> lines;
+    if (maxWidth < 1) maxWidth = 1;
     std::vector<Str> words; Str cur;
     for (Char c : text) {
         if (c == U16(' ') || c == U16('\t')) { if (!cur.empty()) { words.push_back(cur); cur.clear(); } }
         else cur += c;
     }
     if (!cur.empty()) words.push_back(cur);
-    if (words.empty()) { lines.push_back(Str()); return lines; }
 
+    std::vector<Str> lines;
     double spaceW = tm.textWidth(f, U16(" "));
-    Str line = words[0];
-    double lineW = tm.textWidth(f, line);
-    for (size_t i = 1; i < words.size(); i++) {
-        double wW = tm.textWidth(f, words[i]);
-        if (lineW + spaceW + wW <= maxWidth) {
-            line += U16(' ');
-            line += words[i];
-            lineW += spaceW + wW;
+    Str line; double lineW = 0; bool have = false;
+    for (const Str& w : words) {
+        double wW = tm.textWidth(f, w);
+        if (have && lineW + spaceW + wW <= maxWidth) {          // fits after a space
+            line += U16(' '); line += w; lineW += spaceW + wW;
+        } else if (wW <= maxWidth) {                            // fits alone on a line
+            if (have) lines.push_back(line);
+            line = w; lineW = wW; have = true;
         } else {
-            lines.push_back(line);
-            line = words[i];
-            lineW = wW;
+            // Token wider than the column: break it character by character.
+            if (have) { lines.push_back(line); line.clear(); have = false; }
+            Str piece;
+            for (Char ch : w) {
+                Str trial = piece; trial += ch;
+                if (!piece.empty() && tm.textWidth(f, trial) > maxWidth) {
+                    lines.push_back(piece); piece.clear(); piece += ch;
+                } else {
+                    piece = trial;
+                }
+            }
+            line = piece; lineW = tm.textWidth(f, piece); have = true;
         }
     }
-    lines.push_back(line);
+    lines.push_back(line);   // final (possibly empty) line
     return lines;
 }
 
@@ -370,7 +380,7 @@ LayoutResult LayoutDocument(const Document& doc, double width,
             double fh = tm.lineHeight(bodySpec);
             double asc = tm.ascent(bodySpec), ascBold = tm.ascent(boldSpec);
             double cellPadX = Sc(cx, 8), cellPadY = Sc(cx, 7);
-            double lineGap = Sc(cx, 4), minColW = Sc(cx, 60);
+            double lineGap = Sc(cx, 4);
 
             auto cellText = [](const std::vector<TableCell>& cells, int c) {
                 Str s;
@@ -388,6 +398,25 @@ LayoutResult LayoutDocument(const Document& doc, double width,
                     if (w > naturalPad[c]) naturalPad[c] = w;
                 }
 
+            // min-content width per column: the widest single unbreakable token
+            // (+ padding). A column never shrinks below this unless the window is
+            // too narrow to fit even that, in which case columns fall back to a
+            // hard minimum (padding + a char) and WrapCellText breaks the token —
+            // so long tokens (e.g. SENSE_FWD) don't spill into the next column.
+            double hardMin = 2 * cellPadX + Sc(cx, 10);
+            std::vector<double> colMin(cols, hardMin);
+            auto tokenMax = [&](const FontSpec& fs, const Str& s, double& best) {
+                Str tok;
+                auto meas = [&]{ if (!tok.empty()) {
+                    double w = tm.textWidth(fs, tok) + 2 * cellPadX; if (w > best) best = w; tok.clear(); } };
+                for (Char ch : s) { if (ch == U16(' ') || ch == U16('\t')) meas(); else tok += ch; }
+                meas();
+            };
+            for (int c = 0; c < cols; c++) tokenMax(boldSpec, cellText(b.headers, c), colMin[c]);
+            for (const auto& row : b.rows)
+                for (int c = 0; c < cols && c < (int)row.cells.size(); c++)
+                    tokenMax(bodySpec, cellText(row.cells, c), colMin[c]);
+
             // 2. column widths: stretch proportionally to fill available width when
             // content fits; otherwise shrink proportionally (floor at minColW) and
             // wrap cell text that no longer fits.
@@ -403,34 +432,34 @@ LayoutResult LayoutDocument(const Document& doc, double width,
                     colW[c] = naturalPad[c] + share;
                 }
             } else {
-                // Iteratively floor columns that would go below minColW and
-                // redistribute the remaining width among the rest so the total
-                // never exceeds avail (CSS-flexbox-style min-width negotiation).
-                std::vector<bool> floored(cols, false);
-                double remainingAvail = avail;
-                double remainingNatural = totalNatural;
-                for (int iter = 0; iter < cols; iter++) {
-                    bool changed = false;
-                    for (int c = 0; c < cols; c++) {
-                        if (floored[c]) continue;
-                        double w = (remainingNatural > 0)
-                            ? std::floor(naturalPad[c] * remainingAvail / remainingNatural)
-                            : minColW;
-                        if (w < minColW) {
-                            floored[c] = true;
-                            colW[c] = minColW;
-                            remainingAvail -= minColW;
-                            remainingNatural -= naturalPad[c];
-                            changed = true;
+                // Shrink proportionally, flooring each column at `fl[c]` and
+                // redistributing so the total never exceeds avail (CSS-flexbox-style
+                // min-width negotiation).
+                auto distribute = [&](const std::vector<double>& fl) {
+                    std::vector<double> w(cols);
+                    std::vector<bool> floored(cols, false);
+                    double ra = avail, rn = totalNatural;
+                    for (int iter = 0; iter < cols; iter++) {
+                        bool changed = false;
+                        for (int c = 0; c < cols; c++) {
+                            if (floored[c]) continue;
+                            double x = (rn > 0) ? std::floor(naturalPad[c] * ra / rn) : fl[c];
+                            if (x < fl[c]) {
+                                floored[c] = true; w[c] = fl[c];
+                                ra -= fl[c]; rn -= naturalPad[c]; changed = true;
+                            }
                         }
+                        if (!changed) break;
                     }
-                    if (!changed) break;
-                }
-                for (int c = 0; c < cols; c++)
-                    if (!floored[c])
-                        colW[c] = (remainingNatural > 0)
-                            ? std::floor(naturalPad[c] * remainingAvail / remainingNatural)
-                            : minColW;
+                    for (int c = 0; c < cols; c++)
+                        if (!floored[c]) w[c] = (rn > 0) ? std::floor(naturalPad[c] * ra / rn) : fl[c];
+                    return w;
+                };
+                // First honor min-content (keep tokens intact). If even those don't
+                // fit the window, fall back to a hard floor and let tokens break.
+                colW = distribute(colMin);
+                double sum = 0; for (double w : colW) sum += w;
+                if (sum > avail) colW = distribute(std::vector<double>(cols, hardMin));
             }
             std::vector<double> colX(cols + 1); colX[0] = cx.left;
             for (int c = 0; c < cols; c++) colX[c+1] = colX[c] + colW[c];

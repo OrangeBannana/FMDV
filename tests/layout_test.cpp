@@ -265,19 +265,42 @@ int main() {
 
     // ---- table: shrink + wrap when content overflows ----
     {
-        // avail=120 < natural 182 -> both columns floor to minColW=60 and the
-        // long cell wraps one word per line.
+        // avail=120 < natural 182. The prose column shrinks (flooring at its
+        // min-content) and its words wrap to fit; the narrow column keeps its token.
         LayoutResult r = lay("| Desc | N |\n| --- | --- |\n| aa bb cc dd ee | x |", 200);
-        check(countKind(r, DrawCommand::Text) == 8,
-              "table: overflowing cell wraps (5 lines + 3 other cells)");
         bool inBounds = true;
         for (const auto& c : r.cmds)
             if (c.kind == DrawCommand::Text && c.rect.x + c.rect.w > 160.001) inBounds = false;
         check(inBounds, "table: wrapped cells stay inside the content width");
-        const DrawCommand* aa = firstText(r, "aa");
-        const DrawCommand* bb = firstText(r, "bb");
-        check(aa && bb && near(bb->rect.y - aa->rect.y, 24),
+        const DrawCommand* l1 = firstText(r, "aa bb");
+        const DrawCommand* l2 = firstText(r, "cc dd");
+        check(l1 && l2 && near(l2->rect.y - l1->rect.y, 24),
               "table: wrapped lines advance by line height + gap");
+    }
+
+    // ---- table: a short unbreakable token keeps its column (min-content floor) ----
+    {
+        // The prose column forces the table to shrink, but "SENSE_FWD" stays on
+        // one line instead of overflowing into the next column (the reported bug).
+        LayoutResult r = lay("| Sig | Note |\n| --- | --- |\n| SENSE_FWD | this is a "
+                             "long note with many words that must wrap across lines to fit |", 900);
+        check(firstText(r, "SENSE_FWD") != nullptr,
+              "table: short token stays intact while a sibling column wraps");
+        bool inBounds = true;
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::Text && c.rect.x + c.rect.w > 860.001) inBounds = false;
+        check(inBounds, "table: no cell overflows the table width");
+    }
+
+    // ---- table: an over-long token breaks rather than overflowing ----
+    {
+        // Window too narrow to fit the token's min-content -> it breaks char-wise.
+        LayoutResult r = lay("| Sig | N |\n| --- | --- |\n| SUPERLONGIDENTIFIER | x |", 160);
+        check(firstText(r, "SUPERLONGIDENTIFIER") == nullptr, "table: over-long token is broken up");
+        bool inBounds = true;
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::Text && c.rect.x + c.rect.w > 120.001) inBounds = false;
+        check(inBounds, "table: broken token stays inside its column");
     }
 
     // ---- block tops track every block ----
