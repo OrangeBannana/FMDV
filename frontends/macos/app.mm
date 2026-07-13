@@ -975,8 +975,7 @@ static void StartTestDriver(FMDVAppDelegate* delegate); // --test-drive stdin lo
         CFStringRef uti = UTTypeCreatePreferredIdentifierForTag(
             kUTTagClassFilenameExtension, (CFStringRef)ext, NULL);
         if (!uti) continue;
-        OSStatus st = LSSetDefaultRoleHandlerForContentType(
-            uti, kLSRolesViewer | kLSRolesEditor, (CFStringRef)bid);
+        OSStatus st = LSSetDefaultRoleHandlerForContentType(uti, kLSRolesAll, (CFStringRef)bid);
         CFRelease(uti);
         if (st != noErr && firstErr == noErr) { ok = NO; firstErr = st; }
     }
@@ -992,6 +991,35 @@ static void StartTestDriver(FMDVAppDelegate* delegate); // --test-drive stdin lo
                              @"moving FMDV to your Applications folder and retrying.", (int)firstErr];
     }
     [a addButtonWithTitle:@"OK"]; [a runModal]; [a release];
+}
+
+// True when FMDV is the current Launch Services default handler for .md.
+- (BOOL)isDefaultMarkdownHandler {
+    NSString* bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bid.length) return NO;
+    BOOL isDefault = NO;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    CFStringRef uti = UTTypeCreatePreferredIdentifierForTag(
+        kUTTagClassFilenameExtension, CFSTR("md"), NULL);
+    if (uti) {
+        CFStringRef cur = LSCopyDefaultRoleHandlerForContentType(uti, kLSRolesAll);
+        if (cur) {
+            isDefault = ([bid caseInsensitiveCompare:(NSString*)cur] == NSOrderedSame);
+            CFRelease(cur);
+        }
+        CFRelease(uti);
+    }
+#pragma clang diagnostic pop
+    return isDefault;
+}
+
+// Checkmark the "Make Default" item when FMDV already is the default; leave every
+// other delegate-targeted item enabled.
+- (BOOL)validateMenuItem:(NSMenuItem*)item {
+    if (item.action == @selector(makeDefaultForMarkdown:))
+        item.state = [self isDefaultMarkdownHandler] ? NSControlStateValueOn : NSControlStateValueOff;
+    return YES;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)n {
