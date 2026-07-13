@@ -63,6 +63,36 @@ struct Frag {
     Str text;
     double baseline;
 };
+
+// If char index `ch` sits inside a double-quoted phrase in `t`, set [s,e) to the
+// span between the quotes (exclusive of the quote marks) and return true; else
+// false. Handles straight ("...") and curly (“...”) double quotes. A missing
+// closing quote returns false so the caller falls back to single-word selection.
+static bool QuotedSpan(const Str& t, long ch, long& s, long& e) {
+    long n = (long)t.size();
+    if (ch < 0) ch = 0; else if (ch > n) ch = n;
+    const Char kOpen = (Char)0x201C, kClose = (Char)0x201D, kQuote = (Char)0x22;
+    // Curly quotes pair by direction: nearest “ to the left, matching ” to the right.
+    for (long i = ch - 1; i >= 0; i--) {
+        if (t[i] == kClose) break;              // a closer to our left => not inside
+        if (t[i] == kOpen) {
+            for (long j = ch; j < n; j++) {
+                if (t[j] == kOpen) break;        // another opener before a closer => bail
+                if (t[j] == kClose) { s = i + 1; e = j; return true; }
+            }
+            break;
+        }
+    }
+    // Straight quotes: inside iff an odd number of " precede ch AND a closing " follows.
+    long before = 0; for (long i = 0; i < ch; i++) if (t[i] == kQuote) before++;
+    if (before % 2 == 1) {
+        long L = -1; for (long i = ch - 1; i >= 0; i--) if (t[i] == kQuote) { L = i; break; }
+        long R = -1; for (long j = ch; j < n; j++)   if (t[j] == kQuote) { R = j; break; }
+        if (L >= 0 && R >= 0 && L < R) { s = L + 1; e = R; return true; }
+    }
+    return false;
+}
+
 @interface FMDVPreviewView : NSView <NSTextFieldDelegate> {
     Document _doc;
     fmdv::LayoutResult _layout;
@@ -286,11 +316,33 @@ struct Frag {
 }
 - (void)clearSelection { if (_hasSel) { _hasSel = false; self.needsDisplay = YES; } }
 
+// Standard responder-chain action so the Edit menu, ⌘C, right-click Copy, and
+// Services all copy the preview selection when the preview is first responder.
+- (void)copy:(id)sender { (void)sender; [self copySelection]; }
+// Enable Copy only with a live selection; Select All whenever there's text.
+- (BOOL)validateMenuItem:(NSMenuItem*)mi {
+    SEL a = mi.action;
+    if (a == @selector(copy:))      return _hasSel;
+    if (a == @selector(selectAll:)) return !_frags.empty();
+    return YES;
+}
+// Right-click over a selection offers Copy (matches every native macOS text view).
+- (NSMenu*)menuForEvent:(NSEvent*)ev {
+    (void)ev;
+    if (!_hasSel) return nil;
+    NSMenu* m = [[NSMenu alloc] initWithTitle:@""];
+    [m addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@""];
+    return [m autorelease];
+}
+
 - (NSPoint)logicalPoint:(NSEvent*)ev {
     NSPoint p = [self convertPoint:ev.locationInWindow fromView:nil];
     return NSMakePoint(p.x / _zoom, p.y / _zoom);
 }
 - (void)mouseDown:(NSEvent*)ev {
+    // Clicking to select must focus the preview, so the Edit menu / ⌘C route
+    // Copy here (the menu sends copy: to the window's first responder).
+    [self.window makeFirstResponder:self];
     _dragging = false;
     long fi, ch;
     if (![self hitPoint:[self logicalPoint:ev] frag:&fi ch:&ch]) { [self clearSelection]; return; }
@@ -299,8 +351,24 @@ struct Frag {
         while (lo > 0 && std::abs(_frags[lo - 1].baseline - base) < 1) lo--;
         while (hi + 1 < (long)_frags.size() && std::abs(_frags[hi + 1].baseline - base) < 1) hi++;
         _selA = lo; _selACh = 0; _selB = hi; _selBCh = (long)_frags[hi].text.size(); _hasSel = true;
-    } else if (ev.clickCount == 2) {          // double click: select the word (frag)
-        _selA = fi; _selACh = 0; _selB = fi; _selBCh = (long)_frags[fi].text.size(); _hasSel = true;
+    } else if (ev.clickCount == 2) {          // double click: word, or a quoted phrase
+        // A fragment is a whole run of same-styled words (often the entire line).
+        // Inside a double-quoted phrase, select all the words between the quotes;
+        // otherwise expand from the hit char out to the surrounding whitespace to
+        // get just the word. Triple-click (above) selects the whole line.
+        const Str& t = _frags[fi].text;
+        long n = (long)t.size();
+        long qs, qe;
+        if (QuotedSpan(t, ch, qs, qe)) {
+            _selA = fi; _selACh = qs; _selB = fi; _selBCh = qe;
+        } else {
+            auto isWS = [](Char c) { return c == U16(' ') || c == U16('\t'); };
+            long ws = ch, we = ch;
+            while (ws > 0 && !isWS(t[ws - 1])) ws--;
+            while (we < n && !isWS(t[we])) we++;
+            _selA = fi; _selACh = ws; _selB = fi; _selBCh = we;
+        }
+        _hasSel = true;
     } else {
         _selA = _selB = fi; _selACh = _selBCh = ch; _hasSel = true;
     }
@@ -401,10 +469,9 @@ struct Frag {
         if ([c isEqualToString:@"-"]) { [self zoomBy:1.0 / 1.1]; return YES; }
         if ([c isEqualToString:@"0"]) { [self zoomReset]; return YES; }
         if ([c isEqualToString:@"f"]) { [self showFind]; return YES; }
-        // select-all / copy belong to the editor when it's focused
-        BOOL previewFocused = (self.window.firstResponder == self);
-        if (previewFocused && [c isEqualToString:@"a"]) { [self selectAll:nil]; return YES; }
-        if (previewFocused && [c isEqualToString:@"c"]) { [self copySelection]; return YES; }
+        // ⌘C (Copy) and ⌘A (Select All) are handled by the Edit menu, which
+        // routes copy:/selectAll: through the responder chain to whichever view
+        // is focused (this preview, or the source editor's text view).
     }
     return [super performKeyEquivalent:ev];
 }
@@ -1622,6 +1689,19 @@ static void buildMenu(id target) {
     [saveClose setKeyEquivalentModifierMask:(NSEventModifierFlagCommand | NSEventModifierFlagShift)];
     [saveClose setTarget:target];
     [fileItem setSubmenu:fileMenu];
+
+    // Edit menu: standard clipboard actions with nil target so they route down
+    // the responder chain — the preview handles copy:/selectAll:, the source
+    // editor's NSTextView handles the full cut/copy/paste set natively.
+    NSMenuItem* editItem = [[NSMenuItem alloc] init];
+    [menubar addItem:editItem];
+    NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    [editMenu addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
+    [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+    [editMenu addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+    [editItem setSubmenu:editMenu];
 
     NSMenuItem* viewItem = [[NSMenuItem alloc] init];
     [menubar addItem:viewItem];
