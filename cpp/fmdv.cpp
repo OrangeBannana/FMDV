@@ -14,6 +14,7 @@
 #include <vector>
 #include "theme.h"
 #include "markdown.h"
+#include "text_select.h"
 #include "edit_assist.h"
 #include "render.h"
 #include "prefs.h"
@@ -532,22 +533,15 @@ static SelPoint PointToSel(HWND hwnd, int clientX, int clientY) {
     return sp;
 }
 
-static bool IsWordChar(wchar_t c) { return iswalnum(c) || c == L'_'; }
-
-// Select the word under a client point (double-click).
+// Select the word under a client point (double-click). Shared with the macOS
+// frontend via core: selects the word, or the words inside an enclosing
+// double-quoted phrase ("..." or “...”). Triple-click selects the whole line.
 static void SelectWordAt(HWND hwnd, int x, int y) {
     SelPoint sp = PointToSel(hwnd, x, y);
     if (sp.frag < 0 || sp.frag >= (int)g_frags.size()) return;
-    const std::wstring& t = g_frags[sp.frag].text;
-    int a = sp.ch, b = sp.ch;
-    if (a > (int)t.size()) a = b = (int)t.size();
-    while (a > 0 && IsWordChar(t[a-1])) a--;
-    while (b < (int)t.size() && IsWordChar(t[b])) b++;
-    if (a == b) { // not on a word char — select the single char
-        if (b < (int)t.size()) b++;
-    }
-    g_sel.a = SelPoint{ sp.frag, a };
-    g_sel.b = SelPoint{ sp.frag, b };
+    fmdv::WordSpan w = fmdv::DoubleClickSpan(g_frags[sp.frag].text, sp.ch);
+    g_sel.a = SelPoint{ sp.frag, (int)w.start };
+    g_sel.b = SelPoint{ sp.frag, (int)w.end };
     g_sel.active = true;
     InvalidateRect(hwnd, nullptr, FALSE);
 }

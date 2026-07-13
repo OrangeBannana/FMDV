@@ -100,5 +100,41 @@ int main() {
           "select: end fragment clamps to fragment count");
     check(SelectionText(frags, 1, 2, 1, 2).empty(), "select: zero-width selection is empty");
 
+    // ---- DoubleClickSpan (word / quoted-phrase selection) ----
+    // Returns the [start,end) substring a double-click should select.
+    auto pick = [](const char* utf8, long ch) -> std::string {
+        Str t = FromUtf8(utf8);
+        WordSpan w = DoubleClickSpan(t, ch);
+        return ToUtf8(t.substr(w.start, w.end - w.start));
+    };
+    // plain word: whitespace-delimited token under the cursor
+    check(pick("The quick brown fox", 6) == "quick", "dclick: selects the word under the cursor");
+    check(pick("The quick brown fox", 0) == "The", "dclick: word at start of line");
+    check(pick("The quick brown fox", 19) == "fox", "dclick: word at end of line");
+    // whitespace model: hyphens/punctuation stay part of the token
+    check(pick("id COPYME-UNIQUE-TOKEN-42 x", 10) == "COPYME-UNIQUE-TOKEN-42",
+          "dclick: hyphenated token selects whole (whitespace model)");
+    check(pick("the lazy dog.", 11) == "dog.", "dclick: trailing punctuation stays with the word");
+    // straight-quoted phrase: select the words between the quotes (marks excluded)
+    check(pick("He said \"hello there world\" to me", 11) == "hello there world",
+          "dclick: straight-quoted phrase");
+    // curly-quoted phrase (“ = U+201C, ” = U+201D)
+    check(pick("\xE2\x80\x9C" "between the smart quotes" "\xE2\x80\x9D", 5) == "between the smart quotes",
+          "dclick: curly-quoted phrase");
+    // two phrases on a line: parity picks the right one; the word between is a word
+    check(pick("\"first phrase\" and \"second phrase\"", 3) == "first phrase", "dclick: first of two phrases");
+    check(pick("\"first phrase\" and \"second phrase\"", 22) == "second phrase", "dclick: second of two phrases");
+    check(pick("\"first phrase\" and \"second phrase\"", 16) == "and", "dclick: word between two phrases");
+    // no closing quote => fall back to the connected word
+    check(pick("say \"hello world", 12) == "world", "dclick: unterminated quote falls back to word");
+    // quote matching is scoped to the fragment: a lone opening quote doesn't turn
+    // the rest of the line into a phrase (there is no closer in THIS text to pair).
+    check(pick("open \"here no close", 15) == "close",
+          "dclick: lone opening quote stays word-scoped");
+    // click on lone whitespace selects the single character
+    check(pick("  x", 1) == " ", "dclick: lone-whitespace click selects one char");
+    // clamping: out-of-range ch is clamped, never crashes
+    check(pick("word", 999) == "word", "dclick: ch past end clamps");
+
     return summary();
 }

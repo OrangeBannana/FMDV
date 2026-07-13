@@ -64,35 +64,6 @@ struct Frag {
     double baseline;
 };
 
-// If char index `ch` sits inside a double-quoted phrase in `t`, set [s,e) to the
-// span between the quotes (exclusive of the quote marks) and return true; else
-// false. Handles straight ("...") and curly (“...”) double quotes. A missing
-// closing quote returns false so the caller falls back to single-word selection.
-static bool QuotedSpan(const Str& t, long ch, long& s, long& e) {
-    long n = (long)t.size();
-    if (ch < 0) ch = 0; else if (ch > n) ch = n;
-    const Char kOpen = (Char)0x201C, kClose = (Char)0x201D, kQuote = (Char)0x22;
-    // Curly quotes pair by direction: nearest “ to the left, matching ” to the right.
-    for (long i = ch - 1; i >= 0; i--) {
-        if (t[i] == kClose) break;              // a closer to our left => not inside
-        if (t[i] == kOpen) {
-            for (long j = ch; j < n; j++) {
-                if (t[j] == kOpen) break;        // another opener before a closer => bail
-                if (t[j] == kClose) { s = i + 1; e = j; return true; }
-            }
-            break;
-        }
-    }
-    // Straight quotes: inside iff an odd number of " precede ch AND a closing " follows.
-    long before = 0; for (long i = 0; i < ch; i++) if (t[i] == kQuote) before++;
-    if (before % 2 == 1) {
-        long L = -1; for (long i = ch - 1; i >= 0; i--) if (t[i] == kQuote) { L = i; break; }
-        long R = -1; for (long j = ch; j < n; j++)   if (t[j] == kQuote) { R = j; break; }
-        if (L >= 0 && R >= 0 && L < R) { s = L + 1; e = R; return true; }
-    }
-    return false;
-}
-
 @interface FMDVPreviewView : NSView <NSTextFieldDelegate> {
     Document _doc;
     fmdv::LayoutResult _layout;
@@ -352,23 +323,11 @@ static bool QuotedSpan(const Str& t, long ch, long& s, long& e) {
         while (hi + 1 < (long)_frags.size() && std::abs(_frags[hi + 1].baseline - base) < 1) hi++;
         _selA = lo; _selACh = 0; _selB = hi; _selBCh = (long)_frags[hi].text.size(); _hasSel = true;
     } else if (ev.clickCount == 2) {          // double click: word, or a quoted phrase
-        // A fragment is a whole run of same-styled words (often the entire line).
-        // Inside a double-quoted phrase, select all the words between the quotes;
-        // otherwise expand from the hit char out to the surrounding whitespace to
-        // get just the word. Triple-click (above) selects the whole line.
-        const Str& t = _frags[fi].text;
-        long n = (long)t.size();
-        long qs, qe;
-        if (QuotedSpan(t, ch, qs, qe)) {
-            _selA = fi; _selACh = qs; _selB = fi; _selBCh = qe;
-        } else {
-            auto isWS = [](Char c) { return c == U16(' ') || c == U16('\t'); };
-            long ws = ch, we = ch;
-            while (ws > 0 && !isWS(t[ws - 1])) ws--;
-            while (we < n && !isWS(t[we])) we++;
-            _selA = fi; _selACh = ws; _selB = fi; _selBCh = we;
-        }
-        _hasSel = true;
+        // Shared with the Windows frontend: selects the word under the cursor, or
+        // the words inside an enclosing double-quoted phrase. Triple-click (above)
+        // selects the whole line.
+        fmdv::WordSpan w = fmdv::DoubleClickSpan(_frags[fi].text, ch);
+        _selA = fi; _selACh = w.start; _selB = fi; _selBCh = w.end; _hasSel = true;
     } else {
         _selA = _selB = fi; _selACh = _selBCh = ch; _hasSel = true;
     }

@@ -46,4 +46,46 @@ Str SelectionText(const std::vector<SelFrag>& frags,
     return out;
 }
 
+// If char index `ch` sits inside a double-quoted phrase in `t`, set [s,e) to the
+// span between the quotes (exclusive of the marks) and return true; else false.
+// Handles straight ("...") and curly (“...”) double quotes. A missing closing
+// quote returns false so the caller falls back to single-word selection. The
+// scan is bounded to `t`, so quotes on other fragments (lines) never match.
+static bool quotedSpan(const Str& t, long ch, long& s, long& e) {
+    long n = (long)t.size();
+    const Char kOpen = (Char)0x201C, kClose = (Char)0x201D, kQuote = (Char)0x22;
+    // Curly quotes pair by direction: nearest “ to the left, matching ” to the right.
+    for (long i = ch - 1; i >= 0; i--) {
+        if (t[i] == kClose) break;              // a closer to our left => not inside
+        if (t[i] == kOpen) {
+            for (long j = ch; j < n; j++) {
+                if (t[j] == kOpen) break;        // another opener before a closer => bail
+                if (t[j] == kClose) { s = i + 1; e = j; return true; }
+            }
+            break;
+        }
+    }
+    // Straight quotes: inside iff an odd number of " precede ch AND a closing " follows.
+    long before = 0; for (long i = 0; i < ch; i++) if (t[i] == kQuote) before++;
+    if (before % 2 == 1) {
+        long L = -1; for (long i = ch - 1; i >= 0; i--) if (t[i] == kQuote) { L = i; break; }
+        long R = -1; for (long j = ch; j < n; j++)     if (t[j] == kQuote) { R = j; break; }
+        if (L >= 0 && R >= 0 && L < R) { s = L + 1; e = R; return true; }
+    }
+    return false;
+}
+
+WordSpan DoubleClickSpan(const Str& text, long ch) {
+    long n = (long)text.size();
+    if (ch < 0) ch = 0; else if (ch > n) ch = n;
+    long s, e;
+    if (quotedSpan(text, ch, s, e)) return {s, e};
+    auto isWS = [](Char c) { return c == U16(' ') || c == U16('\t'); };
+    s = ch; e = ch;
+    while (s > 0 && !isWS(text[s - 1])) s--;
+    while (e < n && !isWS(text[e]))     e++;
+    if (s == e && ch < n) e = ch + 1;   // click on lone whitespace: take one char
+    return {s, e};
+}
+
 } // namespace fmdv

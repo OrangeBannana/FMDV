@@ -28,4 +28,16 @@ std::vector<FindMatch> FindMatches(const std::vector<SelFrag>& frags, StrView qu
 Str SelectionText(const std::vector<SelFrag>& frags,
                   long aFrag, long aCh, long bFrag, long bCh);
 
+// A half-open [start,end) character range within one fragment's text.
+struct WordSpan { long start = 0; long end = 0; };
+
+// Selection for a double-click over one fragment's `text` at insertion index
+// `ch`. If `ch` lies inside a double-quoted phrase ("..." straight or “...”
+// curly) that has a closing quote within this same text, returns the span
+// between the quotes (quote marks excluded); otherwise the whitespace-delimited
+// word under `ch` (a click on lone whitespace yields the single character).
+// Quote matching is scoped to `text` (one line/fragment); a missing closing
+// quote falls back to the word. `ch` is clamped to [0, text.size()].
+WordSpan DoubleClickSpan(const Str& text, long ch);
+
 } // namespace fmdv
