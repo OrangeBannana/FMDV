@@ -224,6 +224,31 @@ check "window survives mouse selection" "$(alive)"
 stop_app
 
 echo
+echo "Clickable task checkboxes:"
+cat > "$FIX/task.md" <<'EOF'
+# Tasks
+
+- [ ] first todo
+- [x] second done
+- [ ] third todo
+EOF
+start_app "$FIX/task.md"
+cmd "resize 900 700"
+cmd "query taskcount"; eq "three checkboxes found" "$R" "3"
+cmd "query taskstate 0"; eq "task 0 starts unchecked" "$R" "0"
+cmd "query taskstate 1"; eq "task 1 starts checked"   "$R" "1"
+# click the first checkbox -> it checks, and the file on disk gains the x
+cmd "click-task 0"; cmd "query taskstate 0"; eq "clicking task 0 checks it" "$R" "1"
+has "task 0 written to disk" "$(cat "$FIX/task.md")" "- [x] first todo"
+# unchecking a checked one writes the space back
+cmd "click-task 1"; cmd "query taskstate 1"; eq "clicking task 1 unchecks it" "$R" "0"
+has "task 1 written to disk" "$(cat "$FIX/task.md")" "- [ ] second done"
+# other lines are untouched
+has "untouched task preserved" "$(cat "$FIX/task.md")" "- [ ] third todo"
+check "window survives task toggle" "$(alive)"
+stop_app
+
+echo
 echo "Reflow on resize (WM_SIZE analog):"
 cat > "$FIX/reflow.md" <<'EOF'
 # Reflow

@@ -72,6 +72,15 @@ struct LinkHit {
     Str href;
 };
 
+// A clickable task-list checkbox (document space). `srcLine` is the 0-based
+// source line of the item (Block::srcStartLine) so the frontend can toggle the
+// "[ ]" / "[x]" marker in the raw markdown; `state` is 0 unchecked, 1 checked.
+struct TaskHit {
+    RectF rect;
+    int srcLine = -1;
+    int state = 0;
+};
+
 struct LayoutTheme {
     Color bg, bg2, bg3, text, text2, border, link, codeText, sel;
 };
@@ -88,6 +97,7 @@ struct HeadingRef {
 struct LayoutResult {
     std::vector<DrawCommand> cmds;
     std::vector<LinkHit> links;
+    std::vector<TaskHit> taskHits;
     std::vector<HeadingRef> headings;
     std::vector<double> blockTops; // document-space top y per doc.blocks[i]
                                    // (TOC scroll anchors)

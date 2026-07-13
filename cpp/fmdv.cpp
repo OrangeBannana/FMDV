@@ -437,6 +437,8 @@ static void ApplyScale() { SetRenderScale((g_zoomPct / 100.0) * (g_dpi / 96.0));
 
 // clickable links recorded during the last on-screen paint (buffer coords)
 static std::vector<LinkHit> g_links;
+// clickable task-list checkboxes from the last layout (same coord space as links)
+static std::vector<TaskHit> g_taskHits;
 
 // text selection state
 static std::vector<TextFrag> g_frags;   // drawn text runs from the last paint
@@ -656,7 +658,7 @@ static void UpdateLayout(HWND hwnd, bool redrawScrollbar) {
     bool logFirstLayout = g_benchEnabled && !g_firstLayoutLogged;
     double layoutStart = NowMs();
     if (logFirstLayout) BenchLog("first_layout_start", layoutStart, PreviewWidth(), g_clientH, -1, "elapsed");
-    g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags, &g_blockTops);
+    g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags, &g_blockTops, &g_taskHits);
     if (logFirstLayout) {
         g_firstLayoutLogged = true;
         BenchLog("first_layout_done", NowMs() - layoutStart, PreviewWidth(), g_clientH, g_contentH, "duration");
@@ -710,20 +712,9 @@ static void ReparseFromEdit(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-// Write current edit text (or g_rawText) back to the file as UTF-8 (LF endings).
-static bool SaveToFile() {
+// Atomically write `text` (LF endings) to the open file as UTF-8.
+static bool WriteTextToFile(const std::wstring& text) {
     if (g_filePath.empty()) return false;
-    std::wstring text = g_rawText;
-    if (g_hEdit) {
-        int len = GetWindowTextLengthW(g_hEdit);
-        std::wstring buf(len + 1, L'\0');
-        GetWindowTextW(g_hEdit, &buf[0], len + 1);
-        buf.resize(len);
-        std::wstring norm; norm.reserve(buf.size());
-        for (wchar_t c : buf) if (c != L'\r') norm += c;
-        text = norm;
-        g_rawText = norm;
-    }
     int need = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0, nullptr, nullptr);
     std::vector<char> utf8(need);
     if (need) WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), utf8.data(), need, nullptr, nullptr);
@@ -747,6 +738,44 @@ static bool SaveToFile() {
     }
     g_fileTime = FileMtime(g_filePath); // don't let our own write trigger a live-reload
     return true;
+}
+
+// Write current edit text (or g_rawText) back to the file as UTF-8 (LF endings).
+static bool SaveToFile() {
+    if (g_filePath.empty()) return false;
+    std::wstring text = g_rawText;
+    if (g_hEdit) {
+        int len = GetWindowTextLengthW(g_hEdit);
+        std::wstring buf(len + 1, L'\0');
+        GetWindowTextW(g_hEdit, &buf[0], len + 1);
+        buf.resize(len);
+        std::wstring norm; norm.reserve(buf.size());
+        for (wchar_t c : buf) if (c != L'\r') norm += c;
+        text = norm;
+        g_rawText = norm;
+    }
+    return WriteTextToFile(text);
+}
+
+// Toggle the task-list checkbox under a client point, if one is there. Returns
+// true if a checkbox was hit (the click is consumed). Rewrites the item's source
+// line, persists, and refreshes — mirrors LinkAt's coordinate handling.
+static bool ToggleTaskAt(HWND hwnd, int clientX, int clientY) {
+    int bx = clientX - PreviewLeft();
+    for (const auto& t : g_taskHits) {
+        if (bx < t.rc.left || bx >= t.rc.right || clientY < t.rc.top || clientY >= t.rc.bottom) continue;
+        if (t.srcLine < 0) return true;                       // consumed; nothing to toggle
+        std::wstring out = fmdv::ToggleTaskAtLine(g_rawText, t.srcLine);
+        if (out == g_rawText) return true;                    // not a task line after all
+        if (!WriteTextToFile(out)) { MessageBeep(MB_ICONWARNING); return true; }
+        g_rawText = out;
+        if (g_editing && g_hEdit) SetWindowTextW(g_hEdit, out.c_str()); // keep the editor in sync
+        g_doc = ParseMarkdown(out);                          // refresh explicitly (not reliant on EN_CHANGE)
+        UpdateLayout(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+    return false;
 }
 
 // A failed save must be visible and non-destructive: surface the error and (for
@@ -1998,10 +2027,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_autoScroll) { KillTimer(hwnd, AUTOSCROLL_TIMER); g_autoScroll = false; }
             g_selAnchor.frag = -1;
             if (!g_selecting) {
-                // a plain click (no drag): follow a link if one is here
-                std::wstring href = LinkAt(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
-                if (!href.empty())
-                    ShellExecuteW(hwnd, L"open", href.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                // a plain click (no drag): toggle a task checkbox, else follow a link
+                int cx = GET_X_LPARAM(lp), cy = GET_Y_LPARAM(lp);
+                if (!ToggleTaskAt(hwnd, cx, cy)) {
+                    std::wstring href = LinkAt(cx, cy);
+                    if (!href.empty())
+                        ShellExecuteW(hwnd, L"open", href.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
             }
             g_selecting = false;
             return 0;

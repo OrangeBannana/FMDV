@@ -195,11 +195,12 @@ static int Px(double v) { return (int)std::llround(v); }
 
 int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
                    std::vector<LinkHit>* links, std::vector<TextFrag>* frags,
-                   std::vector<int>* blockTops) {
+                   std::vector<int>* blockTops, std::vector<TaskHit>* taskHits) {
     g_cmds.clear();
     if (links) links->clear();
     if (frags) frags->clear();
     if (blockTops) blockTops->clear();
+    if (taskHits) taskHits->clear();
 
     fmdv::LayoutTheme lth;
     lth.bg = ToColor(th.bg);     lth.bg2 = ToColor(th.bg2);       lth.bg3 = ToColor(th.bg3);
@@ -245,6 +246,11 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
             links->push_back(LinkHit{ RECT{ Px(l.rect.x), Px(l.rect.y),
                                             Px(l.rect.x + l.rect.w), Px(l.rect.y + l.rect.h) },
                                       l.href });
+    if (taskHits)
+        for (const auto& t : res.taskHits)
+            taskHits->push_back(TaskHit{ RECT{ Px(t.rect.x), Px(t.rect.y),
+                                               Px(t.rect.x + t.rect.w), Px(t.rect.y + t.rect.h) },
+                                         t.srcLine, t.state });
     if (blockTops)
         for (double t : res.blockTops) blockTops->push_back(Px(t));
 

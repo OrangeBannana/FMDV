@@ -37,9 +37,11 @@ struct Block {
     std::vector<TableCell> headers;       // table header cells
     std::vector<TableRow> rows;           // table body rows
     std::vector<int> aligns;              // table column alignments
-    // 0-based source line range (inclusive), Table blocks only (-1 = unset).
-    // Lets editor features rewrite a table's markdown in place without
-    // re-parsing pipe syntax ad hoc (see fmdv.cpp's table-resize picker).
+    // 0-based source line range (inclusive), -1 = unset. Set for Table blocks
+    // (whole pipe grid) and for ListItem blocks (the single item line, in
+    // srcStartLine). Lets editor/viewer features rewrite a block's markdown in
+    // place: the table-resize picker (fmdv.cpp) and the clickable task-checkbox
+    // toggle both use it.
     int srcStartLine = -1;
     int srcEndLine = -1;
 };

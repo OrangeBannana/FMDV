@@ -45,4 +45,12 @@ ListEnter DecideListEnter(const Str& line);
 // the frontend converts line endings and handles caret positioning.
 Str MakeTableMarkdown(int cols, int rows);
 
+// ---- task-list checkbox toggle ----
+// Toggle the GitHub task marker ("[ ]" <-> "[x]") on 0-based line `line` of
+// `text` (LF-normalized). Returns the full new text. The line must be a task
+// list item — optional indent, a bullet ("- ", "* ", "+ ", or "N. "), then the
+// marker; otherwise (or if `line` is out of range) the text is returned
+// unchanged. The x is written lowercase; "[X]" is recognized when unchecking.
+Str ToggleTaskAtLine(const Str& text, int line);
+
 } // namespace fmdv

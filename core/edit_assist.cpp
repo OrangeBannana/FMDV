@@ -1,5 +1,6 @@
 #include "edit_assist.h"
 #include <cwctype>
+#include <vector>
 
 namespace fmdv {
 
@@ -95,6 +96,41 @@ Str MakeTableMarkdown(int cols, int rows) {
         t += U16("\n");
     }
     return t;
+}
+
+Str ToggleTaskAtLine(const Str& text, int line) {
+    if (line < 0) return text;
+    // Split into lines on LF (the caller normalizes endings).
+    std::vector<Str> lines; Str cur;
+    for (Char c : text) { if (c == U16('\n')) { lines.push_back(cur); cur.clear(); } else cur += c; }
+    lines.push_back(cur);
+    if (line >= (int)lines.size()) return text;
+
+    Str ln = lines[line];
+    size_t p = 0;
+    while (p < ln.size() && (ln[p] == U16(' ') || ln[p] == U16('\t'))) p++;   // leading indent
+    // bullet: "- " / "* " / "+ "  or  "N. "
+    if (p + 1 < ln.size() && (ln[p] == U16('-') || ln[p] == U16('*') || ln[p] == U16('+'))
+        && ln[p + 1] == U16(' ')) {
+        p += 2;
+    } else {
+        size_t d = p;
+        while (d < ln.size() && ln[d] >= U16('0') && ln[d] <= U16('9')) d++;
+        if (d > p && d + 1 < ln.size() && ln[d] == U16('.') && ln[d + 1] == U16(' ')) p = d + 2;
+        else return text;
+    }
+    while (p < ln.size() && ln[p] == U16(' ')) p++;                            // spaces before marker
+    // marker: "[ ]" / "[x]" / "[X]"
+    if (p + 2 >= ln.size() || ln[p] != U16('[') || ln[p + 2] != U16(']')) return text;
+    Char inner = ln[p + 1];
+    if (inner == U16(' ')) ln[p + 1] = U16('x');
+    else if (inner == U16('x') || inner == U16('X')) ln[p + 1] = U16(' ');
+    else return text;
+    lines[line] = ln;
+
+    Str out;
+    for (size_t k = 0; k < lines.size(); k++) { if (k) out += U16('\n'); out += lines[k]; }
+    return out;
 }
 
 } // namespace fmdv

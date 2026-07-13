@@ -327,6 +327,7 @@ Document ParseMarkdown(const Str& text) {
                 Block b; b.type = BlockType::ListItem;
                 b.ordered = isOl;
                 b.level = indent / 2;
+                b.srcStartLine = (int)i; // lets the frontend rewrite this line (task toggle)
                 Str content = isUl ? s.substr(2) : s.substr(olStart);
                 // task list
                 Str ct = ltrim(content);

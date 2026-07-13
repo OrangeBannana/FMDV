@@ -85,6 +85,9 @@ struct Frag {
 }
 // Directory of the open document; scheme-less link hrefs resolve against it.
 @property (nonatomic, copy) NSString* baseDir;
+// Called when a task-list checkbox is clicked, with its 0-based source line; the
+// delegate toggles the "[ ]"/"[x]" marker in the file and reloads.
+@property (nonatomic, copy) void (^onToggleTask)(int srcLine);
 - (instancetype)initWithDoc:(const Document&)doc dark:(bool)dark;
 - (void)setDoc:(const Document&)doc;
 - (bool)dark;
@@ -105,6 +108,9 @@ struct Frag {
 // Window-space point inside fragment `i` at horizontal fraction `fx` (0=left,
 // 1=right), vertically centered — used to synthesize mouse events at known text.
 - (NSPoint)windowPointInFrag:(long)i xFrac:(double)fx;
+- (long)taskHitCount;                // number of clickable task checkboxes
+- (int)taskHitState:(long)i;         // 0 unchecked / 1 checked (-1 out of range)
+- (NSPoint)windowPointForTaskHit:(long)i;  // window-space center of checkbox i
 @end
 
 @implementation FMDVPreviewView
@@ -293,6 +299,18 @@ struct Frag {
     double vy = (b.y + b.h * 0.5) * _zoom;
     [self scrollRectToVisible:NSMakeRect(vx - 1, vy - 1, 2, 2)];
     return [self convertPoint:NSMakePoint(vx, vy) toView:nil]; // -> window space
+}
+- (long)taskHitCount { return (long)_layout.taskHits.size(); }
+- (int)taskHitState:(long)i {
+    if (i < 0 || i >= (long)_layout.taskHits.size()) return -1;
+    return _layout.taskHits[i].state;
+}
+- (NSPoint)windowPointForTaskHit:(long)i {
+    if (i < 0 || i >= (long)_layout.taskHits.size()) return NSZeroPoint;
+    const fmdv::RectF& r = _layout.taskHits[i].rect;         // document space
+    double vx = (r.x + r.w * 0.5) * _zoom, vy = (r.y + r.h * 0.5) * _zoom;
+    [self scrollRectToVisible:NSMakeRect(vx - 1, vy - 1, 2, 2)];
+    return [self convertPoint:NSMakePoint(vx, vy) toView:nil];
 }
 - (void)copySelection {
     NSString* s = [self selectedString];
@@ -536,8 +554,16 @@ struct Frag {
 
 - (void)mouseUp:(NSEvent*)ev {
     if (_dragging) { _dragging = false; return; } // a drag made a selection; keep it
-    // A plain click: follow a link if one was hit, and drop any selection.
+    // A plain click: toggle a task checkbox, else follow a link, else drop selection.
     NSPoint p = [self logicalPoint:ev];
+    for (const auto& th : _layout.taskHits) {
+        const auto& r = th.rect;
+        if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) {
+            [self clearSelection];
+            if (th.srcLine >= 0 && self.onToggleTask) self.onToggleTask(th.srcLine);
+            return;
+        }
+    }
     for (const auto& lk : _layout.links) {
         const auto& r = lk.rect;
         if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) {
@@ -872,6 +898,10 @@ static void StartTestDriver(FMDVAppDelegate* delegate); // --test-drive stdin lo
     [_previewScroll setAutohidesScrollers:YES];
     [_previewScroll setDrawsBackground:NO];
     _preview = [[FMDVPreviewView alloc] initWithDoc:Document() dark:_dark];
+    {
+        __unsafe_unretained FMDVAppDelegate* weak = self; // delegate outlives the view (MRC)
+        _preview.onToggleTask = ^(int line) { [weak toggleTaskAtLine:line]; };
+    }
     [_previewScroll setDocumentView:_preview];
     [_container addSubview:_previewScroll];
     [_window setContentView:_container];
@@ -1129,17 +1159,32 @@ static void StartTestDriver(FMDVAppDelegate* delegate); // --test-drive stdin lo
 // alert and keep the editor open. Assumes there's something to save (editor open
 // with a file). Writes to a temp file and renames into place so a crash or full
 // disk mid-write can't truncate the document.
-- (BOOL)writeDocToDisk {
-    std::string text = _textView.string.UTF8String ?: ""; // NSTextView already uses LF
+- (BOOL)writeStringToDisk:(NSString*)text {
+    std::string s = text.UTF8String ?: "";
     std::string tmp = _file + ".tmp";
     FILE* f = std::fopen(tmp.c_str(), "wb");
     if (!f) return NO;
-    bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+    bool ok = std::fwrite(s.data(), 1, s.size(), f) == s.size();
     ok = (std::fclose(f) == 0) && ok;
     if (ok) ok = (std::rename(tmp.c_str(), _file.c_str()) == 0);
     if (!ok) { std::remove(tmp.c_str()); return NO; }
     _fileMtime = FileModTime(_file); // our own save shouldn't trigger a live reload
     return YES;
+}
+- (BOOL)writeDocToDisk { return [self writeStringToDisk:_textView.string]; } // NSTextView uses LF
+
+// Toggle the task checkbox on 0-based source `line`, persist, and refresh. Works
+// in preview mode (source read from disk) and with the editor open (its buffer).
+- (void)toggleTaskAtLine:(int)line {
+    if (_file.empty()) return;
+    Str src = (_editing && _textView) ? NSStringToStr(_textView.string)
+                                      : LoadDoc(ReadFileUtf8(_file.c_str()));
+    Str out = fmdv::ToggleTaskAtLine(src, line);
+    if (out == src) return;                              // not a task line / no change
+    NSString* ns = StrToNS(out);
+    if (![self writeStringToDisk:ns]) { [self reportSaveFailure]; return; }
+    if (_editing && _textView) [_textView setString:ns]; // keep the open editor in sync
+    [_preview setDoc:ParseMarkdown(out)];
 }
 // A failed save must be visible and non-destructive: the edits stay in the open
 // editor rather than being silently lost when a reopen reloads from disk.
@@ -1620,6 +1665,8 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     if ([what isEqualToString:@"fragcount"]) return [NSString stringWithFormat:@"%ld", [_preview fragCount]];
     if ([what isEqualToString:@"selrects"])  return [NSString stringWithFormat:@"%ld", [_preview selectionRectCount]];
     if ([what hasPrefix:@"fragtext "])       return [_preview fragText:[what substringFromIndex:9].integerValue];
+    if ([what isEqualToString:@"taskcount"]) return [NSString stringWithFormat:@"%ld", [_preview taskHitCount]];
+    if ([what hasPrefix:@"taskstate "])      return [NSString stringWithFormat:@"%d", [_preview taskHitState:[what substringFromIndex:10].integerValue]];
     if ([what isEqualToString:@"bannerpos"]) { // "<banner.origin.y> <scrollHeight>", to probe tracking
         if (!_updateBanner || _updateBanner.hidden || !_previewScroll) return @"hidden";
         return [NSString stringWithFormat:@"%d %d", (int)std::llround(_updateBanner.frame.origin.y),
@@ -1670,6 +1717,15 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     [_preview mouseUp:[self testMouseEvent:NSEventTypeLeftMouseUp at:b clicks:1]];
     return @"ok";
 }
+// Click task-checkbox i (runs the real mouseUp -> onToggleTask -> file rewrite).
+- (NSString*)testClickTask:(long)i {
+    if (!_preview) return @"err no preview";
+    if (i < 0 || i >= [_preview taskHitCount]) return @"err task out of range";
+    NSPoint p = [_preview windowPointForTaskHit:i];
+    [_preview mouseDown:[self testMouseEvent:NSEventTypeLeftMouseDown at:p clicks:1]];
+    [_preview mouseUp:[self testMouseEvent:NSEventTypeLeftMouseUp at:p clicks:1]];
+    return @"ok";
+}
 
 // Execute one command line; returns the reply ("ok", "ok <data>", "err <why>").
 - (NSString*)testCommand:(NSString*)line {
@@ -1680,6 +1736,7 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     if ([cmd isEqualToString:@"click-frag"])       return [self testClickFrag:arg.integerValue clicks:1];
     if ([cmd isEqualToString:@"dblclick-frag"])    return [self testClickFrag:arg.integerValue clicks:2];
     if ([cmd isEqualToString:@"tripleclick-frag"]) return [self testClickFrag:arg.integerValue clicks:3];
+    if ([cmd isEqualToString:@"click-task"])       return [self testClickTask:arg.integerValue];
     if ([cmd isEqualToString:@"drag-frag"]) {
         NSArray<NSString*>* ij = [arg componentsSeparatedByString:@" "];
         if (ij.count != 2) return @"err bad drag-frag";

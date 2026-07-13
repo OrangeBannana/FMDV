@@ -310,11 +310,18 @@ LayoutResult LayoutDocument(const Document& doc, double width,
             for (auto& w : words) if (w.h > lineH) lineH = w.h;
             double bodyAsc = tm.ascent(body);
             if (b.taskState >= 0) {
-                frame(cx, {bulletX, y + Sc(cx, 3), Sc(cx, 14), Sc(cx, 14)}, th.text2);
+                RectF boxR{bulletX, y + Sc(cx, 3), Sc(cx, 14), Sc(cx, 14)};
+                frame(cx, boxR, th.text2);
                 if (b.taskState == 1) { // checkmark
                     drawLine(cx, bulletX + Sc(cx, 3), y + Sc(cx, 10), bulletX + Sc(cx, 6), y + Sc(cx, 13), th.text2);
                     drawLine(cx, bulletX + Sc(cx, 6), y + Sc(cx, 13), bulletX + Sc(cx, 11), y + Sc(cx, 6), th.text2);
                 }
+                // Clickable hit area, padded a little beyond the 14px box for easier
+                // targeting; the frontend toggles the marker on b's source line.
+                double pad = Sc(cx, 4);
+                cx.out->taskHits.push_back(
+                    {{boxR.x - pad, boxR.y - pad, boxR.w + 2 * pad, boxR.h + 2 * pad},
+                     b.srcStartLine, b.taskState});
             } else if (b.ordered) {
                 olCounter++;
                 Str num = toStr(olCounter) + U16(".");

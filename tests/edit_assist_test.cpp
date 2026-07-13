@@ -122,5 +122,23 @@ int main() {
               "table: 3x2 has 4 lines and 3 columns");
     }
 
+    // ---- ToggleTaskAtLine ----
+    check(u8(ToggleTaskAtLine(FromUtf8("- [ ] todo"), 0)) == "- [x] todo", "task: unchecked -> checked");
+    check(u8(ToggleTaskAtLine(FromUtf8("- [x] done"), 0)) == "- [ ] done", "task: checked -> unchecked");
+    check(u8(ToggleTaskAtLine(FromUtf8("- [X] done"), 0)) == "- [ ] done", "task: uppercase X unchecks");
+    // only the target line changes; other lines and content are preserved
+    check(u8(ToggleTaskAtLine(FromUtf8("# H\n- [ ] a\n- [ ] b"), 2)) == "# H\n- [ ] a\n- [x] b",
+          "task: toggles only the target line");
+    // indentation, other bullets, and ordered items
+    check(u8(ToggleTaskAtLine(FromUtf8("    - [ ] nested"), 0)) == "    - [x] nested", "task: indented item");
+    check(u8(ToggleTaskAtLine(FromUtf8("* [ ] star"), 0)) == "* [x] star", "task: star bullet");
+    check(u8(ToggleTaskAtLine(FromUtf8("1. [ ] ordered"), 0)) == "1. [x] ordered", "task: ordered item");
+    // non-task / out-of-range lines are returned unchanged
+    check(u8(ToggleTaskAtLine(FromUtf8("- plain item"), 0)) == "- plain item", "task: plain bullet unchanged");
+    check(u8(ToggleTaskAtLine(FromUtf8("just text [ ] here"), 0)) == "just text [ ] here",
+          "task: bracket not after a bullet unchanged");
+    check(u8(ToggleTaskAtLine(FromUtf8("- [ ] a"), 5)) == "- [ ] a", "task: out-of-range line unchanged");
+    check(u8(ToggleTaskAtLine(FromUtf8("- [ ] a"), -1)) == "- [ ] a", "task: negative line unchanged");
+
     return summary();
 }
