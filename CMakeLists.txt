@@ -59,5 +59,5 @@ if(APPLE)
     frontends/macos/mac_render.mm)
   target_link_libraries(fmdv-macos PRIVATE fmdv_core
     "-framework Cocoa" "-framework CoreGraphics"
-    "-framework CoreText" "-framework ImageIO")
+    "-framework CoreText" "-framework ImageIO" "-framework CoreServices")
 endif()

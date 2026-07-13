@@ -28,7 +28,7 @@ CLI_BIN  := build/fmdv-cli
 # macOS frontend (headless renderer for now): CoreText/CoreGraphics via .mm.
 MAC_SRCS := frontends/macos/main.mm frontends/macos/app.mm frontends/macos/mac_render.mm core/str.cpp core/markdown.cpp core/layout.cpp core/edit_assist.cpp core/release_info.cpp core/text_select.cpp
 MAC_DEPS := frontends/macos/mac_render.h core/layout.h core/markdown.h core/str.h
-MAC_FRAMEWORKS := -framework Cocoa -framework CoreGraphics -framework CoreText -framework ImageIO
+MAC_FRAMEWORKS := -framework Cocoa -framework CoreGraphics -framework CoreText -framework ImageIO -framework CoreServices
 MAC_BIN  := build/fmdv-macos
 
 .PHONY: cli macos app dist dmg notarize test uitest check clean

@@ -4,6 +4,7 @@
 // editor is a native NSTextView whose edits re-parse into the live preview.
 // Editor decisions (list continuation, table markdown) reuse core/edit_assist.
 #import <Cocoa/Cocoa.h>
+#import <CoreServices/CoreServices.h>   // LaunchServices: set the default .md handler
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -951,6 +952,48 @@ static void StartTestDriver(FMDVAppDelegate* delegate); // --test-drive stdin lo
     return YES;
 }
 
+// File ▸ "Make FMDV the Default for Markdown". Registers FMDV as the Launch
+// Services handler for the extensions declared in Info.plist so double-clicking
+// a .md file in Finder opens it here. Uses the (still-functional) LS role-handler
+// API for macOS 11 compatibility.
+- (void)makeDefaultForMarkdown:(id)sender {
+    (void)sender;
+    NSAlert* a = [[NSAlert alloc] init];
+    NSString* bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bid.length) { // running the bare binary, not the .app bundle
+        a.messageText = @"Can’t set the default app";
+        a.informativeText = @"Launch FMDV from its app bundle (FMDV.app) to make it your "
+                            @"default Markdown viewer.";
+        [a addButtonWithTitle:@"OK"]; [a runModal]; [a release];
+        return;
+    }
+    NSArray<NSString*>* exts = @[@"md", @"markdown", @"mdown", @"mkd"];
+    BOOL ok = YES; OSStatus firstErr = noErr;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    for (NSString* ext in exts) {
+        CFStringRef uti = UTTypeCreatePreferredIdentifierForTag(
+            kUTTagClassFilenameExtension, (CFStringRef)ext, NULL);
+        if (!uti) continue;
+        OSStatus st = LSSetDefaultRoleHandlerForContentType(
+            uti, kLSRolesViewer | kLSRolesEditor, (CFStringRef)bid);
+        CFRelease(uti);
+        if (st != noErr && firstErr == noErr) { ok = NO; firstErr = st; }
+    }
+#pragma clang diagnostic pop
+    if (ok) {
+        a.messageText = @"FMDV is now your default Markdown viewer";
+        a.informativeText = @"Double-clicking a .md, .markdown, .mdown, or .mkd file opens it in "
+                            @"FMDV. Keep FMDV in a stable spot (e.g. Applications) so the "
+                            @"association sticks.";
+    } else {
+        a.messageText = @"Couldn’t set FMDV as the default";
+        a.informativeText = [NSString stringWithFormat:@"Launch Services returned error %d. Try "
+                             @"moving FMDV to your Applications folder and retrying.", (int)firstErr];
+    }
+    [a addButtonWithTitle:@"OK"]; [a runModal]; [a release];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification*)n {
     (void)n;
     [NSApp activateIgnoringOtherApps:YES];
@@ -1719,6 +1762,9 @@ static void buildMenu(id target) {
                                                 action:@selector(saveAndClose:) keyEquivalent:@"s"];
     [saveClose setKeyEquivalentModifierMask:(NSEventModifierFlagCommand | NSEventModifierFlagShift)];
     [saveClose setTarget:target];
+    [fileMenu addItem:[NSMenuItem separatorItem]];
+    [[fileMenu addItemWithTitle:@"Make FMDV the Default for Markdown"
+                         action:@selector(makeDefaultForMarkdown:) keyEquivalent:@""] setTarget:target];
     [fileItem setSubmenu:fileMenu];
 
     // Edit menu: standard clipboard actions with nil target so they route down
