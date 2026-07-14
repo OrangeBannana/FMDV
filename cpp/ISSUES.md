@@ -124,6 +124,16 @@ Remaining roadmap (not yet done):
 _(none)_
 
 ## Resolved
+- Preview click/selection hit-testing ignored the scroll offset (2026-07-14): `LinkAt`,
+  `PointToSel`, and the new `ToggleTaskAt` compared the raw client y against
+  document-space rects, so links/selection/checkboxes only hit correctly at
+  `scrollY == 0` — scrolled down, a click toggled the wrong checkbox and drags grabbed
+  the wrong line. Pre-existing for links/selection; the checkbox code inherited it by
+  mirroring `LinkAt`. Fix: convert client→document y (`clientY + g_scrollY`) in all
+  three hit-testers (matches macOS, whose `logicalPoint` already gets this from
+  `NSScrollView`). Guarded by two new scrolled-click cases in `run-tests.ps1`; the
+  stale "scroll-adjusted" comments in `render.h` were corrected. Empirically verified
+  (scrolled drag copies the visible line; scrolled click toggles the visible checkbox).
 - LF-only text ran together in the EDIT control → convert LF→CRLF when populating editor (EDIT only breaks on CRLF).
 - ClearType color fringing in offscreen/double-buffered text → ANTIALIASED_QUALITY fonts.
 - Spurious spaces before punctuation after styled spans → track real source spaces per word.

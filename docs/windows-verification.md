@@ -114,3 +114,59 @@ quoted-phrase). Verify with a line like:
 Note any step that fails with: the doc used, what you saw vs. expected, and a
 screenshot if it's visual. Everything green here means the shared-core additions
 behave identically on Windows and macOS.
+
+## Verification results — 2026-07-14 (MinGW-w64 UCRT g++ 16.1.0, Win11)
+
+Toolchain: `C:\msys64\ucrt64\bin`. All automated + hands-on steps run.
+
+| Section | Result | Notes |
+|---|---|---|
+| 0. Build | **PASS** | `build.ps1` links `fmdv.exe` clean; `-fsyntax-only -Wall -Wextra` over every TU: **zero warnings**. |
+| 0. Core unit tests | **PASS** | All 7 suites `ALL PASS` (str, markdown, edit_assist, release_info, layout, text_select, bench_log). |
+| 0. Win32 UI suite | **PASS** | `run-tests.ps1`: 77/77 (incl. new task-checkbox + scrolled-hit-test guards). |
+| 1. Clickable checkboxes | **PASS** (unscrolled) / **FIXED** (scrolled) | Toggle + on-disk write + first/middle/last line-mapping + byte-integrity + LF verified. Scroll bug found & fixed — see below. |
+| 2. Empty list-item spacing | **PASS** | Two empty `- [x]` render on separate lines, no overlap with the following paragraph. |
+| 3. Table reflow | **PASS** | At 900/420/300px the `Signal` tokens (`SENSE_FWD`…) stay inside their column; prose columns wrap; over-long tokens break, never overflow. |
+| 4. Double-click selection | **PASS** | Plain word, hyphenated token selects whole, quoted phrase excludes quotes, triple-click = whole line. Behavior change confirmed (see note). |
+
+### Bug found and FIXED — preview click/selection ignored the scroll offset
+
+**Symptom (empirically reproduced):** with a long doc scrolled down, clicking a
+checkbox toggled the *wrong* item, and drag-selecting grabbed the *wrong* line —
+both off by the scroll offset. Proof: scrolled 240px and dragged at the viewport
+middle → copied `LINE005` (the line whose *document* y equalled the raw client y)
+instead of `LINE010` (the line actually on screen). A two-checkbox test toggled the
+off-screen top checkbox instead of the visible middle one.
+
+**Root cause:** layout emits all hit rects (`links`, `frags`, `taskHits`) in
+**document space** (y not scroll-adjusted; `PaintDocument` offsets by `scrollY` at
+draw time — see `render.cpp`). The Win32 hit-testers `LinkAt`, `PointToSel`, and the
+new `ToggleTaskAt` compared the **raw client y** against those document-space rects,
+so they were only correct at `scrollY == 0`. macOS is unaffected: its `logicalPoint`
+converts the event into the flipped `NSScrollView` document view, so scroll is
+handled by AppKit. The Win32 port copied the "compare against document rects" logic
+but omitted the client→document `+ scrollY` conversion the manual-scroll model needs.
+
+**Scope:** pre-existing for links and text selection (predates this PR); the new
+checkbox code faithfully mirrored `LinkAt`, so it inherited the same latent bug.
+It is *not* a regression introduced by the checkbox feature.
+
+**Fix:** in the three hit-testers, map the client point into document space
+(`by = clientY + g_scrollY`) before testing the rects. Shared `core/` untouched
+(byte-identical across platforms); the change only brings the Win32 frontend back in
+line with the already-correct macOS behavior. Guarded by two new cases in
+`run-tests.ps1` ("scrolled click toggles the VISIBLE checkbox", "…never hits the
+off-screen checkbox") and the misleading "scroll-adjusted" comments in `render.h`
+were corrected to say "document space".
+
+### Behavior note — double-click word model (not a bug, needs a sign-off)
+
+Windows now uses the shared `DoubleClickSpan` (whitespace-delimited word +
+quoted-phrase), replacing the old `IsWordChar` model. Consequences, both verified
+live and identical to macOS by design:
+- hyphenated tokens select whole (`COPYME-UNIQUE-TOKEN-42`);
+- **trailing punctuation stays with the word** (`today.` selects with the period).
+
+This is intentional cross-platform consistency. If word-boundary-aware trimming of
+trailing punctuation is wanted, it should change in `core/text_select.cpp` for
+*both* frontends, not just Windows.
