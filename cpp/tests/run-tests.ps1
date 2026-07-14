@@ -361,6 +361,82 @@ Start-Sleep -Milliseconds 250
 Check "update picker Esc closes" ([T]::FindWindowW("FMDV_UpdatePicker", $null) -eq [IntPtr]::Zero)
 if (-not $p.HasExited) { $p.Kill() }
 
+Write-Host "`nTask checkboxes (click-to-toggle):" -ForegroundColor Cyan
+# Preview-pane click hit-testing lives in fmdv.cpp (ToggleTaskAt) and must map the
+# raw client point into document space (client y + scroll offset) before testing
+# the document-space checkbox rects. Regression guard for that scroll adjustment.
+$WM_LBUTTONDOWN = 0x0201; $WM_LBUTTONUP = 0x0202; $VK_HOME = 0x24; $VK_DOWN = 0x28
+function LParam($x, $y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
+function ClickAt($h, $x, $y) {
+    [T]::PostMessage($h, $WM_LBUTTONDOWN, [IntPtr]1, (LParam $x $y)) | Out-Null; Start-Sleep -Milliseconds 25
+    [T]::PostMessage($h, $WM_LBUTTONUP,   [IntPtr]0, (LParam $x $y)) | Out-Null; Start-Sleep -Milliseconds 120
+}
+# read even while the app is mid-write (atomic replace briefly locks the target)
+function ReadMd($path) {
+    for ($i = 0; $i -lt 40; $i++) {
+        try { $fs = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite');
+              $sr = New-Object System.IO.StreamReader($fs); $t = $sr.ReadToEnd(); $sr.Close(); $fs.Close(); return $t }
+        catch { Start-Sleep -Milliseconds 25 }
+    }
+    return $null
+}
+$cbx = 60  # x inside the checkbox glyph column at 1x/1.5x scale
+
+# 1) plain toggle + byte integrity (unscrolled)
+$tf = "$fix\clicktasks.md"
+$torig = "# Tasks`n`n- [ ] first`n- [x] second`n- [ ] third`n"
+[System.IO.File]::WriteAllText($tf, $torig)
+$p = Launch $tf; $h = $p.MainWindowHandle
+[T]::PostMessage($h, $WM_KEYDOWN, [IntPtr]$VK_HOME, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 200
+# find the three checkbox rows by sweeping y; record which source line each toggles
+$before = ReadMd $tf; $rows = @{}
+for ($y = 18; $y -lt 240 -and $rows.Count -lt 3; $y++) {
+    ClickAt $h $cbx $y; $now = ReadMd $tf
+    if ($now -ne $before) {
+        $ob = $before -split "`n"; $nw = $now -split "`n"
+        for ($li = 0; $li -lt $ob.Count; $li++) { if ($ob[$li] -ne $nw[$li]) { if (-not $rows.ContainsKey($li)) { $rows[$li] = $y }; break } }
+        $before = $now
+    }
+}
+Check "task rows map to source lines 2/3/4" ($rows.ContainsKey(2) -and $rows.ContainsKey(3) -and $rows.ContainsKey(4))
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+# fresh doc, toggle only the middle item and verify the other lines are byte-identical
+[System.IO.File]::WriteAllText($tf, $torig)
+$p = Launch $tf; $h = $p.MainWindowHandle
+[T]::PostMessage($h, $WM_KEYDOWN, [IntPtr]$VK_HOME, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 200
+if ($rows.ContainsKey(3)) { ClickAt $h $cbx $rows[3] }
+$mid = ReadMd $tf; $ml = $mid -split "`n"
+Check "middle toggles [x]->[ ]"        ($ml[3] -eq '- [ ] second')
+Check "other task lines byte-identical" ($ml[0] -eq '# Tasks' -and $ml[2] -eq '- [ ] first' -and $ml[4] -eq '- [ ] third')
+Check "save keeps LF endings"           (-not ($mid -match "`r"))
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+# 2) SCROLLED hit-testing: a checkbox in the middle of a long doc must toggle when
+# clicked where it is *visible*, and an off-screen checkbox must never be hit.
+$sf = "$fix\clicktasks_scroll.md"
+$sfsb = "- [ ] AAA`n`n"
+for ($i = 0; $i -lt 6;   $i++) { $sfsb += "Filler A $i`n`n" }
+$sfsb += "- [ ] MID`n`n"
+for ($i = 0; $i -lt 200; $i++) { $sfsb += "Filler B $i`n`n" }
+[System.IO.File]::WriteAllText($sf, $sfsb)
+$p = Launch $sf; $h = $p.MainWindowHandle
+[T]::PostMessage($h, $WM_KEYDOWN, [IntPtr]$VK_HOME, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 200
+for ($i = 0; $i -lt 5; $i++) { [T]::PostMessage($h, $WM_KEYDOWN, [IntPtr]$VK_DOWN, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 70 }
+Start-Sleep -Milliseconds 200
+# sweep the viewport; the first checkbox we hit should be MID (AAA is scrolled off the top)
+$prev = ReadMd $sf; $midY = $null; $hitAAA = $false
+for ($y = 6; $y -lt 460; $y++) {
+    ClickAt $h $cbx $y; $now = ReadMd $sf
+    $ma = [bool]($prev -match '\[x\] AAA'); $mb = [bool]($now -match '\[x\] AAA')
+    $na = [bool]($prev -match '\[x\] MID'); $nb = [bool]($now -match '\[x\] MID')
+    if ($ma -ne $mb) { $hitAAA = $true }
+    if ($na -ne $nb -and -not $midY) { $midY = $y; break }
+    $prev = $now
+}
+Check "scrolled click toggles the VISIBLE checkbox (MID)"      ($null -ne $midY)
+Check "scrolled click never hits the off-screen checkbox (AAA)" (-not $hitAAA)
+if (-not $p.HasExited) { $p.Kill() }
+
 # ---- summary ----
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host ("  {0} passed, {1} failed" -f $script:pass, $script:fail) -ForegroundColor ($(if($script:fail){"Red"}else{"Green"}))

@@ -5,16 +5,18 @@
 #include "markdown.h"
 #include "theme.h"
 
-// A clickable link rectangle recorded during an on-screen draw pass.
-// rc is in the render buffer's coordinate space (origin 0,0), already
-// adjusted for scroll. Callers offset by the preview pane's left edge.
+// A clickable link rectangle recorded during layout.
+// rc is in DOCUMENT space (y is the document coordinate, NOT scroll-adjusted;
+// PaintDocument offsets by scrollY at draw time). Hit-testers map a client point
+// into document space first: subtract the preview pane's left edge from x and
+// add the current scroll offset to y.
 struct LinkHit {
     RECT rc;
     std::wstring href;
 };
 
-// A clickable task-list checkbox. rc is in buffer coords (scroll-adjusted, like
-// LinkHit). srcLine is the 0-based source line of the item so the caller can
+// A clickable task-list checkbox. rc is in DOCUMENT space (not scroll-adjusted,
+// like LinkHit). srcLine is the 0-based source line of the item so the caller can
 // toggle its "[ ]"/"[x]" marker; state is 0 unchecked / 1 checked.
 struct TaskHit {
     RECT rc;
@@ -23,7 +25,7 @@ struct TaskHit {
 };
 
 // An ordered run of drawn text (one TextOut group), used for selection +
-// copy. rc is in buffer coords (scroll-adjusted). Frags are appended in
+// copy. rc is in DOCUMENT space (not scroll-adjusted). Frags are appended in
 // reading order each paint, so indices are stable while layout is unchanged.
 struct TextFrag {
     RECT rc;

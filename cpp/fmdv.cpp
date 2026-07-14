@@ -493,12 +493,14 @@ static void FreeBackBuffer() {
     g_backW = g_backH = 0;
 }
 
-// Return the href under a client point, or empty. Link rects are in preview-buffer
-// coords (x from 0), so subtract the preview pane's left edge.
+// Return the href under a client point, or empty. Link rects are in document
+// space (y not scroll-adjusted; see render.cpp), so map the client point into
+// document space: subtract the preview pane's left edge from x, add g_scrollY to y.
 static std::wstring LinkAt(int clientX, int clientY) {
     int bx = clientX - PreviewLeft();
+    int by = clientY + g_scrollY;
     for (const auto& l : g_links)
-        if (bx >= l.rc.left && bx < l.rc.right && clientY >= l.rc.top && clientY < l.rc.bottom)
+        if (bx >= l.rc.left && bx < l.rc.right && by >= l.rc.top && by < l.rc.bottom)
             return l.href;
     return L"";
 }
@@ -762,8 +764,9 @@ static bool SaveToFile() {
 // line, persists, and refreshes — mirrors LinkAt's coordinate handling.
 static bool ToggleTaskAt(HWND hwnd, int clientX, int clientY) {
     int bx = clientX - PreviewLeft();
+    int by = clientY + g_scrollY;   // task rects are document-space; convert client->doc y
     for (const auto& t : g_taskHits) {
-        if (bx < t.rc.left || bx >= t.rc.right || clientY < t.rc.top || clientY >= t.rc.bottom) continue;
+        if (bx < t.rc.left || bx >= t.rc.right || by < t.rc.top || by >= t.rc.bottom) continue;
         if (t.srcLine < 0) return true;                       // consumed; nothing to toggle
         std::wstring out = fmdv::ToggleTaskAtLine(g_rawText, t.srcLine);
         if (out == g_rawText) return true;                    // not a task line after all
