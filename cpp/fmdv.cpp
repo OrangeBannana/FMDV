@@ -320,19 +320,22 @@ static bool SelLess(const SelPoint& a, const SelPoint& b) {
 }
 
 // Map a client point to a selection point (nearest text fragment + char).
+// g_frags rects are in document space, so convert clientY through the scroll
+// offset before hit-testing against them (see emitRun in render.cpp).
 static SelPoint PointToSel(HWND hwnd, int clientX, int clientY) {
     SelPoint sp;
     if (g_frags.empty()) return sp;
     int bx = clientX - PreviewLeft();
+    int docY = clientY + g_scrollY;
     HDC dc = GetDC(hwnd);
     int best = -1; long bestDist = 0x7fffffff; bool rowHit = false;
     for (int i = 0; i < (int)g_frags.size(); i++) {
         const RECT& r = g_frags[i].rc;
-        bool inRow = clientY >= r.top && clientY < r.bottom;
+        bool inRow = docY >= r.top && docY < r.bottom;
         if (inRow && bx >= r.left && bx <= r.right) { best = i; rowHit = true; break; }
         long dist;
         if (inRow) dist = (bx < r.left) ? (r.left - bx) : (bx - r.right);
-        else       dist = 100000 + labs((long)((r.top + r.bottom) / 2 - clientY));
+        else       dist = 100000 + labs((long)((r.top + r.bottom) / 2 - docY));
         if (inRow && !rowHit) { rowHit = true; bestDist = dist; best = i; }
         else if (inRow && dist < bestDist) { bestDist = dist; best = i; }
         else if (!rowHit && dist < bestDist) { bestDist = dist; best = i; }
