@@ -127,7 +127,7 @@ Toolchain: `C:\msys64\ucrt64\bin`. All automated + hands-on steps run.
 | 1. Clickable checkboxes | **PASS** (unscrolled) / **FIXED** (scrolled) | Toggle + on-disk write + first/middle/last line-mapping + byte-integrity + LF verified. Scroll bug found & fixed — see below. |
 | 2. Empty list-item spacing | **PASS** | Two empty `- [x]` render on separate lines, no overlap with the following paragraph. |
 | 3. Table reflow | **PASS** | At 900/420/300px the `Signal` tokens (`SENSE_FWD`…) stay inside their column; prose columns wrap; over-long tokens break, never overflow. |
-| 4. Double-click selection | **PASS** | Plain word, hyphenated token selects whole, quoted phrase excludes quotes, triple-click = whole line. Behavior change confirmed (see note). |
+| 4. Double-click selection | **PASS** | Plain word, hyphenated token selects whole, quoted phrase excludes quotes, triple-click = whole line. Trailing-punctuation trim implemented and verified (see note). |
 
 ### Bug found and FIXED — preview click/selection ignored the scroll offset
 
@@ -159,14 +159,52 @@ line with the already-correct macOS behavior. Guarded by two new cases in
 off-screen checkbox") and the misleading "scroll-adjusted" comments in `render.h`
 were corrected to say "document space".
 
-### Behavior note — double-click word model (not a bug, needs a sign-off)
+### Behavior note — double-click word model (resolved: trailing punctuation trims)
 
-Windows now uses the shared `DoubleClickSpan` (whitespace-delimited word +
-quoted-phrase), replacing the old `IsWordChar` model. Consequences, both verified
-live and identical to macOS by design:
-- hyphenated tokens select whole (`COPYME-UNIQUE-TOKEN-42`);
-- **trailing punctuation stays with the word** (`today.` selects with the period).
+Windows uses the shared `DoubleClickSpan` (whitespace-delimited word +
+quoted-phrase), replacing the old `IsWordChar` model. Hyphenated tokens still
+select whole (`COPYME-UNIQUE-TOKEN-42`). The open question was whether trailing
+punctuation should stay attached to the word (`today.`) or be trimmed
+(`today`) — **decision: trim it**, in `core/text_select.cpp` so both frontends
+get the same behavior. `DoubleClickSpan` now strips a run of trailing
+`. , ; : ! ? ) ] } ' "` (straight or curly) off the end of a plain-word span,
+unless the whole span is punctuation (e.g. double-clicking an isolated `...`),
+in which case it's left intact rather than collapsed to nothing. The
+quoted-phrase path is unaffected (quote marks were already excluded). Covered
+by new `core/text_select_test.cpp` cases; core suite still `ALL PASS`.
 
-This is intentional cross-platform consistency. If word-boundary-aware trimming of
-trailing punctuation is wanted, it should change in `core/text_select.cpp` for
-*both* frontends, not just Windows.
+### Closed — the remaining "honest holes" from the first pass
+
+The first verification pass flagged five gaps it couldn't close from code
+review alone. All five are now closed:
+
+- **§1 editor-open sync** — Ctrl+E, click a checkbox in the preview: the
+  editor pane's `Edit` control text updates immediately (`SetWindowTextW` in
+  `ToggleTaskAt`) and the file still saves correctly afterward. Automated in
+  `run-tests.ps1` (drives the live window, reads the `Edit` control's text via
+  `WM_GETTEXT`, and diffs it against the saved file).
+- **§1 click doesn't start a selection** — a plain (non-drag) click on a
+  checkbox leaves `g_sel` inactive: `Ctrl+C` right after the click is a no-op
+  against a clipboard sentinel set beforehand. "Doesn't follow a link" is a
+  structural guarantee, not a separate live behavior to probe — `WM_LBUTTONUP`
+  short-circuits on `if (!ToggleTaskAt(...)) { ...LinkAt... }`, so a confirmed
+  toggle already proves `LinkAt` was never reached for that click. (A live
+  test that actually clicks a real hyperlink was deliberately not added —
+  it would trigger a real `ShellExecute` browser launch as a side effect.)
+- **Hit-testing at non-100% zoom** — `run-tests.ps1` now zooms to 150%
+  (`Ctrl+Plus` x5) and re-runs the checkbox sweep; the hit-test still maps
+  clicks to the right source lines once the checkbox glyph's x offset is
+  scaled by the same zoom factor. (Zoom persists to `prefs` across launches,
+  so the test resets it to 100% before exiting.)
+- **§3 live window-drag resize** — `run-tests.ps1` now resizes the *live*
+  window via `SetWindowPos` (the same `WM_SIZE` a real drag sends) across
+  1000/640/420/320px on the `FIRMWARE_SPEC`-style hardware-interfaces table,
+  confirming the window stays stable and the client area actually relayouts
+  at each step, plus a `PrintWindow` screenshot at the narrowest width for the
+  visual record. The offline `--dump` PNGs already proved the layout algorithm
+  itself is correct; this proves the live `WM_SIZE` → `UpdateLayout` → repaint
+  path is the one that actually runs.
+
+All of the above ran against a real `fmdv.exe`/`fmdv_dbg.exe` build (MinGW-w64
+UCRT g++ 16.1.0) — full suite: **93/93 passed**, plus core `text_select` still
+`ALL PASS` (40 cases, including the new punctuation-trim ones).

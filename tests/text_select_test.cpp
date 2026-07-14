@@ -114,7 +114,13 @@ int main() {
     // whitespace model: hyphens/punctuation stay part of the token
     check(pick("id COPYME-UNIQUE-TOKEN-42 x", 10) == "COPYME-UNIQUE-TOKEN-42",
           "dclick: hyphenated token selects whole (whitespace model)");
-    check(pick("the lazy dog.", 11) == "dog.", "dclick: trailing punctuation stays with the word");
+    check(pick("the lazy dog.", 11) == "dog", "dclick: trailing punctuation is trimmed off the word");
+    check(pick("wait... really?!", 5) == "wait", "dclick: multiple trailing punctuation marks all trim");
+    check(pick("what (see figure)", 15) == "figure", "dclick: trailing close-paren trims");
+    check(pick("id COPYME-UNIQUE-TOKEN-42. x", 10) == "COPYME-UNIQUE-TOKEN-42",
+          "dclick: internal hyphens survive trailing-punctuation trim");
+    check(pick("check this ... out", 12) == "...",
+          "dclick: an all-punctuation token is left intact, not emptied");
     // straight-quoted phrase: select the words between the quotes (marks excluded)
     check(pick("He said \"hello there world\" to me", 11) == "hello there world",
           "dclick: straight-quoted phrase");

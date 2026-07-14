@@ -75,6 +75,20 @@ static bool quotedSpan(const Str& t, long ch, long& s, long& e) {
     return false;
 }
 
+// Trailing marks trimmed off a double-clicked word (not the quoted-phrase
+// path, and not internal hyphens — only punctuation stuck to the end).
+static bool isTrailingPunct(Char c) {
+    switch (c) {
+        case U16('.'): case U16(','): case U16(';'): case U16(':'):
+        case U16('!'): case U16('?'):
+        case U16(')'): case U16(']'): case U16('}'):
+        case U16('\''): case U16('"'):
+        case (Char)0x2019: case (Char)0x201D: // curly ' and "
+            return true;
+        default: return false;
+    }
+}
+
 WordSpan DoubleClickSpan(const Str& text, long ch) {
     long n = (long)text.size();
     if (ch < 0) ch = 0; else if (ch > n) ch = n;
@@ -85,6 +99,11 @@ WordSpan DoubleClickSpan(const Str& text, long ch) {
     while (s > 0 && !isWS(text[s - 1])) s--;
     while (e < n && !isWS(text[e]))     e++;
     if (s == e && ch < n) e = ch + 1;   // click on lone whitespace: take one char
+    // Trim trailing punctuation, unless the whole span is punctuation (then
+    // leave it intact rather than collapsing to an empty selection).
+    long trimmed = e;
+    while (trimmed > s && isTrailingPunct(text[trimmed - 1])) trimmed--;
+    if (trimmed > s) e = trimmed;
     return {s, e};
 }
 

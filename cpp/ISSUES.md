@@ -124,6 +124,17 @@ Remaining roadmap (not yet done):
 _(none)_
 
 ## Resolved
+- Double-click word model: trailing punctuation now trims (2026-07-14) — sign-off
+  decided in favor of trimming (`today.` selects `today`, not `today.`). Changed in
+  `core/text_select.cpp`'s `DoubleClickSpan` so both frontends get it; an
+  all-punctuation token (e.g. an isolated `...`) is left intact rather than
+  emptied. New cases in `tests/text_select_test.cpp`; core suite still `ALL PASS`.
+- Windows-verification "honest holes" closed (2026-07-14): the manual checklist's
+  five gaps that code review alone couldn't close are now driven live via
+  `run-tests.ps1` — editor-pane sync on checkbox click (Ctrl+E), a plain click
+  starting no text selection, hit-testing at 150% zoom (glyph x offset scales with
+  zoom), and a live `SetWindowPos`-driven window resize (not just `--dump` PNGs) on
+  the table-reflow doc. Full suite: 93/93.
 - Preview click/selection hit-testing ignored the scroll offset (2026-07-14): `LinkAt`,
   `PointToSel`, and the new `ToggleTaskAt` compared the raw client y against
   document-space rects, so links/selection/checkboxes only hit correctly at

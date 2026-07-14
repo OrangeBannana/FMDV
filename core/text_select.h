@@ -35,9 +35,12 @@ struct WordSpan { long start = 0; long end = 0; };
 // `ch`. If `ch` lies inside a double-quoted phrase ("..." straight or “...”
 // curly) that has a closing quote within this same text, returns the span
 // between the quotes (quote marks excluded); otherwise the whitespace-delimited
-// word under `ch` (a click on lone whitespace yields the single character).
-// Quote matching is scoped to `text` (one line/fragment); a missing closing
-// quote falls back to the word. `ch` is clamped to [0, text.size()].
+// word under `ch` (a click on lone whitespace yields the single character),
+// with trailing punctuation (. , ; : ! ? ) ] } ' " and their curly-quote
+// variants) trimmed off the end — unless the whole token is punctuation, in
+// which case it's returned intact rather than emptied. Quote matching is
+// scoped to `text` (one line/fragment); a missing closing quote falls back to
+// the word. `ch` is clamped to [0, text.size()].
 WordSpan DoubleClickSpan(const Str& text, long ch);
 
 } // namespace fmdv

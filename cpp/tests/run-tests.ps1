@@ -10,21 +10,28 @@ $dbg = "$cpp\fmdv_dbg.exe"
 # ---- Win32 helpers for driving the live window ----
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
-using System; using System.Runtime.InteropServices;
+using System; using System.Runtime.InteropServices; using System.Text;
 public class T {
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, string l);
   [DllImport("user32.dll",EntryPoint="SendMessageW")] public static extern IntPtr SendInt(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll",EntryPoint="SendMessageW",CharSet=CharSet.Unicode)] public static extern IntPtr SendGetText(IntPtr h, uint m, IntPtr w, StringBuilder l);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowExW(IntPtr p, IntPtr c, string cls, string win);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string win);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
 }
 public struct RECT { public int Left, Top, Right, Bottom; }
+public struct POINT { public int X, Y; }
 "@
 $WM_COMMAND=0x0111; $WM_SETTEXT=0x000C; $WM_CHAR=0x0102; $WM_KEYDOWN=0x0100; $VK_TAB=0x09
 $WM_VSCROLL=0x0115; $SB_PAGEDOWN=3
 $WM_LBUTTONDOWN=0x0201; $WM_MOUSEMOVE=0x0200; $WM_LBUTTONUP=0x0202
-$ID_EDIT=2001; $ID_SAVE=2003; $ID_COPY=2008; $ID_SELALL=2009
+$WM_GETTEXTLENGTH=0x000E; $WM_GETTEXT=0x000D
+$ID_EDIT=2001; $ID_SAVE=2003; $ID_ZOOM_IN=2005; $ID_ZOOM_RESET=2007; $ID_COPY=2008; $ID_SELALL=2009
 
 function MakeLParam($x, $y) { return [IntPtr]((($y -band 0xFFFF) -shl 16) -bor ($x -band 0xFFFF)) }
 
@@ -435,6 +442,127 @@ for ($y = 6; $y -lt 460; $y++) {
 }
 Check "scrolled click toggles the VISIBLE checkbox (MID)"      ($null -ne $midY)
 Check "scrolled click never hits the off-screen checkbox (AAA)" (-not $hitAAA)
+if (-not $p.HasExited) { $p.Kill() }
+
+# 3) plain click starts no text selection. (It also can't fall through to
+# LinkAt: ToggleTaskAt short-circuits WM_LBUTTONUP - `if (!ToggleTaskAt(...))
+# { ... LinkAt ... }` in fmdv.cpp - so a confirmed toggle below already proves
+# the link path was never reached for this click.)
+[System.IO.File]::WriteAllText($tf, $torig)
+$p = Launch $tf; $h = $p.MainWindowHandle
+[T]::PostMessage($h, $WM_KEYDOWN, [IntPtr]$VK_HOME, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 200
+$sentinel = "FMDV_SENTINEL_$(Get-Random)"
+Set-Clipboard -Value $sentinel
+ClickAt $h $cbx $rows[3]   # plain click (mousedown+up, no movement) on the "second" row
+$afterClick = ReadMd $tf
+Check "plain click on checkbox still toggles it (sanity)" ($afterClick -match '\[ \] second')
+[T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_COPY, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 200
+Check "plain checkbox click starts no selection (Ctrl+C is then a no-op)" ((Get-Clipboard -Raw) -eq $sentinel)
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+# 4) checkbox click keeps the editor pane (Ctrl+E) in sync, and the file still saves.
+function GetEditText($e) {
+    $len = [T]::SendInt($e, $WM_GETTEXTLENGTH, [IntPtr]0, [IntPtr]0).ToInt32()
+    $sb = New-Object System.Text.StringBuilder ($len + 1)
+    [T]::SendGetText($e, $WM_GETTEXT, [IntPtr]($len + 1), $sb) | Out-Null
+    return $sb.ToString()
+}
+$tfe = "$fix\clicktasks_editor.md"
+[System.IO.File]::WriteAllText($tfe, $torig)
+$p = Launch $tfe; $h = $p.MainWindowHandle
+[T]::PostMessage($h, $WM_KEYDOWN, [IntPtr]$VK_HOME, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 200
+[T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_EDIT, [IntPtr]::Zero) | Out-Null   # Ctrl+E: open the editor (3-pane)
+Start-Sleep -Milliseconds 300
+$e = [T]::FindWindowExW($h, [IntPtr]::Zero, "Edit", $null)
+# Preview now starts right of the divider (editor is the left pane); map the
+# editor's screen-space right edge into main-window client coords to find the
+# same checkbox glyph column ($cbx px into the preview) with the editor open.
+$er = New-Object RECT; [T]::GetWindowRect($e, [ref]$er) | Out-Null
+$pt = New-Object POINT; $pt.X = $er.Right; $pt.Y = $er.Top
+[T]::ScreenToClient($h, [ref]$pt) | Out-Null
+$cbxWithEditor = $pt.X + 5 + $cbx   # +5 = DIVIDER_W
+$beforeE = ReadMd $tfe; $rowE = $null
+for ($y = 18; $y -lt 240 -and -not $rowE; $y++) {
+    ClickAt $h $cbxWithEditor $y
+    $nowE = ReadMd $tfe
+    if ($nowE -ne $beforeE) { $rowE = $y; break }
+}
+Check "found a togglable checkbox row with the editor open" ($null -ne $rowE)
+$editText = GetEditText $e
+Check "editor pane reflects the toggle immediately" ($editText.Contains("[x] first"))
+[T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_SAVE, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 300
+$savedE = ReadMd $tfe
+Check "file still saves correctly after an editor-synced toggle" ($savedE -match '\[x\] first')
+Check "editor text matches the saved file" ($editText.Replace("`r`n","`n").TrimEnd() -eq $savedE.TrimEnd())
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+# 5) hit-testing at non-100% zoom (Ctrl+Plus). $cbx=60 is documented above as
+# valid at 1x/1.5x; exercise that claim for real instead of just asserting it.
+$tfz = "$fix\clicktasks_zoom.md"
+[System.IO.File]::WriteAllText($tfz, $torig)
+$p = Launch $tfz; $h = $p.MainWindowHandle
+[T]::PostMessage($h, $WM_KEYDOWN, [IntPtr]$VK_HOME, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 200
+for ($i = 0; $i -lt 5; $i++) { [T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_ZOOM_IN, [IntPtr]::Zero) | Out-Null; Start-Sleep -Milliseconds 80 }  # 100% -> 150%
+Start-Sleep -Milliseconds 200
+# the checkbox glyph column scales with zoom (it's laid out in scaled units,
+# same as everything else - see Sc() in core/layout.cpp), so the x offset that
+# finds it at 100% has to scale by the same 150% factor here.
+$cbxZoomed = [int]([Math]::Round($cbx * 1.5))
+$beforeZ = ReadMd $tfz; $rowsZ = @{}
+for ($y = 18; $y -lt 400 -and $rowsZ.Count -lt 3; $y++) {
+    ClickAt $h $cbxZoomed $y; $nowZ = ReadMd $tfz
+    if ($nowZ -ne $beforeZ) {
+        $ob = $beforeZ -split "`n"; $nw = $nowZ -split "`n"
+        for ($li = 0; $li -lt $ob.Count; $li++) { if ($ob[$li] -ne $nw[$li]) { if (-not $rowsZ.ContainsKey($li)) { $rowsZ[$li] = $y }; break } }
+        $beforeZ = $nowZ
+    }
+}
+Check "150% zoom: task rows still map to source lines 2/3/4" ($rowsZ.ContainsKey(2) -and $rowsZ.ContainsKey(3) -and $rowsZ.ContainsKey(4))
+# zoomPct persists to disk (prefs.cpp) across launches - reset it so this test
+# doesn't leave every later launch in this suite (and the next real run of the
+# app) zoomed to 150%.
+[T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_ZOOM_RESET, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 150
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+Write-Host "`nLive window-drag resize (table reflow, section 3):" -ForegroundColor Cyan
+# The offline --dump PNGs above already prove the layout algorithm reflows
+# correctly at fixed widths. What's untested is the literal "drag the frame"
+# gesture: SetWindowPos generates the same real WM_SIZE the window manager
+# sends during an actual drag, so this drives the live WM_SIZE -> UpdateLayout
+# -> repaint path rather than the --dump code path.
+$rf = "$fix\resize_table.md"
+@'
+# Hardware interfaces
+
+| Signal | Dir | Hardware | Notes |
+|---|---|---|---|
+| SENSE_FWD | IN | Forward proximity sensor input, debounced in firmware | Active low |
+| RELAY_HB | OUT | Heartbeat relay driver, toggled every 500ms | Watchdog-fed |
+| USB_SERIAL | IO | USB CDC serial console for field diagnostics | 115200 8N1 |
+'@ | Set-Content $rf -Encoding utf8
+$p = Launch $rf; $h = $p.MainWindowHandle
+$SWP_NOZORDER = 0x4; $SWP_NOMOVE = 0x2
+$prevClientW = $null
+foreach ($w in 1000, 640, 420, 320) {
+    [T]::SetWindowPos($h, [IntPtr]::Zero, 0, 0, $w, 700, ($SWP_NOZORDER -bor $SWP_NOMOVE)) | Out-Null
+    Start-Sleep -Milliseconds 350
+    Check "window stable after live resize to ${w}px" (-not $p.HasExited)
+    $cr = New-Object RECT; [T]::GetClientRect($h, [ref]$cr) | Out-Null
+    $cw = $cr.Right - $cr.Left
+    Check "client area relaid-out on live resize (${w}px)" ($null -eq $prevClientW -or $cw -lt $prevClientW)
+    $prevClientW = $cw
+}
+# screenshot at the narrowest width, for the visual record (same PrintWindow
+# technique as tests/capture.ps1)
+$bmp = New-Object System.Drawing.Bitmap(320, 700)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$hdc = $g.GetHdc(); [T]::PrintWindow($h, $hdc, 2) | Out-Null; $g.ReleaseHdc($hdc)
+$bmp.Save("$fix\resize_narrow_live.png", [System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose(); $bmp.Dispose()
+Check "narrow live-resize screenshot captured" ((Test-Path "$fix\resize_narrow_live.png") -and (Get-Item "$fix\resize_narrow_live.png").Length -gt 1500)
 if (-not $p.HasExited) { $p.Kill() }
 
 # ---- summary ----
