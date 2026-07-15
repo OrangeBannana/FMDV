@@ -10,6 +10,7 @@ struct Prefs {
     int zoomPct = 100;  // render zoom percentage
     int updateMode = UPDATE_NOTIFY;
     std::string pinTag; // pinned release tag when updateMode == UPDATE_PIN
+    std::wstring lastOpenDir; // folder the "Open" dialog last opened a file from
 };
 
 Prefs LoadPrefs();

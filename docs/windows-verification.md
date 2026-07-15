@@ -109,6 +109,31 @@ quoted-phrase). Verify with a line like:
 - [ ] **Triple-click** a line → selects the whole line.
 - [ ] Drag-select, **Ctrl+A**, **Ctrl+C** still work and copy the expected text.
 
+## 5. Launching with no file opens a picker (parity with macOS)
+
+`fmdv.exe` with no path argument (e.g. double-clicking the exe, or a shortcut
+with no target file) should behave like the macOS build already does: prompt
+for a file instead of opening a blank window.
+
+- [ ] Launch `fmdv.exe` with **no** arguments. A native "Open" dialog appears
+      immediately, filtered to Markdown files, and its starting folder is
+      **Downloads** (first run — nothing chosen yet).
+- [ ] Pick a `.md` file. The main window opens with that file loaded (title
+      bar shows the filename), same as launching with a path argument.
+- [ ] Launch with no arguments again. The dialog now starts in **the folder
+      you picked from last time**, not Downloads.
+- [ ] Cancel the dialog (Esc or the Cancel button) instead of picking a file
+      → an empty FMDV window opens (same blank state as today, just reached
+      via Cancel instead of always).
+- [ ] `fmdv.exe some-file.md` (path argument present) is unaffected — no
+      dialog, opens directly as before.
+
+*(Not automatable from this dev sandbox: driving the native Open dialog needs
+real keyboard/mouse input, which `SendKeys`/`AppActivate` couldn't inject into
+it here — see `cpp/ISSUES.md`. The Downloads-default and dialog-doesn't-crash
+parts were confirmed via on-screen screenshot instead; the pick-a-file and
+remember-last-folder parts want this hands-on pass.)*
+
 ## Report
 
 Note any step that fails with: the doc used, what you saw vs. expected, and a

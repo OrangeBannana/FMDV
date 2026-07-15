@@ -2,6 +2,8 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <commdlg.h>
 #include <dwmapi.h>
 #include <commctrl.h>
 #include <objidl.h>
@@ -84,6 +86,41 @@ static bool ReadFileUtf8(const std::wstring& path, std::wstring& out) {
     std::wstring norm; norm.reserve(w.size());
     for (wchar_t c : w) { if (c != L'\r') norm += c; }
     out.swap(norm);
+    return true;
+}
+
+// Directory the "Open" dialog should start in: the last folder a file was
+// opened from (persisted in prefs), falling back to Downloads the first time
+// or if that folder no longer exists.
+static std::wstring InitialOpenDir() {
+    if (!g_prefs.lastOpenDir.empty() &&
+        (GetFileAttributesW(g_prefs.lastOpenDir.c_str()) & FILE_ATTRIBUTE_DIRECTORY))
+        return g_prefs.lastOpenDir;
+    wchar_t profile[MAX_PATH];
+    if (SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, SHGFP_TYPE_CURRENT, profile) == S_OK) {
+        std::wstring downloads = std::wstring(profile) + L"\\Downloads";
+        if (GetFileAttributesW(downloads.c_str()) & FILE_ATTRIBUTE_DIRECTORY) return downloads;
+    }
+    return L""; // let the dialog fall back to its own default
+}
+
+// Launched with no file argument: ask which one to open (mirrors the macOS
+// NSOpenPanel shown in applicationDidFinishLaunching for the same case).
+// Returns false if the user cancels.
+static bool PickFileToOpen(std::wstring& outPath) {
+    wchar_t fileBuf[MAX_PATH] = L"";
+    std::wstring initialDir = InitialOpenDir();
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"Markdown Files\0*.md;*.markdown;*.mdown;*.mkd\0All Files\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = fileBuf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrInitialDir = initialDir.empty() ? nullptr : initialDir.c_str();
+    ofn.lpstrTitle = L"Open Markdown File";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return false;
+    outPath = fileBuf;
     return true;
 }
 
@@ -2278,6 +2315,23 @@ static int Run(int argc, wchar_t** argv) {
         Gdiplus::GdiplusShutdown(token);
         FreeFontCache();
         return ok ? 0 : 2;
+    }
+
+    // Launched with nothing to open: ask (initial folder = last-used, else
+    // Downloads). Cancelling falls through to the usual empty window.
+    if (g_filePath.empty()) {
+        std::wstring picked;
+        if (PickFileToOpen(picked)) {
+            g_filePath = picked;
+            fileRead = ReadFileUtf8(g_filePath, text);
+            if (fileRead) g_doc = ParseMarkdown(text);
+            g_rawText = text;
+            size_t slash = g_filePath.find_last_of(L"\\/");
+            if (slash != std::wstring::npos) {
+                g_prefs.lastOpenDir = g_filePath.substr(0, slash);
+                SavePrefs(g_prefs);
+            }
+        }
     }
 
     g_theme = g_dark ? DarkTheme() : LightTheme();

@@ -26,7 +26,7 @@ $srcs = @("fmdv.cpp", "render.cpp", "prefs.cpp", "updater.cpp",
 
 $common = @(
     "-municode", "-std=c++17", "-Wall", "-Wextra", "-I..\core",
-    "-lgdi32", "-lgdiplus", "-lcomctl32", "-luser32", "-lshell32", "-lole32", "-ldwmapi", "-lwinhttp"
+    "-lgdi32", "-lgdiplus", "-lcomctl32", "-luser32", "-lshell32", "-lole32", "-ldwmapi", "-lwinhttp", "-lcomdlg32"
 )
 
 if ($Debug) {

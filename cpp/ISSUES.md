@@ -124,6 +124,28 @@ Remaining roadmap (not yet done):
 _(none)_
 
 ## Resolved
+- Windows was missing the "launched with no file" open-dialog that macOS already
+  has (2026-07-14 — regression/parity gap, not new in this port): `app.mm`'s
+  `applicationDidFinishLaunching` shows an `NSOpenPanel` when launched without a
+  file; the Win32 `Run()` just opened a blank window. Added `PickFileToOpen`
+  (`GetOpenFileNameW`, `comdlg32` — new link dependency in `build.ps1`), wired in
+  right before window creation (after the headless `--dump`/`--parse-dump`/bench
+  early-returns, so CLI/test invocations that intentionally pass no file are
+  unaffected). Initial folder: the last folder a file was opened from
+  (`Prefs.lastOpenDir`, persisted to `prefs.txt` the same way as `dark`/`split`/
+  `zoom`), falling back to `%USERPROFILE%\Downloads` the first run or if that
+  folder no longer exists. Cancelling falls through to the existing blank-window
+  path (mirrors macOS's `else { ensureWindow(); }`). Verified: clean build
+  (0 warnings), on-screen capture of the dialog confirms it opens to Downloads
+  with the Markdown filter active, and a standalone round-trip check of the new
+  `lastOpenDir` (de)serialization (ASCII path, a path near the old 128-byte
+  buffer limit, a non-ASCII path, and the empty/first-run case — all against a
+  scratch `%APPDATA%`, not the real prefs file) all pass. Not verified live:
+  actually driving the picker to select a file end-to-end — this dev sandbox
+  can't inject keystrokes into a native modal common dialog (`SendKeys`/
+  `AppActivate` don't land focus in it), so "pick a file → main window opens
+  with it → `lastdir` updates to that folder" wants one manual pass on a real
+  desktop.
 - Double-click word model: trailing punctuation now trims (2026-07-14) — sign-off
   decided in favor of trimming (`today.` selects `today`, not `today.`). Changed in
   `core/text_select.cpp`'s `DoubleClickSpan` so both frontends get it; an
