@@ -18,7 +18,6 @@ public class T {
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowExW(IntPtr p, IntPtr c, string cls, string win);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string win);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
-  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }
 public struct RECT { public int Left, Top, Right, Bottom; }
 "@
@@ -34,18 +33,14 @@ function Check($name, $cond, $detail="") {
     if ($cond) { Write-Host "  PASS  $name" -ForegroundColor Green; $script:pass++ }
     else       { Write-Host "  FAIL  $name  $detail" -ForegroundColor Red;  $script:fail++ }
 }
-$SWP_NOSIZE=0x1; $SWP_NOZORDER=0x4; $SWP_NOACTIVATE=0x10
-# When set, every launched window is relocated off the visible screen so the
-# suite doesn't pop windows over whatever you're doing (see run-tests-hidden.ps1).
-# Popups (table picker, find bar, update picker) all position themselves via
-# GetWindowRect(mainHwnd)/GetCaretPos, so moving the main window is enough.
-$offscreen = $env:FMDV_TEST_OFFSCREEN -eq "1"
+# FMDV_TEST_OFFSCREEN=1 (see run-tests-hidden.ps1) makes fmdv.exe create its
+# window off the visible screen from the first frame -- no on-screen flash to
+# relocate after the fact. Popups (table picker, find bar, update picker) all
+# position themselves via GetWindowRect(mainHwnd)/GetCaretPos, so they follow
+# the main window off-screen automatically.
 function Launch($file) {
     $p = Start-Process -FilePath $exe -ArgumentList "`"$file`"" -PassThru
     for ($i=0; $i -lt 15 -and $p.MainWindowHandle -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 150; $p.Refresh() }
-    if ($offscreen -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
-        [T]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, -32000, -32000, 0, 0, ($SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE)) | Out-Null
-    }
     Start-Sleep -Milliseconds 300
     return $p
 }

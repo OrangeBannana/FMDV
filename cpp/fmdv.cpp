@@ -2117,10 +2117,14 @@ static int Run(int argc, wchar_t** argv) {
         title = base + L" — FMDV";
     }
 
+    // Test suites can set this to launch off the visible screen entirely
+    // (rather than on-screen then relocated, which leaves a visible flash).
+    int initX = CW_USEDEFAULT, initY = CW_USEDEFAULT;
+    if (GetEnvironmentVariableW(L"FMDV_TEST_OFFSCREEN", nullptr, 0) > 0) initX = initY = -32000;
     HWND hwnd = CreateWindowExW(
         0, wc.lpszClassName, title.c_str(),
         WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1100, 800,
+        initX, initY, 1100, 800,
         nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
     Timing("window-created");
