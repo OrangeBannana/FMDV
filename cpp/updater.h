@@ -18,10 +18,24 @@ bool FetchReleases(std::vector<ReleaseInfo>& out);
 // Exposed for offline tests.
 bool ParseReleasesJson(const std::string& json, std::vector<ReleaseInfo>& out);
 
+// Which step DownloadAndInstall failed at, so the UI can say something more
+// useful than "update failed".
+enum class UpdateResult {
+    Ok,
+    BadUrl,      // couldn't parse the asset URL
+    Download,    // network/HTTP failure fetching the asset
+    BadImage,    // response wasn't a plausible PE (too small, wrong magic)
+    Write,       // couldn't write the downloaded exe to <exe>.new
+    SwapOld,     // couldn't rename the running exe to <exe>.old
+    SwapNew,     // couldn't move <exe>.new into place (rolled back)
+};
+
+const wchar_t* UpdateResultMessage(UpdateResult r);
+
 // Download url and swap it in as the running exe: current exe is renamed to
 // <exe>.old (renaming a running image is allowed on Windows), the download is
 // moved into its place. On failure the running exe is left untouched.
-bool DownloadAndInstall(const std::wstring& url);
+UpdateResult DownloadAndInstall(const std::wstring& url);
 
 // Delete a leftover <exe>.old from a previous swap. Silent if locked/missing.
 void CleanupOldExe();

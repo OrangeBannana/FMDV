@@ -92,44 +92,57 @@ bool FetchReleases(std::vector<ReleaseInfo>& out) {
     return ParseReleasesJson(body, out);
 }
 
-bool DownloadAndInstall(const std::wstring& url) {
+const wchar_t* UpdateResultMessage(UpdateResult r) {
+    switch (r) {
+        case UpdateResult::Ok:       return L"ok";
+        case UpdateResult::BadUrl:   return L"couldn't read the download URL";
+        case UpdateResult::Download: return L"download failed (network or GitHub unreachable)";
+        case UpdateResult::BadImage: return L"downloaded file wasn't a valid exe (blocked or truncated?)";
+        case UpdateResult::Write:    return L"couldn't write the new exe (disk full or permissions?)";
+        case UpdateResult::SwapOld:  return L"couldn't replace the running exe (in use or permissions?)";
+        case UpdateResult::SwapNew:  return L"couldn't move the new exe into place (rolled back)";
+    }
+    return L"unknown error";
+}
+
+UpdateResult DownloadAndInstall(const std::wstring& url) {
     // split the URL into host + path
     URL_COMPONENTS uc = {};
     uc.dwStructSize = sizeof(uc);
     wchar_t host[256] = L"", path[2048] = L"";
     uc.lpszHostName = host; uc.dwHostNameLength = 255;
     uc.lpszUrlPath = path;  uc.dwUrlPathLength = 2047;
-    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) return false;
+    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) return UpdateResult::BadUrl;
 
     std::string data;
-    if (!HttpGet(host, path, data)) return false;
+    if (!HttpGet(host, path, data)) return UpdateResult::Download;
     // sanity: a real PE, not an error page
-    if (data.size() < 100 * 1024 || data[0] != 'M' || data[1] != 'Z') return false;
+    if (data.size() < 100 * 1024 || data[0] != 'M' || data[1] != 'Z') return UpdateResult::BadImage;
 
     wchar_t exe[MAX_PATH];
-    if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return false;
+    if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return UpdateResult::Write;
     std::wstring tmp = std::wstring(exe) + L".new";
     std::wstring old = std::wstring(exe) + L".old";
 
     HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (h == INVALID_HANDLE_VALUE) return UpdateResult::Write;
     DWORD wr = 0;
     BOOL wok = WriteFile(h, data.data(), (DWORD)data.size(), &wr, nullptr);
     CloseHandle(h);
-    if (!wok || wr != data.size()) { DeleteFileW(tmp.c_str()); return false; }
+    if (!wok || wr != data.size()) { DeleteFileW(tmp.c_str()); return UpdateResult::Write; }
 
     DeleteFileW(old.c_str());
     if (!MoveFileExW(exe, old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         DeleteFileW(tmp.c_str());
-        return false;
+        return UpdateResult::SwapOld;
     }
     if (!MoveFileExW(tmp.c_str(), exe, 0)) {
         MoveFileW(old.c_str(), exe); // roll back
         DeleteFileW(tmp.c_str());
-        return false;
+        return UpdateResult::SwapNew;
     }
-    return true;
+    return UpdateResult::Ok;
 }
 
 void CleanupOldExe() {
