@@ -63,10 +63,12 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 # FMDV_VERSION_OVERRIDE=<ver> makes the app report that version (test hook)
 ```
 
-`tests\run-tests.ps1` builds both configurations and runs 71 checks: parser,
+`tests\run-tests.ps1` builds both configurations and runs 73 checks: parser,
 rendering, stability, TOC sidebar, find in doc, selection + clipboard,
 save round-trip, autocomplete, table picker (insert + resize), list
-continuation, updater.
+continuation, updater. `tests\run-tests-hidden.ps1` runs the identical suite
+with every launched window relocated off-screen first, so it doesn't pop
+windows over whatever else you're doing.
 
 ## Set as default app for .md
 1. Right-click any `.md` → **Open with → Choose another app**
