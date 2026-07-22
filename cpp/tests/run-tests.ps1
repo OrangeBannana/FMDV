@@ -18,20 +18,34 @@ public class T {
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowExW(IntPtr p, IntPtr c, string cls, string win);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string win);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }
 public struct RECT { public int Left, Top, Right, Bottom; }
 "@
 $WM_COMMAND=0x0111; $WM_SETTEXT=0x000C; $WM_CHAR=0x0102; $WM_KEYDOWN=0x0100; $VK_TAB=0x09
+$WM_VSCROLL=0x0115; $SB_PAGEDOWN=3
+$WM_LBUTTONDOWN=0x0201; $WM_MOUSEMOVE=0x0200; $WM_LBUTTONUP=0x0202
 $ID_EDIT=2001; $ID_SAVE=2003; $ID_COPY=2008; $ID_SELALL=2009
+
+function MakeLParam($x, $y) { return [IntPtr]((($y -band 0xFFFF) -shl 16) -bor ($x -band 0xFFFF)) }
 
 $script:pass = 0; $script:fail = 0
 function Check($name, $cond, $detail="") {
     if ($cond) { Write-Host "  PASS  $name" -ForegroundColor Green; $script:pass++ }
     else       { Write-Host "  FAIL  $name  $detail" -ForegroundColor Red;  $script:fail++ }
 }
+$SWP_NOSIZE=0x1; $SWP_NOZORDER=0x4; $SWP_NOACTIVATE=0x10
+# When set, every launched window is relocated off the visible screen so the
+# suite doesn't pop windows over whatever you're doing (see run-tests-hidden.ps1).
+# Popups (table picker, find bar, update picker) all position themselves via
+# GetWindowRect(mainHwnd)/GetCaretPos, so moving the main window is enough.
+$offscreen = $env:FMDV_TEST_OFFSCREEN -eq "1"
 function Launch($file) {
     $p = Start-Process -FilePath $exe -ArgumentList "`"$file`"" -PassThru
     for ($i=0; $i -lt 15 -and $p.MainWindowHandle -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 150; $p.Refresh() }
+    if ($offscreen -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
+        [T]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, -32000, -32000, 0, 0, ($SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE)) | Out-Null
+    }
     Start-Sleep -Milliseconds 300
     return $p
 }
@@ -173,6 +187,30 @@ Check "copy: code text"    ($clip -match "print\(")
 Check "copy: table cell"   ($clip -match "Cell A1" -and $clip -match "Cell B1")
 Check "copy: link text"    ($clip -match "Example Link")
 Check "copy: multi-line"   (($clip -split "`n").Count -ge 8)
+if (-not $p.HasExited) { $p.Kill() }
+
+Write-Host "`nSelection while scrolled (g_frags is doc-space, clicks are client-space):" -ForegroundColor Cyan
+$scrollFile = "$fix\scroll.md"
+(1..150 | ForEach-Object { "Line{0:D3} marker unique text here.`n" -f $_ }) -join "`n" | Set-Content $scrollFile -Encoding utf8
+$p = Launch $scrollFile
+for ($i = 0; $i -lt 6; $i++) {
+    [T]::PostMessage($p.MainWindowHandle, $WM_VSCROLL, [IntPtr]$SB_PAGEDOWN, [IntPtr]::Zero) | Out-Null
+    Start-Sleep -Milliseconds 80
+}
+Start-Sleep -Milliseconds 250
+[T]::PostMessage($p.MainWindowHandle, $WM_LBUTTONDOWN, [IntPtr]1, (MakeLParam 40 300)) | Out-Null
+Start-Sleep -Milliseconds 80
+[T]::PostMessage($p.MainWindowHandle, $WM_MOUSEMOVE, [IntPtr]1, (MakeLParam 700 300)) | Out-Null
+Start-Sleep -Milliseconds 80
+[T]::PostMessage($p.MainWindowHandle, $WM_LBUTTONUP, [IntPtr]0, (MakeLParam 700 300)) | Out-Null
+Start-Sleep -Milliseconds 150
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_COPY, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 250
+$clip = Get-Clipboard -Raw
+# a click at the same screen y before/after scrolling must not select the same
+# doc-space text -- if it does, scroll offset isn't being applied to the click
+Check "scrolled selection grabs a Line### marker" ($clip -match "Line\d{3} marker unique")
+Check "scrolled selection isn't stuck at the top of the doc" ($clip -notmatch "Line00[1-9] marker")
 if (-not $p.HasExited) { $p.Kill() }
 
 Write-Host "`nSave round-trip:" -ForegroundColor Cyan

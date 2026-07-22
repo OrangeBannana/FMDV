@@ -55,7 +55,8 @@ details, headless test/inspection flags, and source layout.
 ```powershell
 cd cpp
 .\build.ps1                            # -> cpp\fmdv.exe
-powershell -File tests\run-tests.ps1   # 71-check suite
+powershell -File tests\run-tests.ps1          # 73-check suite
+powershell -File tests\run-tests-hidden.ps1   # same, windows kept off-screen
 ```
 
 Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
