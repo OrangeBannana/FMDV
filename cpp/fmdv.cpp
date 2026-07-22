@@ -1060,16 +1060,16 @@ static DWORD WINAPI CheckThread(LPVOID autoInstall) {
         }
         if (best && CompareVersions(best->tag, CurrentVersion()) > 0) {
             g_installTag = best->tag;
-            bool ins = DownloadAndInstall(best->exeUrl);
-            PostMessageW(g_mainHwnd, WM_APP_UPDATE, ins ? UPD_INSTALL_OK : UPD_INSTALL_FAIL, 0);
+            UpdateResult r = DownloadAndInstall(best->exeUrl);
+            PostMessageW(g_mainHwnd, WM_APP_UPDATE, r == UpdateResult::Ok ? UPD_INSTALL_OK : UPD_INSTALL_FAIL, (LPARAM)r);
         }
     }
     return 0;
 }
 
 static DWORD WINAPI InstallThread(LPVOID) {
-    bool ok = DownloadAndInstall(g_installUrl);
-    PostMessageW(g_mainHwnd, WM_APP_UPDATE, ok ? UPD_INSTALL_OK : UPD_INSTALL_FAIL, 0);
+    UpdateResult r = DownloadAndInstall(g_installUrl);
+    PostMessageW(g_mainHwnd, WM_APP_UPDATE, r == UpdateResult::Ok ? UPD_INSTALL_OK : UPD_INSTALL_FAIL, (LPARAM)r);
     return 0;
 }
 
@@ -1699,7 +1699,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_upHwnd) InvalidateRect(g_upHwnd, nullptr, TRUE);
         } else if (wp == UPD_INSTALL_FAIL) {
             g_installRunning = false;
-            SetBanner(hwnd, L"update failed — check github.com/OrangeBannana/FMDV/releases");
+            std::wstring why = UpdateResultMessage((UpdateResult)lp);
+            SetBanner(hwnd, L"update failed: " + why + L" — github.com/OrangeBannana/FMDV/releases");
             if (g_upHwnd) InvalidateRect(g_upHwnd, nullptr, TRUE);
         }
         return 0;
@@ -2026,9 +2027,10 @@ static int Run(int argc, wchar_t** argv) {
             if (!FetchReleases(rel)) { wprintf(L"fetch FAILED\n"); return 2; }
             for (auto& r : rel) {
                 if (r.tag == argv[i + 1] && !r.exeUrl.empty()) {
-                    bool ok = DownloadAndInstall(r.exeUrl);
-                    wprintf(L"install %ls: %hs\n", r.tag.c_str(), ok ? "OK" : "FAILED");
-                    return ok ? 0 : 2;
+                    UpdateResult res = DownloadAndInstall(r.exeUrl);
+                    if (res == UpdateResult::Ok) wprintf(L"install %ls: OK\n", r.tag.c_str());
+                    else wprintf(L"install %ls: FAILED (%ls)\n", r.tag.c_str(), UpdateResultMessage(res));
+                    return res == UpdateResult::Ok ? 0 : 2;
                 }
             }
             wprintf(L"tag not found or has no exe asset\n");
