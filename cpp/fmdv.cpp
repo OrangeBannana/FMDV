@@ -1975,8 +1975,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 int cx = GET_X_LPARAM(lp), cy = GET_Y_LPARAM(lp);
                 if (!ToggleTaskAt(hwnd, cx, cy)) {
                     std::wstring href = LinkAt(cx, cy);
-                    if (!href.empty())
-                        ShellExecuteW(hwnd, L"open", href.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    if (!href.empty()) {
+                        // Test hook: the live-UI suite can't trigger a real
+                        // ShellExecuteW (it would try to open a URL/browser on
+                        // the runner), so when set it records the resolved
+                        // href in the window title instead -- lets a test
+                        // verify LinkAt's scrolled hit-testing picked the
+                        // right link without any real side effect.
+                        if (GetEnvironmentVariableW(L"FMDV_TEST_LINK_LOG", nullptr, 0) > 0)
+                            SetWindowTextW(hwnd, (L"LINKHIT:" + href).c_str());
+                        else
+                            ShellExecuteW(hwnd, L"open", href.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    }
                 }
             }
             g_selecting = false;

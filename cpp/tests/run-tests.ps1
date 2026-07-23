@@ -23,6 +23,7 @@ public class T {
   [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int max);
 }
 public struct RECT { public int Left, Top, Right, Bottom; }
 public struct POINT { public int X, Y; }
@@ -526,6 +527,46 @@ Check "150% zoom: task rows still map to source lines 2/3/4" ($rowsZ.ContainsKey
 [T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_ZOOM_RESET, [IntPtr]::Zero) | Out-Null
 Start-Sleep -Milliseconds 150
 if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+Write-Host "`nLink hit-testing while scrolled (LinkAt shares PointToSel/ToggleTaskAt's" -ForegroundColor Cyan
+Write-Host "clientY + g_scrollY transform):" -ForegroundColor Cyan
+# A real click can't be used to verify which link was hit -- ShellExecuteW
+# would try to open a URL/browser on the runner. FMDV_TEST_LINK_LOG makes
+# fmdv.cpp write the resolved href into the window title instead (see
+# WM_LBUTTONUP in fmdv.cpp), so this can confirm LinkAt's scrolled math
+# resolved the click to the right link with no real side effect.
+function GetWinTitle($h) {
+    $sb = New-Object System.Text.StringBuilder 256
+    [T]::GetWindowTextW($h, $sb, 256) | Out-Null
+    return $sb.ToString()
+}
+$env:FMDV_TEST_LINK_LOG = "1"
+$lf = "$fix\clicklinks_scroll.md"
+$lfsb = "[AAA](fmdv-test://aaa)`n`n"
+for ($i = 0; $i -lt 6;   $i++) { $lfsb += "Filler A $i`n`n" }
+$lfsb += "[MID](fmdv-test://mid)`n`n"
+for ($i = 0; $i -lt 200; $i++) { $lfsb += "Filler B $i`n`n" }
+[System.IO.File]::WriteAllText($lf, $lfsb)
+$p = Launch $lf; $h = $p.MainWindowHandle
+[T]::PostMessage($h, $WM_KEYDOWN, [IntPtr]$VK_HOME, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 200
+for ($i = 0; $i -lt 5; $i++) { [T]::PostMessage($h, $WM_KEYDOWN, [IntPtr]$VK_DOWN, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 70 }
+Start-Sleep -Milliseconds 200
+# sweep the viewport at the link's x column; first hit should be MID (AAA is
+# scrolled off the top, so a coordinate-math regression that fails to add
+# g_scrollY would either hit nothing here or wrongly report AAA).
+$linkX = 50  # inside the link text (paragraphs start at PAD_X=40, core/layout.cpp)
+$midHref = $null; $hitAAA = $false
+for ($y = 6; $y -lt 460 -and -not $midHref; $y++) {
+    [T]::SendMessageW($h, $WM_SETTEXT, [IntPtr]::Zero, "") | Out-Null
+    ClickAt $h $linkX $y
+    $title = GetWinTitle $h
+    if ($title -eq "LINKHIT:fmdv-test://aaa") { $hitAAA = $true }
+    elseif ($title -eq "LINKHIT:fmdv-test://mid") { $midHref = $title }
+}
+Check "scrolled click resolves the VISIBLE link (MID)"        ($null -ne $midHref)
+Check "scrolled click never resolves the off-screen link (AAA)" (-not $hitAAA)
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+Remove-Item Env:\FMDV_TEST_LINK_LOG
 
 Write-Host "`nLive window-drag resize (table reflow, section 3):" -ForegroundColor Cyan
 # The offline --dump PNGs above already prove the layout algorithm reflows
