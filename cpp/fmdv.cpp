@@ -22,6 +22,7 @@
 #include "prefs.h"
 #include "updater.h"
 #include "version.h"
+#include "bench.h"
 
 #ifndef DWMWA_TRANSITIONS_FORCEDISABLED
 #define DWMWA_TRANSITIONS_FORCEDISABLED 3
@@ -240,116 +241,19 @@ static int g_contentH = 0;   // total laid-out document height
 static int g_clientH = 0;    // current client area height
 static int g_clientW = 0;
 
-// --- structured benchmark logging ---
-static bool g_benchEnabled = false;
+// --- structured benchmark logging (cpp/bench.{h,cpp}: a plain-parameter
+// module, like render.cpp/updater.cpp, rather than one reaching into these
+// globals) ---
 static bool g_benchStartup = false;
-static std::wstring g_benchLogPath;
-static std::string g_benchLabel;
-static std::string g_benchCommit;
 static int g_benchWindowW = 1100;
 static int g_benchWindowH = 800;
 static bool g_firstLayoutLogged = false;
 
-static std::string WideToUtf8(const std::wstring& w) {
-    int need = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
-    std::string s(need, '\0');
-    if (need) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], need, nullptr, nullptr);
-    return s;
-}
-
-static std::string EnvUtf8(const wchar_t* name) {
-    wchar_t* value = _wgetenv(name);
-    return (value && value[0]) ? WideToUtf8(value) : std::string();
-}
-
-static std::string Csv(const std::string& s) {
-    bool quote = false;
-    for (char c : s) if (c == ',' || c == '"' || c == '\n' || c == '\r') { quote = true; break; }
-    if (!quote) return s;
-    std::string out = "\"";
-    for (char c : s) {
-        if (c == '"') out += "\"\"";
-        else out += c;
-    }
-    out += "\"";
-    return out;
-}
-
-static void EnsureParentDirs(const std::wstring& path) {
-    for (size_t i = 0; i < path.size(); i++) {
-        if (path[i] != L'\\' && path[i] != L'/') continue;
-        if (i == 0 || (i == 2 && path[1] == L':')) continue;
-        std::wstring dir = path.substr(0, i);
-        if (!dir.empty()) CreateDirectoryW(dir.c_str(), nullptr);
-    }
-}
-
-static bool FileIsEmptyOrMissing(const std::wstring& path) {
-    WIN32_FILE_ATTRIBUTE_DATA fa = {};
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa)) return true;
-    return fa.nFileSizeHigh == 0 && fa.nFileSizeLow == 0;
-}
-
-static std::string IsoUtcNow() {
-    SYSTEMTIME st;
-    GetSystemTime(&st);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
-             (unsigned)st.wYear, (unsigned)st.wMonth, (unsigned)st.wDay,
-             (unsigned)st.wHour, (unsigned)st.wMinute, (unsigned)st.wSecond,
-             (unsigned)st.wMilliseconds);
-    return buf;
-}
-
-static void InitBenchLog(bool forceDefaultPath) {
-    wchar_t* path = _wgetenv(L"FMDV_BENCH_LOG");
-    if (path && path[0]) g_benchLogPath = path;
-    else if (forceDefaultPath) g_benchLogPath = L"bench\\results\\windows-baseline.csv";
-    if (g_benchLogPath.empty()) return;
-
-    g_benchEnabled = true;
-    g_benchLabel = EnvUtf8(L"FMDV_BENCH_LABEL");
-    g_benchCommit = EnvUtf8(L"FMDV_BENCH_COMMIT");
-    if (g_benchCommit.empty()) g_benchCommit = EnvUtf8(L"GITHUB_SHA");
-}
-
-static void BenchLog(const char* event, double durationMs, int width = 0, int height = 0,
-                     int contentH = -1, const char* notes = "") {
-    if (!g_benchEnabled) return;
-
-    EnsureParentDirs(g_benchLogPath);
-    bool needHeader = FileIsEmptyOrMissing(g_benchLogPath);
-    FILE* f = _wfopen(g_benchLogPath.c_str(), L"ab");
-    if (!f) return;
-    if (needHeader) {
-        fprintf(f, "timestamp,platform,frontend,build,commit,label,file,theme,width,height,event,duration_ms,blocks,content_height,notes\n");
-    }
-
-    const char* build =
-#ifdef FMDV_CONSOLE
-        "debug";
-#else
-        "release";
-#endif
-    int outW = width > 0 ? width : (g_clientW > 0 ? g_clientW : g_benchWindowW);
-    int outH = height > 0 ? height : (g_clientH > 0 ? g_clientH : g_benchWindowH);
-    int outContentH = contentH >= 0 ? contentH : g_contentH;
-
-    fprintf(f, "%s,windows,win32,%s,%s,%s,%s,%s,%d,%d,%s,%.3f,%zu,%d,%s\n",
-            Csv(IsoUtcNow()).c_str(),
-            Csv(build).c_str(),
-            Csv(g_benchCommit).c_str(),
-            Csv(g_benchLabel).c_str(),
-            Csv(WideToUtf8(g_filePath)).c_str(),
-            g_dark ? "dark" : "light",
-            outW,
-            outH,
-            Csv(event).c_str(),
-            durationMs,
-            g_doc.blocks.size(),
-            outContentH,
-            Csv(notes).c_str());
-    fclose(f);
+// Passes the caller's current-document state explicitly since BenchLog()
+// holds no app globals of its own.
+static void BenchLog(const char* event, double durationMs, int width, int height,
+                     int contentH, const char* notes) {
+    ::BenchLog(event, durationMs, width, height, contentH, notes, g_filePath, g_dark, g_doc.blocks.size());
 }
 
 #ifdef FMDV_CONSOLE
@@ -694,9 +598,9 @@ static void UpdateLayout(HWND hwnd, bool redrawScrollbar) {
     g_sel.active = false; // re-layout invalidates fragment indices
     if (g_editing) { ClampSplit(); PositionEdit(); }
     HDC dc = GetDC(hwnd);
-    bool logFirstLayout = g_benchEnabled && !g_firstLayoutLogged;
+    bool logFirstLayout = BenchLogActive() && !g_firstLayoutLogged;
     double layoutStart = NowMs();
-    if (logFirstLayout) BenchLog("first_layout_start", layoutStart, PreviewWidth(), g_clientH, -1, "elapsed");
+    if (logFirstLayout) BenchLog("first_layout_start", layoutStart, PreviewWidth(), g_clientH, g_contentH, "elapsed");
     g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags, &g_blockTops, &g_taskHits);
     if (logFirstLayout) {
         g_firstLayoutLogged = true;
