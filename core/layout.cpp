@@ -56,6 +56,7 @@ struct Word {
     bool link = false;
     bool strike = false;
     bool space = false; // a space precedes this word in the source
+    bool forceBreak = false; // a <br> was here -- always start a new line
     Str href;
     double w = 0, h = 0, asc = 0;
 };
@@ -126,6 +127,16 @@ std::vector<Word> buildWords(Ctx& cx, const std::vector<InlineRun>& runs, FontRo
         };
         for (Char c : r.text) {
             if (c == U16(' ') || c == U16('\t')) { flush(); pendingSpace = true; }
+            else if (c == U16('\n')) {
+                // <br> (folded to '\n' by ParseInline): flush any pending word,
+                // then emit a zero-width marker that forces a new line.
+                flush();
+                Word br;
+                br.font = f; br.gRole = useRole; br.gBold = r.bold; br.gItalic = r.italic;
+                br.color = col; br.h = h; br.asc = asc; br.forceBreak = true;
+                words.push_back(std::move(br));
+                pendingSpace = false;
+            }
             else cur += c;
         }
         flush();
@@ -199,6 +210,16 @@ double layoutWords(Ctx& cx, std::vector<Word>& words, double indentLeft, double 
     };
 
     for (auto& w : words) {
+        if (w.forceBreak) {
+            if (!line.empty()) {
+                flushLine(); // renders the pending line, advances y, resets state
+            } else {
+                // A <br> with nothing pending (start of block, or back-to-back
+                // <br><br>): still need a blank line, so advance y directly.
+                y += (w.h > 0 ? w.h : cx.tm->lineHeight(roleFont(FontRole::Body, false, false)));
+            }
+            continue;
+        }
         double sp = (!line.empty() && w.space) ? spaceW : 0;
         double need = sp + w.w;
         if (!line.empty() && x + need > cx.right) {
@@ -220,39 +241,52 @@ double layoutWords(Ctx& cx, std::vector<Word>& words, double indentLeft, double 
 std::vector<Str> WrapCellText(TextMeasurer& tm, const FontSpec& f, const Str& text,
                               double maxWidth) {
     if (maxWidth < 1) maxWidth = 1;
-    std::vector<Str> words; Str cur;
-    for (Char c : text) {
-        if (c == U16(' ') || c == U16('\t')) { if (!cur.empty()) { words.push_back(cur); cur.clear(); } }
-        else cur += c;
-    }
-    if (!cur.empty()) words.push_back(cur);
 
-    std::vector<Str> lines;
-    double spaceW = tm.textWidth(f, U16(" "));
-    Str line; double lineW = 0; bool have = false;
-    for (const Str& w : words) {
-        double wW = tm.textWidth(f, w);
-        if (have && lineW + spaceW + wW <= maxWidth) {          // fits after a space
-            line += U16(' '); line += w; lineW += spaceW + wW;
-        } else if (wW <= maxWidth) {                            // fits alone on a line
-            if (have) lines.push_back(line);
-            line = w; lineW = wW; have = true;
-        } else {
-            // Token wider than the column: break it character by character.
-            if (have) { lines.push_back(line); line.clear(); have = false; }
-            Str piece;
-            for (Char ch : w) {
-                Str trial = piece; trial += ch;
-                if (!piece.empty() && tm.textWidth(f, trial) > maxWidth) {
-                    lines.push_back(piece); piece.clear(); piece += ch;
-                } else {
-                    piece = trial;
-                }
-            }
-            line = piece; lineW = tm.textWidth(f, piece); have = true;
-        }
+    // <br> is folded to '\n' by ParseInline. Split on it first -- each segment
+    // wraps independently, so a <br> always starts a new line even if the
+    // current one still had room (GFM hard-break semantics).
+    std::vector<Str> segments; Str seg;
+    for (Char c : text) {
+        if (c == U16('\n')) { segments.push_back(seg); seg.clear(); }
+        else seg += c;
     }
-    lines.push_back(line);   // final (possibly empty) line
+    segments.push_back(seg);
+
+    double spaceW = tm.textWidth(f, U16(" "));
+    std::vector<Str> lines;
+    for (const Str& segText : segments) {
+        std::vector<Str> words; Str cur;
+        for (Char c : segText) {
+            if (c == U16(' ') || c == U16('\t')) { if (!cur.empty()) { words.push_back(cur); cur.clear(); } }
+            else cur += c;
+        }
+        if (!cur.empty()) words.push_back(cur);
+
+        Str line; double lineW = 0; bool have = false;
+        for (const Str& w : words) {
+            double wW = tm.textWidth(f, w);
+            if (have && lineW + spaceW + wW <= maxWidth) {          // fits after a space
+                line += U16(' '); line += w; lineW += spaceW + wW;
+            } else if (wW <= maxWidth) {                            // fits alone on a line
+                if (have) lines.push_back(line);
+                line = w; lineW = wW; have = true;
+            } else {
+                // Token wider than the column: break it character by character.
+                if (have) { lines.push_back(line); line.clear(); have = false; }
+                Str piece;
+                for (Char ch : w) {
+                    Str trial = piece; trial += ch;
+                    if (!piece.empty() && tm.textWidth(f, trial) > maxWidth) {
+                        lines.push_back(piece); piece.clear(); piece += ch;
+                    } else {
+                        piece = trial;
+                    }
+                }
+                line = piece; lineW = tm.textWidth(f, piece); have = true;
+            }
+        }
+        lines.push_back(line);   // final (possibly empty) line for this segment
+    }
     return lines;
 }
 
@@ -387,14 +421,25 @@ LayoutResult LayoutDocument(const Document& doc, double width,
                 if (c < (int)cells.size()) for (const auto& r : cells[c].runs) s += r.text;
                 return s;
             };
+            // <br> is folded to '\n' by ParseInline -- a cell with one always
+            // renders as multiple lines, so its "natural" width is its widest
+            // line, not the (wider, nonsensical) width of the whole flattened
+            // string with a control character embedded in it.
+            auto widestLineWidth = [&](const FontSpec& fs, const Str& s) {
+                double best = 0; Str line;
+                auto meas = [&]{ double w = tm.textWidth(fs, line); if (w > best) best = w; line.clear(); };
+                for (Char ch : s) { if (ch == U16('\n')) meas(); else line += ch; }
+                meas();
+                return best;
+            };
 
             // 1. natural (unwrapped) content width per column, from header + all rows
             std::vector<double> naturalPad(cols);
             for (int c = 0; c < cols; c++)
-                naturalPad[c] = tm.textWidth(boldSpec, cellText(b.headers, c)) + 2 * cellPadX;
+                naturalPad[c] = widestLineWidth(boldSpec, cellText(b.headers, c)) + 2 * cellPadX;
             for (const auto& row : b.rows)
                 for (int c = 0; c < cols && c < (int)row.cells.size(); c++) {
-                    double w = tm.textWidth(bodySpec, cellText(row.cells, c)) + 2 * cellPadX;
+                    double w = widestLineWidth(bodySpec, cellText(row.cells, c)) + 2 * cellPadX;
                     if (w > naturalPad[c]) naturalPad[c] = w;
                 }
 
@@ -409,7 +454,9 @@ LayoutResult LayoutDocument(const Document& doc, double width,
                 Str tok;
                 auto meas = [&]{ if (!tok.empty()) {
                     double w = tm.textWidth(fs, tok) + 2 * cellPadX; if (w > best) best = w; tok.clear(); } };
-                for (Char ch : s) { if (ch == U16(' ') || ch == U16('\t')) meas(); else tok += ch; }
+                // '\n' (a folded <br>) ends a token same as whitespace -- otherwise
+                // e.g. "cups<br>Chicken" measures as one unbreakable fake token.
+                for (Char ch : s) { if (ch == U16(' ') || ch == U16('\t') || ch == U16('\n')) meas(); else tok += ch; }
                 meas();
             };
             for (int c = 0; c < cols; c++) tokenMax(boldSpec, cellText(b.headers, c), colMin[c]);

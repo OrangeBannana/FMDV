@@ -47,6 +47,24 @@ static size_t findClose(const Str& s, const Str& delim, size_t from) {
     return s.find(delim, from);
 }
 
+// Matches <br>, <br/>, <br />, ... case-insensitively (GFM allows a raw <br>
+// for a hard break inside table cells, since pipe-table syntax can't hold a
+// literal newline). Returns the match length at s[p], or 0. The match is
+// folded into a single '\n' in the run text -- buildWords/WrapCellText (see
+// layout.cpp) turn that into an actual forced line break.
+static size_t matchBrTag(const Str& s, size_t p) {
+    size_t n = s.size();
+    if (p + 3 >= n || s[p] != U16('<')) return 0;
+    auto low = [](Char c) { return (c >= U16('A') && c <= U16('Z')) ? Char(c - U16('A') + U16('a')) : c; };
+    size_t q = p + 1;
+    if (low(s[q]) != U16('b') || low(s[q + 1]) != U16('r')) return 0;
+    q += 2;
+    while (q < n && s[q] == U16(' ')) q++;
+    if (q < n && s[q] == U16('/')) { q++; while (q < n && s[q] == U16(' ')) q++; }
+    if (q < n && s[q] == U16('>')) return q + 1 - p;
+    return 0;
+}
+
 // Recursive inline parser. Emits runs with the given active styles.
 static void parseInlineInto(const Str& s, std::vector<InlineRun>& out,
                             bool b, bool i, bool c, bool strike, const Str& href,
@@ -66,6 +84,12 @@ static void parseInlineInto(const Str& s, std::vector<InlineRun>& out,
                 appendRun(out, s.substr(p + 1, close - p - 1), b, i, true, strike, href);
                 p = close + 1; continue;
             }
+        }
+
+        // <br> hard break
+        if (ch == U16('<')) {
+            size_t m = matchBrTag(s, p);
+            if (m) { buf += U16('\n'); p += m; continue; }
         }
 
         // image ![alt](src) -> render alt text (no bitmap loading yet)

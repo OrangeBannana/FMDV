@@ -278,6 +278,28 @@ int main() {
               "table: wrapped lines advance by line height + gap");
     }
 
+    // ---- table: <br> forces a line break inside a cell ----
+    {
+        // Plenty of width for "one two" on one line -- <br> must force the
+        // break regardless, unlike ordinary word-wrap (which only breaks on
+        // overflow). This is GFM's only way to hard-break inside a pipe-table
+        // cell (the syntax can't hold a literal newline).
+        LayoutResult r = lay("| A |\n| --- |\n| one<br>two |", 900);
+        const DrawCommand* l1 = firstText(r, "one");
+        const DrawCommand* l2 = firstText(r, "two");
+        check(l1 && l2 && near(l1->rect.x, l2->rect.x) && near(l2->rect.y - l1->rect.y, 24),
+              "table: <br> starts a new line at the same column x, one line-height down");
+        check(firstText(r, "one two") == nullptr, "table: <br> content isn't joined onto one line");
+    }
+    {
+        // Two <br> in a row -> a blank line between "one" and "two".
+        LayoutResult r = lay("| A |\n| --- |\n| one<br><br>two |", 900);
+        const DrawCommand* l1 = firstText(r, "one");
+        const DrawCommand* l2 = firstText(r, "two");
+        check(l1 && l2 && near(l2->rect.y - l1->rect.y, 48),
+              "table: <br><br> leaves a blank line (two line-heights down)");
+    }
+
     // ---- table: a short unbreakable token keeps its column (min-content floor) ----
     {
         // The prose column forces the table to shrink, but "SENSE_FWD" stays on

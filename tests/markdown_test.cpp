@@ -119,6 +119,21 @@ int main() {
               "inline: empty alt renders [image]");
     }
     {
+        // <br> is GFM's escape hatch for a hard break inside a table cell
+        // (pipe-table syntax can't hold a literal newline); folded to '\n' here,
+        // which layout.cpp turns into an actual forced line break.
+        auto runs = ParseInline(FromUtf8("one<br>two"));
+        check(runs.size() == 1 && u8(runs[0].text) == "one\ntwo", "br: folds to a newline");
+        check(u8(ParseInline(FromUtf8("a<br/>b"))[0].text) == "a\nb", "br: self-closing <br/>");
+        check(u8(ParseInline(FromUtf8("a<br />b"))[0].text) == "a\nb", "br: spaced self-close <br />");
+        check(u8(ParseInline(FromUtf8("a<BR>b"))[0].text) == "a\nb", "br: case-insensitive");
+        auto two = ParseInline(FromUtf8("a<br><br>b"));
+        check(runText(two) == "a\n\nb", "br: back-to-back <br><br> is a blank line");
+        auto bold = ParseInline(FromUtf8("**a<br>b**"));
+        check(bold.size() == 1 && bold[0].bold && u8(bold[0].text) == "a\nb",
+              "br: works inside styled text");
+    }
+    {
         auto runs = ParseInline(FromUtf8("[not a link] plain"));
         check(runs.size() == 1 && u8(runs[0].text) == "[not a link] plain",
               "inline: bracket without (url) stays literal");
@@ -259,6 +274,12 @@ int main() {
                   && !t.rows[0].cells[0].runs.empty()
                   && u8(t.rows[0].cells[0].runs[0].href) == "u",
               "table: links in body cells");
+    }
+    {
+        Document d = parse("| A |\n| --- |\n| one<br>two |");
+        const Block& t = d.blocks[0];
+        check(t.rows.size() == 1 && runText(t.rows[0].cells[0].runs) == "one\ntwo",
+              "table: <br> in a body cell folds to a newline");
     }
     {
         auto cells = SplitTableCells(FromUtf8("| a | b \\| c |"));
