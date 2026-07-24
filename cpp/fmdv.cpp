@@ -2077,6 +2077,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 static int Run(int argc, wchar_t** argv) {
+    // Elevated re-exec from the updater: do just the swap renames and exit
+    // (no window, no prefs). Must run before anything that could show UI.
+    for (int i = 1; i < argc; i++)
+        if (wcscmp(argv[i], L"--apply-update") == 0 && i + 1 < argc)
+            return ApplyUpdateRenames(argv[i + 1]) ? 0 : 1;
+
     LARGE_INTEGER f; QueryPerformanceFrequency(&f); g_freq = (double)f.QuadPart;
     QueryPerformanceCounter(&g_start);
 

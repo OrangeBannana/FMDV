@@ -2,6 +2,7 @@
 #include "version.h"
 #include <windows.h>
 #include <winhttp.h>
+#include <shellapi.h>
 #include <cstdlib>
 #include <cwctype>
 
@@ -59,11 +60,80 @@ const wchar_t* UpdateResultMessage(UpdateResult r) {
         case UpdateResult::BadUrl:   return L"couldn't read the download URL";
         case UpdateResult::Download: return L"download failed (network or GitHub unreachable)";
         case UpdateResult::BadImage: return L"downloaded file wasn't a valid exe (blocked or truncated?)";
-        case UpdateResult::Write:    return L"couldn't write the new exe (disk full or permissions?)";
+        case UpdateResult::Write:    return L"couldn't write the new exe (disk full?)";
         case UpdateResult::SwapOld:  return L"couldn't replace the running exe (in use or permissions?)";
         case UpdateResult::SwapNew:  return L"couldn't move the new exe into place (rolled back)";
+        case UpdateResult::UacDeclined: return L"install folder needs admin — retry and click Yes on the prompt";
+        case UpdateResult::Elevated: return L"admin-elevated install step failed";
     }
     return L"unknown error";
+}
+
+// Write `data` to `path` (CREATE_ALWAYS). Returns false on any failure;
+// `deniedOut` reports whether the failure was an access-denied.
+static bool WriteAll(const std::wstring& path, const std::string& data, bool* deniedOut) {
+    if (deniedOut) *deniedOut = false;
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (deniedOut) *deniedOut = (GetLastError() == ERROR_ACCESS_DENIED);
+        return false;
+    }
+    DWORD wr = 0;
+    BOOL wok = WriteFile(h, data.data(), (DWORD)data.size(), &wr, nullptr);
+    CloseHandle(h);
+    if (!wok || wr != data.size()) { DeleteFileW(path.c_str()); return false; }
+    return true;
+}
+
+// The two renames that swap `newFile` in as `exe`. `deniedOut` reports whether
+// a failure was an access-denied (candidate for elevation).
+static UpdateResult SwapInPlace(const std::wstring& exe, const std::wstring& newFile, bool* deniedOut) {
+    if (deniedOut) *deniedOut = false;
+    std::wstring old = exe + L".old";
+    DeleteFileW(old.c_str());
+    if (!MoveFileExW(exe.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        if (deniedOut) *deniedOut = (GetLastError() == ERROR_ACCESS_DENIED);
+        return UpdateResult::SwapOld;
+    }
+    if (!MoveFileExW(newFile.c_str(), exe.c_str(), 0)) {
+        if (deniedOut) *deniedOut = (GetLastError() == ERROR_ACCESS_DENIED);
+        MoveFileW(old.c_str(), exe.c_str()); // roll back
+        return UpdateResult::SwapNew;
+    }
+    return UpdateResult::Ok;
+}
+
+bool ApplyUpdateRenames(const std::wstring& newFile) {
+    wchar_t exe[MAX_PATH];
+    if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return false;
+    return SwapInPlace(exe, newFile, nullptr) == UpdateResult::Ok;
+}
+
+// Re-run this exe elevated (one UAC prompt) to do just the swap renames.
+// Blocks until the helper exits.
+static UpdateResult ElevatedSwap(const std::wstring& exe, const std::wstring& newFile) {
+    std::wstring params = L"--apply-update \"" + newFile + L"\"";
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe.c_str();
+    sei.lpParameters = params.c_str();
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei)) {
+        DeleteFileW(newFile.c_str());
+        return (GetLastError() == ERROR_CANCELLED) ? UpdateResult::UacDeclined
+                                                   : UpdateResult::Elevated;
+    }
+    DWORD code = 1;
+    if (sei.hProcess) {
+        WaitForSingleObject(sei.hProcess, 60000);
+        GetExitCodeProcess(sei.hProcess, &code);
+        CloseHandle(sei.hProcess);
+    }
+    if (code != 0) { DeleteFileW(newFile.c_str()); return UpdateResult::Elevated; }
+    return UpdateResult::Ok;
 }
 
 UpdateResult DownloadAndInstall(const std::wstring& url) {
@@ -82,28 +152,25 @@ UpdateResult DownloadAndInstall(const std::wstring& url) {
 
     wchar_t exe[MAX_PATH];
     if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return UpdateResult::Write;
-    std::wstring tmp = std::wstring(exe) + L".new";
-    std::wstring old = std::wstring(exe) + L".old";
 
-    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return UpdateResult::Write;
-    DWORD wr = 0;
-    BOOL wok = WriteFile(h, data.data(), (DWORD)data.size(), &wr, nullptr);
-    CloseHandle(h);
-    if (!wok || wr != data.size()) { DeleteFileW(tmp.c_str()); return UpdateResult::Write; }
+    // Stage the download next to the exe when the folder allows it (same-volume
+    // rename, cleaned up naturally); fall back to %TEMP% when it doesn't (the
+    // swap will then need elevation anyway).
+    std::wstring stage = std::wstring(exe) + L".new";
+    bool denied = false;
+    if (!WriteAll(stage, data, &denied)) {
+        if (!denied) return UpdateResult::Write;
+        wchar_t tmpDir[MAX_PATH];
+        if (!GetTempPathW(MAX_PATH, tmpDir)) return UpdateResult::Write;
+        stage = std::wstring(tmpDir) + L"fmdv-update.new";
+        if (!WriteAll(stage, data, nullptr)) return UpdateResult::Write;
+    }
 
-    DeleteFileW(old.c_str());
-    if (!MoveFileExW(exe, old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        DeleteFileW(tmp.c_str());
-        return UpdateResult::SwapOld;
-    }
-    if (!MoveFileExW(tmp.c_str(), exe, 0)) {
-        MoveFileW(old.c_str(), exe); // roll back
-        DeleteFileW(tmp.c_str());
-        return UpdateResult::SwapNew;
-    }
-    return UpdateResult::Ok;
+    UpdateResult r = SwapInPlace(exe, stage, &denied);
+    if (r == UpdateResult::Ok) return r;
+    if (!denied) { DeleteFileW(stage.c_str()); return r; }
+    // Folder needs admin: one UAC prompt, elevated helper does just the renames.
+    return ElevatedSwap(exe, stage);
 }
 
 void CleanupOldExe() {
