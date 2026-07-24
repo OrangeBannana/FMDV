@@ -99,18 +99,74 @@ Round 8 — PERF: cached layout + visible-range painting:
   paint time from cached frags, so it still updates without relayout. Ctrl+D relayouts
   once (colors are baked into the cached commands). All 47 tests still green.
 
+Shipped since round 8 (see cpp/README.md for behavior):
+- ✅ **Find in doc (Ctrl+F)** — highlights all matches, Enter/Shift+Enter step with
+  wraparound, Esc closes. (find/selection logic now lives in `core/text_select`.)
+- ✅ **TOC sidebar (Ctrl+Shift+O)** — headings from the current doc; click to jump.
+- ✅ **Content-aware table columns + cell wrapping** — columns size to the widest
+  cell and wrap instead of overflowing a narrow pane.
+- ✅ **In-app updater (Ctrl+U)** — GitHub Releases list, install any version, modes
+  notify/auto-update/pin (`core/release_info` for parse + version compare).
+
 Remaining roadmap (not yet done):
 - Smarter fence re-trigger suppression on the closing ```
 - Incremental relayout on edit (currently full relayout per keystroke — fine for now)
 - Off-thread / debounced parse
-- Content-aware table columns + cell wrapping
-- DirectWrite renderer; RichEdit editor; find-in-doc (Ctrl+F); TOC sidebar
+- DirectWrite renderer; RichEdit editor
 - Selection in the editor pane already works (native EDIT control)
+
+> **macOS port.** The parser, edit helpers, layout, find/selection, and release
+> logic now live in a shared `core/` consumed by a native AppKit frontend
+> (`frontends/macos/`). Remaining-work tracker:
+> [docs/macos-implementation-guide.md](../docs/macos-implementation-guide.md#remaining-work).
 
 ## Open bugs
 _(none)_
 
 ## Resolved
+- Windows was missing the "launched with no file" open-dialog that macOS already
+  has (2026-07-14 — regression/parity gap, not new in this port): `app.mm`'s
+  `applicationDidFinishLaunching` shows an `NSOpenPanel` when launched without a
+  file; the Win32 `Run()` just opened a blank window. Added `PickFileToOpen`
+  (`GetOpenFileNameW`, `comdlg32` — new link dependency in `build.ps1`), wired in
+  right before window creation (after the headless `--dump`/`--parse-dump`/bench
+  early-returns, so CLI/test invocations that intentionally pass no file are
+  unaffected). Initial folder: the last folder a file was opened from
+  (`Prefs.lastOpenDir`, persisted to `prefs.txt` the same way as `dark`/`split`/
+  `zoom`), falling back to `%USERPROFILE%\Downloads` the first run or if that
+  folder no longer exists. Cancelling falls through to the existing blank-window
+  path (mirrors macOS's `else { ensureWindow(); }`). Verified: clean build
+  (0 warnings), on-screen capture of the dialog confirms it opens to Downloads
+  with the Markdown filter active, and a standalone round-trip check of the new
+  `lastOpenDir` (de)serialization (ASCII path, a path near the old 128-byte
+  buffer limit, a non-ASCII path, and the empty/first-run case — all against a
+  scratch `%APPDATA%`, not the real prefs file) all pass. Not verified live:
+  actually driving the picker to select a file end-to-end — this dev sandbox
+  can't inject keystrokes into a native modal common dialog (`SendKeys`/
+  `AppActivate` don't land focus in it), so "pick a file → main window opens
+  with it → `lastdir` updates to that folder" wants one manual pass on a real
+  desktop.
+- Double-click word model: trailing punctuation now trims (2026-07-14) — sign-off
+  decided in favor of trimming (`today.` selects `today`, not `today.`). Changed in
+  `core/text_select.cpp`'s `DoubleClickSpan` so both frontends get it; an
+  all-punctuation token (e.g. an isolated `...`) is left intact rather than
+  emptied. New cases in `tests/text_select_test.cpp`; core suite still `ALL PASS`.
+- Windows-verification "honest holes" closed (2026-07-14): the manual checklist's
+  five gaps that code review alone couldn't close are now driven live via
+  `run-tests.ps1` — editor-pane sync on checkbox click (Ctrl+E), a plain click
+  starting no text selection, hit-testing at 150% zoom (glyph x offset scales with
+  zoom), and a live `SetWindowPos`-driven window resize (not just `--dump` PNGs) on
+  the table-reflow doc. Full suite: 93/93.
+- Preview click/selection hit-testing ignored the scroll offset (2026-07-14): `LinkAt`,
+  `PointToSel`, and the new `ToggleTaskAt` compared the raw client y against
+  document-space rects, so links/selection/checkboxes only hit correctly at
+  `scrollY == 0` — scrolled down, a click toggled the wrong checkbox and drags grabbed
+  the wrong line. Pre-existing for links/selection; the checkbox code inherited it by
+  mirroring `LinkAt`. Fix: convert client→document y (`clientY + g_scrollY`) in all
+  three hit-testers (matches macOS, whose `logicalPoint` already gets this from
+  `NSScrollView`). Guarded by two new scrolled-click cases in `run-tests.ps1`; the
+  stale "scroll-adjusted" comments in `render.h` were corrected. Empirically verified
+  (scrolled drag copies the visible line; scrolled click toggles the visible checkbox).
 - LF-only text ran together in the EDIT control → convert LF→CRLF when populating editor (EDIT only breaks on CRLF).
 - ClearType color fringing in offscreen/double-buffered text → ANTIALIASED_QUALITY fonts.
 - Spurious spaces before punctuation after styled spans → track real source spaces per word.
@@ -119,6 +175,41 @@ _(none)_
 - WM_PRINTCLIENT bypasses WM_CTLCOLOREDIT (PrintWindow showed light editor in dark mode) — testing artifact only; real on-screen grab confirmed correct dark theming.
 
 ## Notes / decisions
+- Final-pass review fixes (2026-07-11): a medium-depth review before declaring
+  the port/rewrite/refactor done surfaced two issues, both fixed and tested.
+  (1) A failed editor save was silent and, via Save & Close, discarded the
+  unsaved edits when a reopen reloaded from disk. Save now reports the error and
+  Save & Close keeps the editor open on failure — on both platforms (macOS
+  `reportSaveFailure`/`writeDocToDisk`; Win32 `ReportSaveError`, and
+  `ID_SAVE_CLOSE` now toggles only when `SaveToFile()` succeeds). (2) macOS
+  `BenchLayoutRender` could paint into a NULL `CGContextRef` for a degenerate
+  size (`--bench-render --width 0`); it now guards like `RenderMarkdownToPng`.
+  New macOS checks cover the save-failure path (editor stays open, file intact)
+  and the success close; a `save-close` test command invokes `saveAndClose:`
+  directly since a synthetic Cmd+Shift+S can't be told apart from Cmd+S.
+- macOS live-UI suite landed (2026-07-11): `tests/run-tests.sh` is this
+  suite's AppKit analog — the app's `--test-drive` stdin channel executes
+  commands as real NSEvents with synchronous replies (no Accessibility
+  permission), so unlike the Windows UI suite it runs *gating* on hosted CI.
+  88 checks mirroring the sections below, incl. a full updater install E2E
+  against a localhost fixture server.
+- macOS in-app updater landed (2026-07-11): tagged releases now also carry
+  `FMDV-macos.zip` (CI `make dist`), `core/release_info` parses its asset URL
+  alongside `fmdv.exe` (`ReleaseInfo.macUrl`), and the AppKit frontend gained
+  the full Ctrl+U parity set — picker, auto-update/pin, download + bundle swap.
+  Windows code is unaffected beyond the extra (ignored) `macUrl` field.
+- `core/layout` migration landed (2026-07-11): the win32 layout now runs the
+  shared engine; `render.cpp` translates the core display list into its cached
+  GDI command list and paints as before. Two PNG-diff-gated steps on a real
+  Windows 11 desktop (MSYS2 UCRT64 g++ 16.1) — Step 2a routed metrics through
+  `GdiTextMeasurer` (display list unchanged), Step 2b swapped the layout body
+  for `fmdv::LayoutDocument`. `core/layout` was rewritten as an integer-exact
+  port of the GDI layout (Windows semantics are the reference: scaled `S()`
+  constants, floored divisions, content-aware table sizing + cell wrapping),
+  TOC anchors moved to `LayoutResult.blockTops`, zoom stays baked into metrics
+  via the `scale` parameter, and selection hit-testing still measures via GDI.
+  Gate held: byte-identical `--dump` output, 71/71 suite, bench
+  unchanged-or-better, first-paint within budget.
 - Portable MinGW unzipped locally on the original dev machine (MSI installers blocked by policy).
 - Testing relies on `--dump` PNG output since no screen access.
 - Coexists with the working Go/WebView2 build until P7; root `fmdv.exe` stays the

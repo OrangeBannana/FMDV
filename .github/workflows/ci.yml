@@ -31,6 +31,22 @@ jobs:
           if (-not (Test-Path cpp\fmdv.exe)) { throw "release exe missing" }
           if (-not (Test-Path cpp\fmdv_dbg.exe)) { throw "debug exe missing" }
 
+      # The same suites `make test` runs on macOS, but compiled with the
+      # Windows core string type (Str = std::wstring) — both 16-bit paths
+      # of core/str.h stay covered.
+      - name: Core unit tests (MinGW)
+        shell: pwsh
+        run: |
+          $gxx = "$env:RUNNER_TEMP\msys64\ucrt64\bin\g++.exe"
+          New-Item -ItemType Directory -Force build | Out-Null
+          $core = "core/str.cpp","core/markdown.cpp","core/edit_assist.cpp","core/release_info.cpp","core/layout.cpp","core/text_select.cpp"
+          foreach ($t in "str","markdown","edit_assist","release_info","layout","text_select","bench_log") {
+            & $gxx -std=c++17 -O2 -Wall -Wextra -Icore "tests/${t}_test.cpp" @core -o "build/${t}-test.exe"
+            if ($LASTEXITCODE) { throw "compile ${t}_test failed" }
+            & "build/${t}-test.exe"
+            if ($LASTEXITCODE) { throw "${t} tests failed" }
+          }
+
       - name: Headless checks (parser + renderer)
         shell: pwsh
         run: |
@@ -45,7 +61,25 @@ jobs:
           foreach ($f in 'light.png', 'dark.png', 'scroll.png') {
             if (-not (Test-Path $f) -or (Get-Item $f).Length -lt 1500) { throw "render failed: $f" }
           }
+          $env:FMDV_BENCH_LOG = "$env:RUNNER_TEMP\fmdv-bench.csv"
+          $env:FMDV_BENCH_LABEL = "ci-headless"
+          & .\cpp\fmdv_dbg.exe test.md --bench-render --width 900 --viewport 500 --scroll-runs 5 | Out-Null
+          $bench = Get-Content $env:FMDV_BENCH_LOG -Raw
+          foreach ($want in 'layout_once', 'paint_viewport_avg', 'scroll_paint_avg') {
+            if ($bench -notmatch $want) { throw "bench log missing: $want" }
+          }
+          # Surface the win32 layout/render rows for the Windows-vs-macOS comparison
+          # (bench/results/README.md). GUI first-paint still needs a real desktop.
+          Write-Host "---- win32 headless bench rows ----"
+          Write-Host $bench
+          Copy-Item $env:FMDV_BENCH_LOG win32-bench.csv
           Write-Host "headless checks OK"
+
+      - name: Upload win32 bench CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: win32-bench
+          path: win32-bench.csv
 
       # The full suite drives live windows (selection, clipboard, autocomplete).
       # It usually works on Windows runners but is inherently flakier than the
@@ -63,10 +97,122 @@ jobs:
           name: fmdv
           path: cpp/fmdv.exe
 
+  # Proves the platform-neutral core + CLI build off Windows (macOS impl guide,
+  # "Build System and CI"). Not a release gate — the Windows job ships the exe.
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CLI (clang)
+        run: make cli
+
+      - name: Unit tests
+        run: make test
+
+      - name: Build via CMake
+        run: |
+          cmake -B build-cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cmake
+          ./build-cmake/fmdv-cli vercmp v1.10.0 v1.9.9 | grep -qx 1 || { echo "cmake build broken"; exit 1; }
+
+      - name: Parser parity + bench smoke
+        run: |
+          out=$(./build/fmdv-cli parse test.md)
+          for want in 'Heading level=1' 'CodeBlock lang=python' 'Table' 'BlockQuote' 'HRule' 'link=https://github.com'; do
+            echo "$out" | grep -qF "$want" || { echo "parse-dump missing: $want"; exit 1; }
+          done
+          FMDV_BENCH_LOG=build/bench.csv FMDV_BENCH_LABEL=ci-macos \
+            ./build/fmdv-cli bench-parse test.md --runs 50
+          test -s build/bench.csv || { echo "bench log not written"; exit 1; }
+          test "$(./build/fmdv-cli suggest --line '**')" = "caret=0 text=**" || { echo "suggest failed"; exit 1; }
+          ./build/fmdv-cli table --cols 2 --rows 1 | grep -q '| Column 1 | Column 2 |' || { echo "table failed"; exit 1; }
+          test "$(./build/fmdv-cli vercmp v1.10.0 v1.9.9)" = "1" || { echo "vercmp failed"; exit 1; }
+          test "$(./build/fmdv-cli vercmp 1.0 1.0.0)" = "0" || { echo "vercmp eq failed"; exit 1; }
+          ./build/fmdv-cli layout test.md | grep -qE 'content_height=[1-9]' || { echo "layout failed"; exit 1; }
+          echo "macOS CLI checks OK"
+
+      - name: Build + render macOS frontend (CoreText -> PNG)
+        run: |
+          make macos
+          ./build/fmdv-macos --dump test.md light.png --width 900
+          ./build/fmdv-macos --dump test.md dark.png --width 900 --dark
+          file light.png | grep -q 'PNG image data' || { echo "png not produced"; exit 1; }
+          test "$(stat -f%z light.png)" -gt 3000 || { echo "png too small"; exit 1; }
+          FMDV_BENCH_LOG=mac-bench.csv ./build/fmdv-macos --bench-render test.md --width 900 --runs 20
+          grep -q 'macos,macos,.*layout_once' mac-bench.csv || { echo "bench schema wrong"; exit 1; }
+          echo "---- macos bench rows ----"; cat mac-bench.csv
+          echo "macOS render OK"
+
+      - name: Upload macos bench CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-bench
+          path: mac-bench.csv
+
+      # Live-UI suite: drives the real AppKit app through its --test-drive
+      # stdin channel (real NSEvents, synchronous replies — no TCC permission
+      # needed, so it runs on hosted runners). The updater section runs
+      # entirely against a localhost fixture server; no live GitHub calls.
+      - name: Live UI suite (test driver)
+        run: ./tests/run-tests.sh
+
+      # Signed with Developer ID when the MACOS_* secrets are configured;
+      # falls back to an ad-hoc signature otherwise (runs locally, Gatekeeper
+      # warns on other machines). Notarization is a follow-up once the
+      # Developer ID cert exists — see scripts/notarize.sh.
+      - name: Build .app bundle + release zip + dmg
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}          # base64 of the .p12 export
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }} # .p12 passphrase
+          SIGN_ID: ${{ secrets.MACOS_SIGN_ID }}             # "Developer ID Application: ..."
+        run: |
+          if [ -n "$CERT_P12" ] && [ -n "$SIGN_ID" ]; then
+            echo "$CERT_P12" | base64 -d > cert.p12
+            security create-keychain -p ci ci.keychain
+            security default-keychain -s ci.keychain
+            security unlock-keychain -p ci ci.keychain
+            security import cert.p12 -k ci.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -s -k ci ci.keychain >/dev/null
+            rm cert.p12
+            make dist FMDV_SIGN_ID="$SIGN_ID"
+          else
+            echo "MACOS_CERT_P12 / MACOS_SIGN_ID secrets not set — ad-hoc signing"
+            make dist
+          fi
+          test -f build/FMDV.app/Contents/MacOS/FMDV || { echo "app binary missing"; exit 1; }
+          test -f build/FMDV.app/Contents/Resources/AppIcon.icns || { echo "icon missing"; exit 1; }
+          plutil -lint build/FMDV.app/Contents/Info.plist
+          codesign --verify build/FMDV.app
+          # Bundle version must match the binary's version.h so the in-app
+          # updater's "is this newer?" compare agrees with the release tag.
+          v=$(awk -F'"' '/define FMDV_VERSION_STR/{print $2}' cpp/version.h)
+          pv=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/FMDV.app/Contents/Info.plist)
+          test "$v" = "$pv" || { echo "version drift: version.h=$v plist=$pv"; exit 1; }
+          test -f build/FMDV-macos.zip || { echo "release zip missing"; exit 1; }
+          # Human-facing drag-to-Applications installer (packs the same signed
+          # .app; the zip stays the updater's payload).
+          make dmg
+          test -f build/FMDV-macos.dmg || { echo "release dmg missing"; exit 1; }
+          hdiutil verify build/FMDV-macos.dmg
+          echo ".app bundle + zip + dmg OK"
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fmdv-macos
+          path: |
+            build/FMDV-macos.zip
+            build/FMDV-macos.dmg
+
+  # Windows is the primary shipping platform: a macOS runner failure must not
+  # block a release. build-macos stays in `needs` (so its artifact is ready
+  # if it succeeded), but the job only requires `build` to succeed, and the
+  # macOS download step is best-effort.
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/tags/v') && !cancelled() && needs.build.result == 'success'
+    needs: [build, build-macos]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -74,8 +220,18 @@ jobs:
         with:
           name: fmdv
 
-      - name: Attach exe to release
+      - name: Download macOS artifacts (best-effort)
+        if: needs.build-macos.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: fmdv-macos
+
+      - name: Attach binaries to release
         uses: softprops/action-gh-release@v2
         with:
-          files: fmdv.exe
+          files: |
+            fmdv.exe
+            FMDV-macos.zip
+            FMDV-macos.dmg
           generate_release_notes: true
+          fail_on_unmatched_files: false

@@ -5,16 +5,27 @@
 #include "markdown.h"
 #include "theme.h"
 
-// A clickable link rectangle recorded during an on-screen draw pass.
-// rc is in the render buffer's coordinate space (origin 0,0), already
-// adjusted for scroll. Callers offset by the preview pane's left edge.
+// A clickable link rectangle recorded during layout.
+// rc is in DOCUMENT space (y is the document coordinate, NOT scroll-adjusted;
+// PaintDocument offsets by scrollY at draw time). Hit-testers map a client point
+// into document space first: subtract the preview pane's left edge from x and
+// add the current scroll offset to y.
 struct LinkHit {
     RECT rc;
     std::wstring href;
 };
 
+// A clickable task-list checkbox. rc is in DOCUMENT space (not scroll-adjusted,
+// like LinkHit). srcLine is the 0-based source line of the item so the caller can
+// toggle its "[ ]"/"[x]" marker; state is 0 unchecked / 1 checked.
+struct TaskHit {
+    RECT rc;
+    int srcLine = -1;
+    int state = 0;
+};
+
 // An ordered run of drawn text (one TextOut group), used for selection +
-// copy. rc is in buffer coords (scroll-adjusted). Frags are appended in
+// copy. rc is in DOCUMENT space (not scroll-adjusted). Frags are appended in
 // reading order each paint, so indices are stable while layout is unchanged.
 struct TextFrag {
     RECT rc;
@@ -51,9 +62,12 @@ int FragXAtChar(HDC hdc, const TextFrag& f, int ch);
 // `blockTops`, if non-null, is filled with one entry per doc.blocks[i]: the
 // document-space y coordinate that block starts at. Used by the TOC sidebar
 // to scroll to a heading without re-measuring the whole document.
+// `taskHits`, if non-null, is filled with one entry per task-list checkbox for
+// click-to-toggle.
 int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
                    std::vector<LinkHit>* links, std::vector<TextFrag>* frags,
-                   std::vector<int>* blockTops = nullptr);
+                   std::vector<int>* blockTops = nullptr,
+                   std::vector<TaskHit>* taskHits = nullptr);
 
 // Paint the cached display list, culled to the viewport [scrollY, scrollY+clientH],
 // plus the current selection highlight. Cheap enough to call every frame/scroll.

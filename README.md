@@ -47,6 +47,23 @@ app* → browse to `fmdv.exe` → *Always*. Put the exe somewhere stable first
 - **Ctrl+F** find in doc: highlights all matches, Enter/Shift+Enter step
   through them (wraps around).
 
+## macOS port (in progress)
+A native macOS frontend is being built on a shared, platform-neutral `core/`
+(parser, edit helpers, layout, find/selection) with an AppKit +
+CoreText/CoreGraphics UI — no browser engine, same priorities as the Windows
+app. It currently opens files and renders (light/dark), scrolls, zooms,
+selects/copies, follows links, finds (**⌘F**), shows a TOC sidebar
+(**⌘⇧O**), and has a split editor (**⌘E**) with ghost-text autocomplete, list
+continuation, and table insert (**⌘T**). It also reloads on external file
+changes and persists dark/zoom/split across launches. CI builds the CLI, the
+`.app`, and renders fixtures on `macos-latest`.
+
+Not yet at full parity: the **updater** has no in-app install — it checks GitHub
+on launch and shows a passive "update available" banner (⌘U for details), but
+auto-update/pin/install need the pending packaging work (signing/notarization,
+a macOS release artifact). The complete tracker is in
+[docs/macos-implementation-guide.md](docs/macos-implementation-guide.md#remaining-work).
+
 ## Source & build
 The app is in [`cpp/`](cpp/) — see [cpp/README.md](cpp/README.md) for build
 details, headless test/inspection flags, and source layout.
@@ -58,6 +75,12 @@ cd cpp
 powershell -File tests\run-tests.ps1          # 73-check suite
 powershell -File tests\run-tests-hidden.ps1   # same, windows kept off-screen
 ```
+
+The shared `core/` has its own unit-test suites in [`tests/`](tests/) (parser,
+layout, edit helpers, release parsing, string conversion, find/selection,
+bench logging — ~240 checks, ≈98% line coverage of `core/`). Run them with
+`make test` (macOS/Linux) or `ctest` after a CMake build; CI runs them on both
+Windows (MinGW) and macOS.
 
 Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 `ucrt64`): have `g++` on `PATH`, set `FMDV_MINGW` to the toolchain's `bin`

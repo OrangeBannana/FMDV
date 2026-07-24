@@ -11,7 +11,19 @@ fmdv*.exe
 # Local scratch builds for manual testing (not part of the repo)
 /test-builds/
 
+# CLI/core build output (portable Makefile + CMake) and raw benchmark logs
+# (only the bench/results summary markdown is committed, not raw CSVs)
+/build/
+/build-cmake/
+bench/results/*.csv
+
 # OS / OneDrive cruft
 Thumbs.db
 desktop.ini
 *.tmp
+
+# Local agent session config
+/.claude/
+
+# OS / macOS cruft
+.DS_Store

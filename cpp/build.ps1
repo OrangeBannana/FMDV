@@ -19,11 +19,14 @@ try {
 & windres fmdv.rc -O coff -o fmdv_res.o
 if ($LASTEXITCODE -ne 0) { Write-Host "windres FAILED"; exit 1 }
 
-$srcs = @("fmdv.cpp", "markdown.cpp", "render.cpp", "prefs.cpp", "updater.cpp")
+# Shared platform-neutral core lives in ..\core (see docs/macos-implementation-guide.md).
+$srcs = @("fmdv.cpp", "render.cpp", "prefs.cpp", "updater.cpp", "bench.cpp",
+          "..\core\str.cpp", "..\core\markdown.cpp", "..\core\edit_assist.cpp", "..\core\release_info.cpp",
+          "..\core\layout.cpp", "..\core\text_select.cpp")
 
 $common = @(
-    "-municode", "-std=c++17", "-Wall", "-Wextra",
-    "-lgdi32", "-lgdiplus", "-lcomctl32", "-luser32", "-lshell32", "-lole32", "-ldwmapi", "-lwinhttp"
+    "-municode", "-std=c++17", "-Wall", "-Wextra", "-I..\core",
+    "-lgdi32", "-lgdiplus", "-lcomctl32", "-luser32", "-lshell32", "-lole32", "-ldwmapi", "-lwinhttp", "-lcomdlg32"
 )
 
 if ($Debug) {

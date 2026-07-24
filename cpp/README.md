@@ -54,6 +54,11 @@ Requires MinGW-w64 (GCC, UCRT — [winlibs](https://winlibs.com/) or MSYS2
 .\fmdv.exe file.md --dump out.png --width 900 --viewport 600 --scroll 300
 # Dump the parsed document model (debug build):
 .\fmdv_dbg.exe file.md --parse-dump
+# Structured benchmark log (debug build):
+$env:FMDV_BENCH_LOG = "..\bench\results\windows-baseline.csv"
+$env:FMDV_BENCH_LABEL = "pre-core-split"
+.\fmdv_dbg.exe ..\test.md --bench-startup --width 900 --height 700
+.\fmdv_dbg.exe ..\test.md --bench-render --width 900 --viewport 700 --scroll-runs 200
 # Capture the live window (incl. editor) via PrintWindow:
 .\tests\capture.ps1 -Exe .\fmdv.exe -File ..\test.md -Out shot.png -Command 2001
 # Updater (debug build): offline unit checks / live API / real download+swap
@@ -78,9 +83,23 @@ windows over whatever else you're doing.
 Put `fmdv.exe` somewhere stable first (e.g. `%LOCALAPPDATA%\Programs\FMDV\`).
 
 ## Source layout
+This directory is the Win32 frontend; the platform-neutral parts live in
+[`../core/`](../core/) and are shared with the CLI and the macOS app
+([`../frontends/macos/`](../frontends/macos/)). See
+[../docs/macos-implementation-guide.md](../docs/macos-implementation-guide.md).
+
 - `fmdv.cpp` — WinMain, window/message loop, input, editor, scrolling, PNG dump
-- `markdown.h/.cpp` — parser (text → Document)
-- `render.h/.cpp` — font cache + layout/draw engine
+- `render.h/.cpp` — font cache, GDI text measurer, core-display-list → GDI
+  translation, viewport-culled painting, selection hit-testing
 - `prefs.h/.cpp` — preference persistence
 - `theme.h` — light/dark palettes
+- `updater.h/.cpp` — GitHub API fetch + in-place exe swap
 - `fmdv.rc` — icon + version resource
+
+Shared core (`../core/`):
+- `markdown.h/.cpp` — parser (text → Document)
+- `layout.h/.cpp` — layout engine (Document → draw commands); shared with the
+  macOS frontend, measured through a per-frontend `TextMeasurer`
+- `edit_assist.h/.cpp` — autocomplete, list continuation, table generation
+- `release_info.h/.cpp` — release JSON parsing + version comparison
+- `bench_log.h` — structured benchmark logging schema

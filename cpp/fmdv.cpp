@@ -2,6 +2,8 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <commdlg.h>
 #include <dwmapi.h>
 #include <commctrl.h>
 #include <objidl.h>
@@ -9,14 +11,18 @@
 #include <cstdio>
 #include <cstdlib>
 #include <climits>
+#include <cstring>
 #include <string>
 #include <vector>
 #include "theme.h"
 #include "markdown.h"
+#include "text_select.h"
+#include "edit_assist.h"
 #include "render.h"
 #include "prefs.h"
 #include "updater.h"
 #include "version.h"
+#include "bench.h"
 
 #ifndef DWMWA_TRANSITIONS_FORCEDISABLED
 #define DWMWA_TRANSITIONS_FORCEDISABLED 3
@@ -81,6 +87,41 @@ static bool ReadFileUtf8(const std::wstring& path, std::wstring& out) {
     std::wstring norm; norm.reserve(w.size());
     for (wchar_t c : w) { if (c != L'\r') norm += c; }
     out.swap(norm);
+    return true;
+}
+
+// Directory the "Open" dialog should start in: the last folder a file was
+// opened from (persisted in prefs), falling back to Downloads the first time
+// or if that folder no longer exists.
+static std::wstring InitialOpenDir() {
+    if (!g_prefs.lastOpenDir.empty() &&
+        (GetFileAttributesW(g_prefs.lastOpenDir.c_str()) & FILE_ATTRIBUTE_DIRECTORY))
+        return g_prefs.lastOpenDir;
+    wchar_t profile[MAX_PATH];
+    if (SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, SHGFP_TYPE_CURRENT, profile) == S_OK) {
+        std::wstring downloads = std::wstring(profile) + L"\\Downloads";
+        if (GetFileAttributesW(downloads.c_str()) & FILE_ATTRIBUTE_DIRECTORY) return downloads;
+    }
+    return L""; // let the dialog fall back to its own default
+}
+
+// Launched with no file argument: ask which one to open (mirrors the macOS
+// NSOpenPanel shown in applicationDidFinishLaunching for the same case).
+// Returns false if the user cancels.
+static bool PickFileToOpen(std::wstring& outPath) {
+    wchar_t fileBuf[MAX_PATH] = L"";
+    std::wstring initialDir = InitialOpenDir();
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"Markdown Files\0*.md;*.markdown;*.mdown;*.mkd\0All Files\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = fileBuf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrInitialDir = initialDir.empty() ? nullptr : initialDir.c_str();
+    ofn.lpstrTitle = L"Open Markdown File";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return false;
+    outPath = fileBuf;
     return true;
 }
 
@@ -200,6 +241,92 @@ static int g_contentH = 0;   // total laid-out document height
 static int g_clientH = 0;    // current client area height
 static int g_clientW = 0;
 
+// --- structured benchmark logging (cpp/bench.{h,cpp}: a plain-parameter
+// module, like render.cpp/updater.cpp, rather than one reaching into these
+// globals) ---
+static bool g_benchStartup = false;
+static int g_benchWindowW = 1100;
+static int g_benchWindowH = 800;
+static bool g_firstLayoutLogged = false;
+
+// Passes the caller's current-document state explicitly since BenchLog()
+// holds no app globals of its own.
+static void BenchLog(const char* event, double durationMs, int width, int height,
+                     int contentH, const char* notes) {
+    ::BenchLog(event, durationMs, width, height, contentH, notes, g_filePath, g_dark, g_doc.blocks.size());
+}
+
+#ifdef FMDV_CONSOLE
+static int RunBenchRender(int width, int viewportH, int scrollRuns) {
+    if (width <= 0) width = 1000;
+    if (viewportH <= 0) viewportH = 800;
+    if (scrollRuns <= 0) scrollRuns = 1;
+
+    SetFontQuality(ANTIALIASED_QUALITY);
+    Theme th = g_dark ? DarkTheme() : LightTheme();
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    if (!screen || !mem) {
+        if (mem) DeleteDC(mem);
+        if (screen) ReleaseDC(nullptr, screen);
+        return 2;
+    }
+
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = width;
+    bi.bmiHeader.biHeight = -viewportH;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!dib) {
+        DeleteDC(mem);
+        ReleaseDC(nullptr, screen);
+        return 2;
+    }
+    HBITMAP oldBmp = (HBITMAP)SelectObject(mem, dib);
+
+    std::vector<TextFrag> frags;
+    double t0 = NowMs();
+    int contentH = LayoutDocument(mem, width, g_doc, th, nullptr, &frags);
+    double layoutMs = NowMs() - t0;
+    BenchLog("layout_once", layoutMs, width, viewportH, contentH, "duration");
+
+    auto paintOnce = [&](int scroll) {
+        RECT full{0, 0, width, viewportH};
+        HBRUSH bg = CreateSolidBrush(th.bg);
+        FillRect(mem, &full, bg);
+        DeleteObject(bg);
+        PaintDocument(mem, scroll, width, viewportH, th, nullptr, frags);
+    };
+
+    double t1 = NowMs();
+    for (int i = 0; i < scrollRuns; i++) paintOnce(0);
+    double viewportMs = (NowMs() - t1) / scrollRuns;
+    BenchLog("paint_viewport_avg", viewportMs, width, viewportH, contentH, "duration");
+
+    double t2 = NowMs();
+    for (int i = 0; i < scrollRuns; i++) {
+        int scroll = (contentH > viewportH) ? (i * (contentH - viewportH) / scrollRuns) : 0;
+        paintOnce(scroll);
+    }
+    double scrollMs = (NowMs() - t2) / scrollRuns;
+    BenchLog("scroll_paint_avg", scrollMs, width, viewportH, contentH, "duration");
+
+    wprintf(L"blocks=%zu contentH=%d layout_once=%.2f ms paint_viewport_avg=%.3f ms scroll_paint_avg(%d)=%.3f ms\n",
+            g_doc.blocks.size(), contentH, layoutMs, viewportMs, scrollRuns, scrollMs);
+
+    SelectObject(mem, oldBmp);
+    DeleteObject(dib);
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    FreeFontCache();
+    return 0;
+}
+#endif
+
 // --- editor state (P6) ---
 static bool g_editing = false;
 static HWND g_hEdit = nullptr;
@@ -251,6 +378,8 @@ static void ApplyScale() { SetRenderScale((g_zoomPct / 100.0) * (g_dpi / 96.0));
 
 // clickable links recorded during the last on-screen paint (buffer coords)
 static std::vector<LinkHit> g_links;
+// clickable task-list checkboxes from the last layout (same coord space as links)
+static std::vector<TaskHit> g_taskHits;
 
 // text selection state
 static std::vector<TextFrag> g_frags;   // drawn text runs from the last paint
@@ -305,12 +434,14 @@ static void FreeBackBuffer() {
     g_backW = g_backH = 0;
 }
 
-// Return the href under a client point, or empty. Link rects are in preview-buffer
-// coords (x from 0), so subtract the preview pane's left edge.
+// Return the href under a client point, or empty. Link rects are in document
+// space (y not scroll-adjusted; see render.cpp), so map the client point into
+// document space: subtract the preview pane's left edge from x, add g_scrollY to y.
 static std::wstring LinkAt(int clientX, int clientY) {
     int bx = clientX - PreviewLeft();
+    int by = clientY + g_scrollY;
     for (const auto& l : g_links)
-        if (bx >= l.rc.left && bx < l.rc.right && clientY >= l.rc.top && clientY < l.rc.bottom)
+        if (bx >= l.rc.left && bx < l.rc.right && by >= l.rc.top && by < l.rc.bottom)
             return l.href;
     return L"";
 }
@@ -347,22 +478,15 @@ static SelPoint PointToSel(HWND hwnd, int clientX, int clientY) {
     return sp;
 }
 
-static bool IsWordChar(wchar_t c) { return iswalnum(c) || c == L'_'; }
-
-// Select the word under a client point (double-click).
+// Select the word under a client point (double-click). Shared with the macOS
+// frontend via core: selects the word, or the words inside an enclosing
+// double-quoted phrase ("..." or “...”). Triple-click selects the whole line.
 static void SelectWordAt(HWND hwnd, int x, int y) {
     SelPoint sp = PointToSel(hwnd, x, y);
     if (sp.frag < 0 || sp.frag >= (int)g_frags.size()) return;
-    const std::wstring& t = g_frags[sp.frag].text;
-    int a = sp.ch, b = sp.ch;
-    if (a > (int)t.size()) a = b = (int)t.size();
-    while (a > 0 && IsWordChar(t[a-1])) a--;
-    while (b < (int)t.size() && IsWordChar(t[b])) b++;
-    if (a == b) { // not on a word char — select the single char
-        if (b < (int)t.size()) b++;
-    }
-    g_sel.a = SelPoint{ sp.frag, a };
-    g_sel.b = SelPoint{ sp.frag, b };
+    fmdv::WordSpan w = fmdv::DoubleClickSpan(g_frags[sp.frag].text, sp.ch);
+    g_sel.a = SelPoint{ sp.frag, (int)w.start };
+    g_sel.b = SelPoint{ sp.frag, (int)w.end };
     g_sel.active = true;
     InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -474,7 +598,14 @@ static void UpdateLayout(HWND hwnd, bool redrawScrollbar) {
     g_sel.active = false; // re-layout invalidates fragment indices
     if (g_editing) { ClampSplit(); PositionEdit(); }
     HDC dc = GetDC(hwnd);
-    g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags, &g_blockTops);
+    bool logFirstLayout = BenchLogActive() && !g_firstLayoutLogged;
+    double layoutStart = NowMs();
+    if (logFirstLayout) BenchLog("first_layout_start", layoutStart, PreviewWidth(), g_clientH, g_contentH, "elapsed");
+    g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags, &g_blockTops, &g_taskHits);
+    if (logFirstLayout) {
+        g_firstLayoutLogged = true;
+        BenchLog("first_layout_done", NowMs() - layoutStart, PreviewWidth(), g_clientH, g_contentH, "duration");
+    }
     ReleaseDC(hwnd, dc);
 
     g_toc.clear();
@@ -524,6 +655,34 @@ static void ReparseFromEdit(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// Atomically write `text` (LF endings) to the open file as UTF-8.
+static bool WriteTextToFile(const std::wstring& text) {
+    if (g_filePath.empty()) return false;
+    int need = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0, nullptr, nullptr);
+    std::vector<char> utf8(need);
+    if (need) WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), utf8.data(), need, nullptr, nullptr);
+    // Write to a temp file and swap it into place: writing the target with
+    // CREATE_ALWAYS truncates first, so a crash or full disk mid-write would
+    // destroy the document. Same pattern the updater uses for the exe swap.
+    std::wstring tmp = g_filePath + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD wr = 0;
+    BOOL wok = utf8.empty() ? TRUE : WriteFile(h, utf8.data(), (DWORD)utf8.size(), &wr, nullptr);
+    wok = wok && wr == (DWORD)utf8.size() && FlushFileBuffers(h);
+    CloseHandle(h);
+    if (!wok) { DeleteFileW(tmp.c_str()); return false; }
+    // ReplaceFileW keeps the target's attributes/ACLs but requires it to
+    // exist; fall back to a plain move if the file vanished since load.
+    if (!ReplaceFileW(g_filePath.c_str(), tmp.c_str(), nullptr, 0, nullptr, nullptr) &&
+        !MoveFileExW(tmp.c_str(), g_filePath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(tmp.c_str());
+        return false;
+    }
+    g_fileTime = FileMtime(g_filePath); // don't let our own write trigger a live-reload
+    return true;
+}
+
 // Write current edit text (or g_rawText) back to the file as UTF-8 (LF endings).
 static bool SaveToFile() {
     if (g_filePath.empty()) return false;
@@ -538,16 +697,38 @@ static bool SaveToFile() {
         text = norm;
         g_rawText = norm;
     }
-    int need = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0, nullptr, nullptr);
-    std::vector<char> utf8(need);
-    if (need) WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), utf8.data(), need, nullptr, nullptr);
-    HANDLE h = CreateFileW(g_filePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    DWORD wr = 0;
-    if (!utf8.empty()) WriteFile(h, utf8.data(), (DWORD)utf8.size(), &wr, nullptr);
-    CloseHandle(h);
-    g_fileTime = FileMtime(g_filePath); // don't let our own write trigger a live-reload
-    return true;
+    return WriteTextToFile(text);
+}
+
+// Toggle the task-list checkbox under a client point, if one is there. Returns
+// true if a checkbox was hit (the click is consumed). Rewrites the item's source
+// line, persists, and refreshes — mirrors LinkAt's coordinate handling.
+static bool ToggleTaskAt(HWND hwnd, int clientX, int clientY) {
+    int bx = clientX - PreviewLeft();
+    int by = clientY + g_scrollY;   // task rects are document-space; convert client->doc y
+    for (const auto& t : g_taskHits) {
+        if (bx < t.rc.left || bx >= t.rc.right || by < t.rc.top || by >= t.rc.bottom) continue;
+        if (t.srcLine < 0) return true;                       // consumed; nothing to toggle
+        std::wstring out = fmdv::ToggleTaskAtLine(g_rawText, t.srcLine);
+        if (out == g_rawText) return true;                    // not a task line after all
+        if (!WriteTextToFile(out)) { MessageBeep(MB_ICONWARNING); return true; }
+        g_rawText = out;
+        if (g_editing && g_hEdit) SetWindowTextW(g_hEdit, out.c_str()); // keep the editor in sync
+        g_doc = ParseMarkdown(out);                          // refresh explicitly (not reliant on EN_CHANGE)
+        UpdateLayout(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+    return false;
+}
+
+// A failed save must be visible and non-destructive: surface the error and (for
+// Save & Close) keep the editor open so the unsaved edits aren't lost.
+static void ReportSaveError(HWND hwnd) {
+    MessageBoxW(hwnd,
+        L"FMDV couldn't write the file. Check its permissions and free disk "
+        L"space; your edits are still open in the editor.",
+        L"Couldn't save the file", MB_OK | MB_ICONWARNING);
 }
 
 // ---------------- markdown autocomplete (ghost text) ----------------
@@ -562,52 +743,8 @@ static int g_ghostCaret = 0;       // caret offset into the suggestion after com
 static HFONT g_ghostFont = nullptr;
 static int g_editMarginX = 14;     // must match PositionEdit's EM_SETRECT left inset
 
-struct Sugg { std::wstring text; int caret; };
-
-// Given the current line text up to the caret, return a completion suggestion.
-// `caret` is where the caret lands (offset into text) after Tab-commit.
-static Sugg SuggestClose(const std::wstring& line) {
-    auto endsWith = [&](const wchar_t* d) {
-        size_t n = wcslen(d);
-        return line.size() >= n && line.compare(line.size() - n, n, d) == 0;
-    };
-    auto count = [&](const std::wstring& d) {
-        int c = 0; size_t p = 0;
-        while ((p = line.find(d, p)) != std::wstring::npos) { c++; p += d.size(); }
-        return c;
-    };
-    auto countCh = [&](wchar_t ch) { int c = 0; for (wchar_t x : line) if (x == ch) c++; return c; };
-
-    // fenced code block: only right after typing the opening ``` (no lang yet).
-    // close on its own line, caret on the blank middle line.
-    {
-        std::wstring t = line; size_t i = 0; while (i < t.size() && (t[i]==L' '||t[i]==L'\t')) i++;
-        if (t.substr(i) == L"```") return { L"\n\n```", 1 };
-    }
-    if (endsWith(L"**") && !endsWith(L"***") && (count(L"**") % 2)) return { L"**", 0 };
-    if (endsWith(L"__") && (count(L"__") % 2)) return { L"__", 0 };
-    if (endsWith(L"~~") && (count(L"~~") % 2)) return { L"~~", 0 };
-    if (endsWith(L"``") && !endsWith(L"```") && (count(L"``") % 2)) return { L"``", 0 };
-    if (endsWith(L"`") && !endsWith(L"``") && (count(L"`") % 2)) return { L"`", 0 };
-    if (endsWith(L"*") && !endsWith(L"**") && (countCh(L'*') % 2)) return { L"*", 0 };
-    if (endsWith(L"(") && (countCh(L'(') > countCh(L')'))) return { L")", 0 };
-    if (endsWith(L"[")) {
-        // context split: checkbox after a list marker, else a link
-        std::wstring rest = line.substr(0, line.size() - 1); // drop trailing '['
-        size_t i = 0; while (i < rest.size() && (rest[i]==L' '||rest[i]==L'\t')) i++;
-        bool listStart = false;
-        if (i < rest.size()) {
-            size_t j = i;
-            if (rest[j]==L'-'||rest[j]==L'*'||rest[j]==L'+') j++;
-            else { size_t d=j; while (d<rest.size() && iswdigit(rest[d])) d++; if (d>j && d<rest.size() && rest[d]==L'.') j=d+1; else j=rest.size()+1; }
-            if (j <= rest.size() && j < rest.size() && rest[j]==L' ') { listStart = (j+1 == rest.size()); }
-        }
-        if (listStart) return { L" ] ", 3 };          // "- [ ] |" checkbox, caret after
-        int ob = countCh(L'['), cb = countCh(L']');
-        if (ob > cb) return { L"]()", 0 };             // "[|]()" link, caret inside brackets
-    }
-    return {};
-}
+// The suggestion logic lives in core/edit_assist.h (fmdv::SuggestClose) so the
+// CLI and macOS frontends share it. This file keeps only the Win32 glue below.
 
 // Recompute the ghost suggestion from the editor's current caret + line.
 static void UpdateGhost() {
@@ -628,7 +765,7 @@ static void UpdateGhost() {
             if (atLineEnd) {
                 int ls = caret;
                 while (ls > 0 && text[ls-1] != L'\n') ls--;
-                Sugg sg = SuggestClose(text.substr(ls, caret - ls));
+                fmdv::Suggestion sg = fmdv::SuggestClose(text.substr(ls, caret - ls));
                 g_ghost = sg.text; g_ghostCaret = sg.caret;
             }
         }
@@ -677,37 +814,17 @@ static bool HandleListEnter() {
     int caret = (int)e;
     if (caret > (int)text.size()) return false;
     int ls = caret; while (ls > 0 && text[ls-1] != L'\n') ls--;
-    std::wstring line = text.substr(ls, caret - ls);
 
-    size_t i = 0; while (i < line.size() && (line[i]==L' '||line[i]==L'\t')) i++;
-    std::wstring indent = line.substr(0, i);
-    std::wstring marker, rest;
-
-    if (i < line.size() && (line[i]==L'-'||line[i]==L'*'||line[i]==L'+')
-        && i+1 < line.size() && line[i+1]==L' ') {
-        wchar_t bullet = line[i]; size_t after = i + 2;
-        if (line.compare(after, 4, L"[ ] ") == 0 || line.compare(after, 4, L"[x] ") == 0 ||
-            line.compare(after, 4, L"[X] ") == 0) {
-            marker = std::wstring(1, bullet) + L" [ ] "; rest = line.substr(after + 4);
-        } else {
-            marker = std::wstring(1, bullet) + L" "; rest = line.substr(after);
-        }
-    } else if (i < line.size() && iswdigit(line[i])) {
-        size_t d = i; while (d < line.size() && iswdigit(line[d])) d++;
-        if (d < line.size() && line[d]==L'.' && d+1 < line.size() && line[d+1]==L' ') {
-            int num = _wtoi(line.substr(i, d - i).c_str());
-            marker = std::to_wstring(num + 1) + L". "; rest = line.substr(d + 2);
-        } else return false;
-    } else return false;
-
-    std::wstring trimmed = rest;
-    while (!trimmed.empty() && (trimmed.back()==L' '||trimmed.back()==L'\t')) trimmed.pop_back();
-    if (trimmed.empty()) { // empty item -> end the list (clear the marker)
+    // Decision (which marker to continue, or to end the list) is shared core;
+    // the frontend applies it to the edit control (CRLF line endings).
+    fmdv::ListEnter le = fmdv::DecideListEnter(text.substr(ls, caret - ls));
+    if (!le.handled) return false;
+    if (le.endList) { // empty item -> clear the marker
         SendMessageW(g_hEdit, EM_SETSEL, ls, caret);
         SendMessageW(g_hEdit, EM_REPLACESEL, TRUE, (LPARAM)L"");
         return true;
     }
-    std::wstring ins = L"\r\n" + indent + marker;
+    std::wstring ins = L"\r\n" + le.continuation;
     SendMessageW(g_hEdit, EM_SETSEL, caret, caret);
     SendMessageW(g_hEdit, EM_REPLACESEL, TRUE, (LPARAM)ins.c_str());
     return true;
@@ -801,15 +918,9 @@ static void InsertTableMarkdown(int cols, int rows) {
     int len = GetWindowTextLengthW(g_hEdit);
     std::wstring all(len + 1, L'\0'); GetWindowTextW(g_hEdit, &all[0], len + 1); all.resize(len);
     if (e > 0 && e <= (DWORD)all.size() && all[e-1] != L'\n') t += L"\r\n";
-    t += L"|";
-    for (int c = 0; c < cols; c++) t += L" Column " + std::to_wstring(c + 1) + L" |";
-    t += L"\r\n|";
-    for (int c = 0; c < cols; c++) t += L" --- |";
-    t += L"\r\n";
-    for (int r = 0; r < rows; r++) {
-        t += L"|";
-        for (int c = 0; c < cols; c++) t += L"   |";
-        t += L"\r\n";
+    // Core builds the table with LF; the edit control wants CRLF.
+    for (wchar_t c : fmdv::MakeTableMarkdown(cols, rows)) {
+        if (c == L'\n') t += L"\r\n"; else t += c;
     }
     SendMessageW(g_hEdit, EM_REPLACESEL, TRUE, (LPARAM)t.c_str());
 }
@@ -1023,6 +1134,7 @@ static std::vector<ReleaseInfo> g_relPending; // worker output
 static std::vector<ReleaseInfo> g_releases;   // UI copy (main thread only)
 static bool g_relFetched = false, g_relFailed = false;
 static bool g_fetchRunning = false, g_installRunning = false;
+static bool g_autoInstallOnCheck = false; // pending check should auto-install (main thread only)
 static std::wstring g_banner;               // status bar text; empty = hidden
 static std::wstring g_installTag;           // tag being installed (main sets, banner reads)
 static std::wstring g_installUrl;           // url for InstallThread (main sets before spawn)
@@ -1044,26 +1156,17 @@ static const ReleaseInfo* NewestInstallable() {
     return best;
 }
 
-static DWORD WINAPI CheckThread(LPVOID autoInstall) {
+// Fetch-only: the auto-install decision runs on the main thread when
+// UPD_CHECK_DONE lands, so g_installTag/g_installUrl stay main-thread-owned
+// and a user-initiated install from the picker can't run concurrently with an
+// auto-install (both funnel through StartInstall's g_installRunning guard).
+static DWORD WINAPI CheckThread(LPVOID) {
     std::vector<ReleaseInfo> rel;
     bool ok = FetchReleases(rel);
     EnterCriticalSection(&g_updLock);
     g_relPending = rel;
     LeaveCriticalSection(&g_updLock);
     PostMessageW(g_mainHwnd, WM_APP_UPDATE, UPD_CHECK_DONE, ok ? 0 : 1);
-    if (ok && autoInstall) {
-        // install the newest exe-bearing release if it's newer than us
-        const ReleaseInfo* best = nullptr;
-        for (const auto& r : rel) {
-            if (r.exeUrl.empty()) continue;
-            if (!best || CompareVersions(r.tag, best->tag) > 0) best = &r;
-        }
-        if (best && CompareVersions(best->tag, CurrentVersion()) > 0) {
-            g_installTag = best->tag;
-            UpdateResult r = DownloadAndInstall(best->exeUrl);
-            PostMessageW(g_mainHwnd, WM_APP_UPDATE, r == UpdateResult::Ok ? UPD_INSTALL_OK : UPD_INSTALL_FAIL, (LPARAM)r);
-        }
-    }
     return 0;
 }
 
@@ -1073,11 +1176,25 @@ static DWORD WINAPI InstallThread(LPVOID) {
     return 0;
 }
 
+// Spawn the install worker for (tag, url). Main thread only; refuses while
+// another install is in flight. Returns true if the worker was started.
+static bool StartInstall(const std::wstring& tag, const std::wstring& url) {
+    if (g_installRunning || url.empty()) return false;
+    g_installTag = tag;
+    g_installUrl = url;
+    g_installRunning = true;
+    HANDLE h = CreateThread(nullptr, 0, InstallThread, nullptr, 0, nullptr);
+    if (!h) { g_installRunning = false; return false; }
+    CloseHandle(h);
+    return true;
+}
+
 static void StartUpdateCheck(bool autoInstall) {
     if (g_fetchRunning) return;
     g_fetchRunning = true;
-    HANDLE h = CreateThread(nullptr, 0, CheckThread, autoInstall ? (LPVOID)1 : nullptr, 0, nullptr);
-    if (h) CloseHandle(h); else g_fetchRunning = false;
+    g_autoInstallOnCheck = autoInstall;
+    HANDLE h = CreateThread(nullptr, 0, CheckThread, nullptr, 0, nullptr);
+    if (h) CloseHandle(h); else { g_fetchRunning = false; g_autoInstallOnCheck = false; }
 }
 
 // ---- update picker popup ----
@@ -1129,11 +1246,7 @@ static bool PickerInstallSelected() {
     }
     SavePrefs(g_prefs);
 
-    g_installTag = r.tag;
-    g_installUrl = r.exeUrl;
-    g_installRunning = true;
-    HANDLE h = CreateThread(nullptr, 0, InstallThread, nullptr, 0, nullptr);
-    if (h) CloseHandle(h); else g_installRunning = false;
+    StartInstall(r.tag, r.exeUrl);
     if (g_upHwnd) InvalidateRect(g_upHwnd, nullptr, FALSE);
     return true;
 }
@@ -1587,7 +1700,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         EndPaint(hwnd, &ps);
         static bool firstPaintDone = false;
-        if (!firstPaintDone) { firstPaintDone = true; Timing("first-paint"); FlushTiming(); }
+        if (!firstPaintDone) {
+            firstPaintDone = true;
+            Timing("first-paint");
+            BenchLog("first_paint", NowMs(), pw, h, g_contentH, "elapsed");
+            FlushTiming();
+        }
         return 0;
     }
     case WM_SIZE:
@@ -1654,8 +1772,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (g_hEdit) InvalidateRect(g_hEdit, nullptr, TRUE);
                 if (g_findHwnd) InvalidateRect(g_findHwnd, nullptr, TRUE);
                 return 0;
-            case ID_SAVE:       if (g_editing) SaveToFile(); return 0;
-            case ID_SAVE_CLOSE: if (g_editing) { SaveToFile(); ToggleEditor(hwnd); } return 0;
+            case ID_SAVE:       if (g_editing && !SaveToFile()) ReportSaveError(hwnd); return 0;
+            case ID_SAVE_CLOSE: if (g_editing) { if (SaveToFile()) ToggleEditor(hwnd); else ReportSaveError(hwnd); } return 0;
             case ID_ZOOM_IN:    ApplyZoom(hwnd, g_zoomPct + 10); return 0;
             case ID_ZOOM_OUT:   ApplyZoom(hwnd, g_zoomPct - 10); return 0;
             case ID_ZOOM_RESET: ApplyZoom(hwnd, 100); return 0;
@@ -1686,6 +1804,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (nw && CompareVersions(nw->tag, CurrentVersion()) > 0)
                     SetBanner(hwnd, nw->tag + L" available — Ctrl+U to update");
             }
+            if (g_relFetched && g_autoInstallOnCheck) {
+                // auto mode: install the newest exe-bearing release if newer
+                const ReleaseInfo* nw = NewestInstallable();
+                if (nw && CompareVersions(nw->tag, CurrentVersion()) > 0)
+                    StartInstall(nw->tag, nw->exeUrl);
+            }
+            g_autoInstallOnCheck = false;
             if (g_upHwnd) { // resize to fit the arrived list, keep top-right anchor
                 RECT wr; GetWindowRect(g_upHwnd, &wr);
                 int w = wr.right - wr.left;
@@ -1846,10 +1971,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_autoScroll) { KillTimer(hwnd, AUTOSCROLL_TIMER); g_autoScroll = false; }
             g_selAnchor.frag = -1;
             if (!g_selecting) {
-                // a plain click (no drag): follow a link if one is here
-                std::wstring href = LinkAt(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
-                if (!href.empty())
-                    ShellExecuteW(hwnd, L"open", href.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                // a plain click (no drag): toggle a task checkbox, else follow a link
+                int cx = GET_X_LPARAM(lp), cy = GET_Y_LPARAM(lp);
+                if (!ToggleTaskAt(hwnd, cx, cy)) {
+                    std::wstring href = LinkAt(cx, cy);
+                    if (!href.empty()) {
+                        // Test hook: the live-UI suite can't trigger a real
+                        // ShellExecuteW (it would try to open a URL/browser on
+                        // the runner), so when set it records the resolved
+                        // href in the window title instead -- lets a test
+                        // verify LinkAt's scrolled hit-testing picked the
+                        // right link without any real side effect.
+                        if (GetEnvironmentVariableW(L"FMDV_TEST_LINK_LOG", nullptr, 0) > 0)
+                            SetWindowTextW(hwnd, (L"LINKHIT:" + href).c_str());
+                        else
+                            ShellExecuteW(hwnd, L"open", href.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    }
+                }
             }
             g_selecting = false;
             return 0;
@@ -1959,24 +2097,38 @@ static int Run(int argc, wchar_t** argv) {
 
     // Load persisted preferences (dark mode, split, zoom)
     g_prefs = LoadPrefs();
+    double prefsLoadedMs = NowMs();
     g_dark = g_prefs.dark;
     g_zoomPct = g_prefs.zoomPct;
 
     bool parseDump = false;
+    bool benchRender = false;
+    bool benchMode = false;
     std::wstring dumpPath;
     int dumpWidth = 900;
     int dumpViewportH = 0;
     int dumpScroll = 0;
+    int scrollRuns = 200;
     for (int i = 1; i < argc; i++) {
         if (wcscmp(argv[i], L"--parse-dump") == 0) { parseDump = true; continue; }
+        if (wcscmp(argv[i], L"--bench-startup") == 0) { g_benchStartup = true; benchMode = true; continue; }
+        if (wcscmp(argv[i], L"--bench-render") == 0) { benchRender = true; benchMode = true; continue; }
+        if (wcscmp(argv[i], L"--benchpaint") == 0) { benchRender = true; benchMode = true; if (dumpWidth == 900) dumpWidth = 1000; if (dumpViewportH == 0) dumpViewportH = 800; continue; }
         if (wcscmp(argv[i], L"--dump") == 0 && i + 1 < argc) { dumpPath = argv[++i]; continue; }
-        if (wcscmp(argv[i], L"--width") == 0 && i + 1 < argc) { dumpWidth = _wtoi(argv[++i]); continue; }
+        if (wcscmp(argv[i], L"--width") == 0 && i + 1 < argc) { dumpWidth = _wtoi(argv[++i]); g_benchWindowW = dumpWidth; continue; }
+        if (wcscmp(argv[i], L"--height") == 0 && i + 1 < argc) { g_benchWindowH = _wtoi(argv[++i]); continue; }
         if (wcscmp(argv[i], L"--viewport") == 0 && i + 1 < argc) { dumpViewportH = _wtoi(argv[++i]); continue; }
+        if (wcscmp(argv[i], L"--scroll-runs") == 0 && i + 1 < argc) { scrollRuns = _wtoi(argv[++i]); continue; }
         if (wcscmp(argv[i], L"--scroll") == 0 && i + 1 < argc) { dumpScroll = _wtoi(argv[++i]); continue; }
         if (wcscmp(argv[i], L"--dark") == 0) { g_dark = true; continue; }
         if (argv[i][0] == L'-') continue; // other flags handled later
         if (g_filePath.empty()) g_filePath = argv[i];
     }
+    double argsParsedMs = NowMs();
+    InitBenchLog(benchMode);
+    BenchLog("process_start", 0.0, g_benchWindowW, g_benchWindowH, 0, "elapsed");
+    BenchLog("prefs_loaded", prefsLoadedMs, g_benchWindowW, g_benchWindowH, 0, "elapsed");
+    BenchLog("args_parsed", argsParsedMs, g_benchWindowW, g_benchWindowH, 0, "elapsed");
     Timing("args-parsed");
 
 #ifdef FMDV_CONSOLE
@@ -2041,8 +2193,17 @@ static int Run(int argc, wchar_t** argv) {
 
     // Read + parse the file
     std::wstring text;
-    if (!g_filePath.empty() && ReadFileUtf8(g_filePath, text)) {
+    double fileStart = NowMs();
+    bool fileRead = false;
+    if (!g_filePath.empty()) {
+        fileRead = ReadFileUtf8(g_filePath, text);
+    }
+    BenchLog("file_read", NowMs() - fileStart, g_benchWindowW, g_benchWindowH, 0,
+             g_filePath.empty() ? "no_file" : (fileRead ? "duration" : "failed"));
+    if (fileRead) {
+        double parseStart = NowMs();
         g_doc = ParseMarkdown(text);
+        BenchLog("parsed", NowMs() - parseStart, g_benchWindowW, g_benchWindowH, 0, "duration");
     }
     g_rawText = text;
     Timing("parsed");
@@ -2054,35 +2215,9 @@ static int Run(int argc, wchar_t** argv) {
 #endif
 
 #ifdef FMDV_CONSOLE
-    // Bench: lay out once, then time repeated culled paints (the per-scroll cost).
-    for (int i = 1; i < argc; i++) if (wcscmp(argv[i], L"--benchpaint") == 0) {
-        Theme th = g_dark ? DarkTheme() : LightTheme();
-        int W = 1000, H = 800;
-        HDC screen = GetDC(nullptr);
-        HDC mem = CreateCompatibleDC(screen);
-        BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bi.bmiHeader.biWidth = W; bi.bmiHeader.biHeight = -H; bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
-        void* bits = nullptr;
-        HBITMAP dib = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-        SelectObject(mem, dib);
-        std::vector<TextFrag> frags;
-        double t0 = NowMs();
-        int contentH = LayoutDocument(mem, W, g_doc, th, nullptr, &frags);
-        double layoutMs = NowMs() - t0;
-        int N = 200; double t1 = NowMs();
-        for (int i2 = 0; i2 < N; i2++) {
-            int scroll = (contentH > H) ? (i2 * (contentH - H) / N) : 0;
-            RECT full{0,0,W,H}; HBRUSH bg = CreateSolidBrush(th.bg); FillRect(mem,&full,bg); DeleteObject(bg);
-            PaintDocument(mem, scroll, W, H, th, nullptr, frags);
-        }
-        double paintMs = (NowMs() - t1) / N;
-        wprintf(L"blocks=%zu contentH=%d  layout(once)=%.2f ms  paint(per-scroll avg over %d)=%.3f ms\n",
-                g_doc.blocks.size(), contentH, layoutMs, N, paintMs);
-        DeleteObject(dib); DeleteDC(mem); ReleaseDC(nullptr, screen);
-        FreeFontCache();
-        return 0;
-    }
+    if (benchRender) return RunBenchRender(dumpWidth, dumpViewportH, scrollRuns);
+#else
+    (void)benchRender; (void)scrollRuns;
 #endif
 
     // headless PNG dump (visual test)
@@ -2094,6 +2229,23 @@ static int Run(int argc, wchar_t** argv) {
         Gdiplus::GdiplusShutdown(token);
         FreeFontCache();
         return ok ? 0 : 2;
+    }
+
+    // Launched with nothing to open: ask (initial folder = last-used, else
+    // Downloads). Cancelling falls through to the usual empty window.
+    if (g_filePath.empty()) {
+        std::wstring picked;
+        if (PickFileToOpen(picked)) {
+            g_filePath = picked;
+            fileRead = ReadFileUtf8(g_filePath, text);
+            if (fileRead) g_doc = ParseMarkdown(text);
+            g_rawText = text;
+            size_t slash = g_filePath.find_last_of(L"\\/");
+            if (slash != std::wstring::npos) {
+                g_prefs.lastOpenDir = g_filePath.substr(0, slash);
+                SavePrefs(g_prefs);
+            }
+        }
     }
 
     g_theme = g_dark ? DarkTheme() : LightTheme();
@@ -2126,10 +2278,11 @@ static int Run(int argc, wchar_t** argv) {
     HWND hwnd = CreateWindowExW(
         0, wc.lpszClassName, title.c_str(),
         WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
-        initX, initY, 1100, 800,
+        initX, initY, g_benchWindowW, g_benchWindowH,
         nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
     Timing("window-created");
+    BenchLog("window_created", NowMs(), g_benchWindowW, g_benchWindowH, 0, "elapsed");
 
     // Kill the open-transition animation (saves ~100-150ms of synchronous DWM work)
     BOOL disable = TRUE;
@@ -2147,8 +2300,15 @@ static int Run(int argc, wchar_t** argv) {
 
     ShowWindow(hwnd, SW_SHOWNA);   // no-activate show: paints fast (activation handshake is the slow part)
     Timing("showwindow");
+    BenchLog("window_shown", NowMs(), g_benchWindowW, g_benchWindowH, 0, "elapsed");
     UpdateWindow(hwnd);            // forces immediate WM_PAINT -> first-paint timing
     Timing("updatewindow");
+    if (g_benchStartup) {
+        DestroyWindow(hwnd);
+        DeleteCriticalSection(&g_updLock);
+        FreeFontCache();
+        return 0;
+    }
     // Bring to foreground AFTER the content is already on screen, so perceived
     // startup stays instant while the window still ends up focused.
     SetForegroundWindow(hwnd);
