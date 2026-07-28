@@ -655,6 +655,13 @@ static void ReparseFromEdit(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// The EDIT control needs CRLF line breaks; g_rawText/the document model use LF.
+static std::wstring ToCRLF(const std::wstring& lf) {
+    std::wstring out; out.reserve(lf.size() + 64);
+    for (wchar_t c : lf) { if (c == L'\n') out += L"\r\n"; else out += c; }
+    return out;
+}
+
 // Atomically write `text` (LF endings) to the open file as UTF-8.
 static bool WriteTextToFile(const std::wstring& text) {
     if (g_filePath.empty()) return false;
@@ -713,7 +720,7 @@ static bool ToggleTaskAt(HWND hwnd, int clientX, int clientY) {
         if (out == g_rawText) return true;                    // not a task line after all
         if (!WriteTextToFile(out)) { MessageBeep(MB_ICONWARNING); return true; }
         g_rawText = out;
-        if (g_editing && g_hEdit) SetWindowTextW(g_hEdit, out.c_str()); // keep the editor in sync
+        if (g_editing && g_hEdit) SetWindowTextW(g_hEdit, ToCRLF(out).c_str()); // keep the editor in sync
         g_doc = ParseMarkdown(out);                          // refresh explicitly (not reliant on EN_CHANGE)
         UpdateLayout(hwnd);
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -1393,10 +1400,7 @@ static void EnsureEditControl(HWND hwnd) {
     }
     SendMessageW(g_hEdit, WM_SETFONT, (WPARAM)g_editFont, TRUE);
     SetWindowSubclass(g_hEdit, EditSubProc, 1, 0); // ghost drawing + Tab/cancel
-    // EDIT control needs CRLF line breaks; g_rawText uses LF
-    std::wstring crlf; crlf.reserve(g_rawText.size() + 64);
-    for (wchar_t c : g_rawText) { if (c == L'\n') crlf += L"\r\n"; else crlf += c; }
-    SetWindowTextW(g_hEdit, crlf.c_str());
+    SetWindowTextW(g_hEdit, ToCRLF(g_rawText).c_str());
 }
 
 static void ToggleEditor(HWND hwnd) {

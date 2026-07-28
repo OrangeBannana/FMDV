@@ -31,7 +31,7 @@ public struct POINT { public int X, Y; }
 $WM_COMMAND=0x0111; $WM_SETTEXT=0x000C; $WM_CHAR=0x0102; $WM_KEYDOWN=0x0100; $VK_TAB=0x09
 $WM_VSCROLL=0x0115; $SB_PAGEDOWN=3
 $WM_LBUTTONDOWN=0x0201; $WM_MOUSEMOVE=0x0200; $WM_LBUTTONUP=0x0202
-$WM_GETTEXTLENGTH=0x000E; $WM_GETTEXT=0x000D
+$WM_GETTEXTLENGTH=0x000E; $WM_GETTEXT=0x000D; $EM_GETLINECOUNT=0x00BA
 $ID_EDIT=2001; $ID_SAVE=2003; $ID_ZOOM_IN=2005; $ID_ZOOM_RESET=2007; $ID_COPY=2008; $ID_SELALL=2009
 
 function MakeLParam($x, $y) { return [IntPtr]((($y -band 0xFFFF) -shl 16) -bor ($x -band 0xFFFF)) }
@@ -492,6 +492,14 @@ for ($y = 18; $y -lt 240 -and -not $rowE; $y++) {
 Check "found a togglable checkbox row with the editor open" ($null -ne $rowE)
 $editText = GetEditText $e
 Check "editor pane reflects the toggle immediately" ($editText.Contains("[x] first"))
+# Regression guard for issue #31: SetWindowText with bare LF (no \r) doesn't
+# strip the newline characters, so a content-string compare alone can't tell
+# the control got a lone-LF blob it now renders as one unbroken paragraph.
+# EM_GETLINECOUNT is the real tell -- it must match the document's line count,
+# not collapse to 1.
+$lineCount = [T]::SendInt($e, $EM_GETLINECOUNT, [IntPtr]0, [IntPtr]0).ToInt32()
+$expectedLines = ($torig -split "`n").Count
+Check "editor line count reflects real line breaks (not collapsed to 1)" ($lineCount -ge $expectedLines) "got=$lineCount want>=$expectedLines"
 [T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_SAVE, [IntPtr]::Zero) | Out-Null
 Start-Sleep -Milliseconds 300
 $savedE = ReadMd $tfe
