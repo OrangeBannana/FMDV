@@ -54,6 +54,10 @@ Prefs LoadPrefs() {
             }
             else if (k == "pin") p.pinTag = v;
             else if (k == "lastdir") p.lastOpenDir = Utf8ToWide(v);
+            else if (k == "winX") p.winX = atoi(val);
+            else if (k == "winY") p.winY = atoi(val);
+            else if (k == "winW") p.winW = atoi(val);
+            else if (k == "winH") p.winH = atoi(val);
         }
     }
     fclose(f);
@@ -73,5 +77,11 @@ void SavePrefs(const Prefs& p) {
                             : p.updateMode == UPDATE_PIN  ? "pin" : "notify");
     if (!p.pinTag.empty()) fprintf(f, "pin=%s\n", p.pinTag.c_str());
     if (!p.lastOpenDir.empty()) fprintf(f, "lastdir=%s\n", WideToUtf8(p.lastOpenDir).c_str());
+    if (p.winW > 0 && p.winH > 0) {
+        fprintf(f, "winX=%d\n", p.winX);
+        fprintf(f, "winY=%d\n", p.winY);
+        fprintf(f, "winW=%d\n", p.winW);
+        fprintf(f, "winH=%d\n", p.winH);
+    }
     fclose(f);
 }

@@ -28,7 +28,7 @@ public class T {
 public struct RECT { public int Left, Top, Right, Bottom; }
 public struct POINT { public int X, Y; }
 "@
-$WM_COMMAND=0x0111; $WM_SETTEXT=0x000C; $WM_CHAR=0x0102; $WM_KEYDOWN=0x0100; $VK_TAB=0x09
+$WM_COMMAND=0x0111; $WM_SETTEXT=0x000C; $WM_CHAR=0x0102; $WM_KEYDOWN=0x0100; $VK_TAB=0x09; $WM_CLOSE=0x0010
 $WM_VSCROLL=0x0115; $SB_PAGEDOWN=3
 $WM_LBUTTONDOWN=0x0201; $WM_MOUSEMOVE=0x0200; $WM_LBUTTONUP=0x0202
 $WM_GETTEXTLENGTH=0x000E; $WM_GETTEXT=0x000D
@@ -605,6 +605,56 @@ $bmp.Save("$fix\resize_narrow_live.png", [System.Drawing.Imaging.ImageFormat]::P
 $g.Dispose(); $bmp.Dispose()
 Check "narrow live-resize screenshot captured" ((Test-Path "$fix\resize_narrow_live.png") -and (Get-Item "$fix\resize_narrow_live.png").Length -gt 1500)
 if (-not $p.HasExited) { $p.Kill() }
+
+Write-Host "`nInitial window size/position (issue #25):" -ForegroundColor Cyan
+# Off-screen launches still run the real InitialWindowRect() sizing logic
+# (only the position is forced off-screen), so this is a genuine check of
+# that logic, not a stand-in. Back up + restore the real prefs.txt around it
+# so this never disturbs the user's actual saved window position.
+$prefsPath = "$env:APPDATA\fmdv\prefs.txt"
+$prefsBackup = $null
+if (Test-Path $prefsPath) { $prefsBackup = Get-Content $prefsPath -Raw }
+Remove-Item $prefsPath -ErrorAction SilentlyContinue
+
+Add-Type -AssemblyName System.Windows.Forms
+$waW = [System.Windows.Forms.SystemInformation]::WorkingArea.Width
+
+# 1) first run (no saved prefs): should size to ~75% of the work area, not the
+#    old fixed 1100x800 literal -- and never smaller than a "tiny in a corner" window.
+$szFile = "$fix\winsize.md"; Set-Content $szFile "# size test" -Encoding utf8
+$p = Launch $szFile
+$wr = New-Object RECT; [T]::GetWindowRect($p.MainWindowHandle, [ref]$wr) | Out-Null
+$w1 = $wr.Right - $wr.Left
+Check "first run: sized off the monitor work area, not a fixed literal" ($w1 -ne 1100 -and $w1 -gt 400)
+Check "first run: at least half the work area (not tiny)" ($w1 -ge ($waW / 2))
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+# 2) close it for real (WM_CLOSE -> WM_DESTROY) and check prefs.txt now has a
+#    saved rect, then 3) relaunch and confirm it's restored exactly rather than
+#    recomputed. The app deliberately skips saving under FMDV_TEST_OFFSCREEN
+#    (so an off-screen test run can never persist a -32000 position into the
+#    user's real prefs) -- so this part needs a real on-screen window and only
+#    runs under plain run-tests.ps1, not run-tests-hidden.ps1.
+if ($env:FMDV_TEST_OFFSCREEN -eq "1") {
+    Write-Host "  (skipped under -hidden: save-on-close is disabled off-screen by design)" -ForegroundColor DarkGray
+} else {
+    $p2 = Launch $szFile
+    Start-Sleep -Milliseconds 200
+    [T]::PostMessage($p2.MainWindowHandle, $WM_CLOSE, [IntPtr]0, [IntPtr]0) | Out-Null
+    for ($i=0; $i -lt 20 -and -not $p2.HasExited; $i++) { Start-Sleep -Milliseconds 100; $p2.Refresh() }
+    Check "window closed cleanly" $p2.HasExited
+    $savedPrefs = if (Test-Path $prefsPath) { Get-Content $prefsPath -Raw } else { "" }
+    Check "prefs saved a window rect on close" ($savedPrefs -match "winW=" -and $savedPrefs -match "winH=")
+
+    $p3 = Launch $szFile
+    $wr3 = New-Object RECT; [T]::GetWindowRect($p3.MainWindowHandle, [ref]$wr3) | Out-Null
+    $w3 = $wr3.Right - $wr3.Left
+    Check "second launch restores the saved width" ([Math]::Abs($w3 - $w1) -le 2)
+    if (-not $p3.HasExited) { $p3.Kill() }; Start-Sleep -Milliseconds 250
+}
+
+Remove-Item $prefsPath -ErrorAction SilentlyContinue
+if ($prefsBackup) { Set-Content $prefsPath $prefsBackup -NoNewline }
 
 # ---- summary ----
 Write-Host "`n========================================" -ForegroundColor Cyan

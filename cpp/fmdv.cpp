@@ -2069,11 +2069,42 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_DESTROY:
+        // Remember the normal (non-maximized) rect for next launch (issue #25).
+        // Skip while off-screen-testing so we never persist -32000 coords.
+        if (!IsZoomed(hwnd) && !IsIconic(hwnd) &&
+            GetEnvironmentVariableW(L"FMDV_TEST_OFFSCREEN", nullptr, 0) == 0) {
+            RECT r; GetWindowRect(hwnd, &r);
+            g_prefs.winX = r.left; g_prefs.winY = r.top;
+            g_prefs.winW = r.right - r.left; g_prefs.winH = r.bottom - r.top;
+            SavePrefs(g_prefs);
+        }
         FreeBackBuffer();
         PostQuitMessage(0);
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// Decide where/how big the main window should open (issue #25): restore the
+// last normal (non-maximized) position/size if it still lands on a connected
+// monitor, otherwise size to a percentage of the work area of the monitor
+// under the cursor, centered. Work-area pixels are already monitor-real, so
+// no DPI scaling is needed here (unlike a fixed literal size would).
+static RECT InitialWindowRect() {
+    if (g_prefs.winW > 0 && g_prefs.winH > 0) {
+        RECT saved{ g_prefs.winX, g_prefs.winY,
+                    g_prefs.winX + g_prefs.winW, g_prefs.winY + g_prefs.winH };
+        if (MonitorFromRect(&saved, MONITOR_DEFAULTTONULL) != nullptr) return saved;
+    }
+    POINT cursor{ 0, 0 };
+    GetCursorPos(&cursor);
+    HMONITOR mon = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi = {}; mi.cbSize = sizeof(mi);
+    GetMonitorInfo(mon, &mi);
+    int waW = mi.rcWork.right - mi.rcWork.left, waH = mi.rcWork.bottom - mi.rcWork.top;
+    int w = waW * 3 / 4, h = waH * 3 / 4;
+    int x = mi.rcWork.left + (waW - w) / 2, y = mi.rcWork.top + (waH - h) / 2;
+    return RECT{ x, y, x + w, y + h };
 }
 
 static int Run(int argc, wchar_t** argv) {
@@ -2273,12 +2304,16 @@ static int Run(int argc, wchar_t** argv) {
 
     // Test suites can set this to launch off the visible screen entirely
     // (rather than on-screen then relocated, which leaves a visible flash).
-    int initX = CW_USEDEFAULT, initY = CW_USEDEFAULT;
+    // Width/height still come from the real InitialWindowRect() logic (so its
+    // prefs-restore / work-area-percentage behavior stays test-covered); only
+    // the position is forced off-screen.
+    RECT r = InitialWindowRect();
+    int initX = r.left, initY = r.top, initW = r.right - r.left, initH = r.bottom - r.top;
     if (GetEnvironmentVariableW(L"FMDV_TEST_OFFSCREEN", nullptr, 0) > 0) initX = initY = -32000;
     HWND hwnd = CreateWindowExW(
         0, wc.lpszClassName, title.c_str(),
         WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
-        initX, initY, g_benchWindowW, g_benchWindowH,
+        initX, initY, initW, initH,
         nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
     Timing("window-created");

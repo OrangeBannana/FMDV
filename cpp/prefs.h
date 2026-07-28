@@ -11,6 +11,11 @@ struct Prefs {
     int updateMode = UPDATE_NOTIFY;
     std::string pinTag; // pinned release tag when updateMode == UPDATE_PIN
     std::wstring lastOpenDir; // folder the "Open" dialog last opened a file from
+
+    // Last normal (non-maximized) window position/size in screen pixels; 0
+    // means "not set yet" (first run), in which case the caller falls back to
+    // a percentage of the current monitor's work area.
+    int winX = 0, winY = 0, winW = 0, winH = 0;
 };
 
 Prefs LoadPrefs();
