@@ -261,6 +261,43 @@ Check "fence ``` (3 lines)" ((($t = AcCase @(96,96,96) $true) -split "`n").Count
 Check "- [ -> checkbox"   ((AcCase @(45,32,91) $true).TrimEnd() -eq "- [ ]")
 Check "x[ -> link []()"   ((AcCase @(120,91)   $true) -eq "x[]()")
 
+Write-Host "`nColor picker (Ctrl+Shift+C -> ID_COLOR_PICKER, issue #17):" -ForegroundColor Cyan
+$EM_SETSEL = 0x00B1; $ID_COLOR = 2014
+# Type a hex literal not in the palette, drop the caret inside it, open the
+# picker (seeds selection 0 = #000000 since the value isn't a swatch), Enter
+# picks -> the literal is REPLACED. Then Right+Enter on a fresh literal proves
+# navigation, and an empty-caret open proves INSERT.
+$cf = "$fix\color.md"; Set-Content $cf "" -Encoding utf8
+$p = Launch $cf
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_EDIT, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 300
+$e = [T]::FindWindowExW($p.MainWindowHandle, [IntPtr]::Zero, "Edit", $null)
+function CpOpenAndPick($chars, $caret, $extraKeys) {
+    [T]::SendMessageW($e, $WM_SETTEXT, [IntPtr]::Zero, "") | Out-Null
+    foreach ($c in $chars) { [T]::SendInt($e,$WM_CHAR,[IntPtr]$c,[IntPtr]0)|Out-Null; Start-Sleep -Milliseconds 25 }
+    [T]::SendInt($e, $EM_SETSEL, [IntPtr]$caret, [IntPtr]$caret) | Out-Null; Start-Sleep -Milliseconds 80
+    [T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_COLOR, [IntPtr]::Zero) | Out-Null
+    Start-Sleep -Milliseconds 300
+    $cp = [T]::FindWindowW("FMDV_ColorPicker", $null)
+    foreach ($k in $extraKeys) { [T]::SendInt($cp,$WM_KEYDOWN,[IntPtr]$k,[IntPtr]0)|Out-Null; Start-Sleep -Milliseconds 60 }
+    [T]::SendInt($cp, $WM_KEYDOWN, [IntPtr]0x0D, [IntPtr]0) | Out-Null  # Enter picks
+    Start-Sleep -Milliseconds 150
+    [T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_SAVE, [IntPtr]::Zero) | Out-Null
+    Start-Sleep -Milliseconds 250
+    return @($cp, ((Get-Content $cf -Raw)))
+}
+# "#123456", caret at index 3 -> replaced with palette[0] = #000000
+$r = CpOpenAndPick @(35,49,50,51,52,53,54) 3 @()
+Check "picker window opened"           ($r[0] -ne [IntPtr]::Zero)
+Check "caret-on-literal -> replaced"   ($r[1].TrimEnd("`r","`n") -eq "#000000")
+# "#000000", caret inside, Right (palette[1]=434343) then Enter
+$r2 = CpOpenAndPick @(35,48,48,48,48,48,48) 3 @(0x27)
+Check "arrow navigates then replaces"  ($r2[1].TrimEnd("`r","`n") -eq "#434343")
+# empty line, caret at 0, no literal -> INSERT palette[0]
+$r3 = CpOpenAndPick @() 0 @()
+Check "no literal at caret -> inserts"  ($r3[1].TrimEnd("`r","`n") -eq "#000000")
+if (-not $p.HasExited) { $p.Kill() }
+
 Write-Host "`nTable grid-picker:" -ForegroundColor Cyan
 $tf = "$fix\tbl.md"; Set-Content $tf "" -Encoding utf8
 $p = Launch $tf

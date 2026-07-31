@@ -360,7 +360,7 @@ static const int FIND_ID = 1002;
 enum { ID_EDIT_TOGGLE = 2001, ID_DARK = 2002, ID_SAVE = 2003, ID_SAVE_CLOSE = 2004,
        ID_ZOOM_IN = 2005, ID_ZOOM_OUT = 2006, ID_ZOOM_RESET = 2007, ID_COPY = 2008,
        ID_SELECT_ALL = 2009, ID_INSERT_TABLE = 2010, ID_UPDATES = 2011, ID_TOC = 2012,
-       ID_FIND = 2013 };
+       ID_FIND = 2013, ID_COLOR_PICKER = 2014 };
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -1114,6 +1114,158 @@ static void ShowTablePicker(HWND main) {
     if (g_tpHwnd) { ShowWindow(g_tpHwnd, SW_SHOW); SetFocus(g_tpHwnd); }
 }
 
+// ---------------- color picker (Ctrl+Shift+C, issue #17) ----------------
+//
+// A lightweight owned popup (same pattern as the table grid-picker): a grid of
+// palette swatches. Arrow keys / mouse move the selection, Enter or click picks
+// it. On open, if the caret sits on a color literal (#rgb / #rrggbb / a CSS
+// color keyword — detected by the shared core fmdv::ColorLiteralAt), that span
+// is seeded as the selection and gets REPLACED with the chosen #rrggbb; with no
+// literal at the caret the hex is inserted there instead.
+
+static HWND g_cpHwnd = nullptr;
+static int g_cpSel = 0;
+static int g_cpStart = 0, g_cpLen = 0; // edit-buffer char span to replace (len 0 => insert)
+static const wchar_t* const CP_PALETTE[] = {
+    L"000000", L"434343", L"666666", L"999999", L"cccccc", L"ffffff",
+    L"ff0000", L"ff9900", L"ffff00", L"00ff00", L"00ffff", L"0000ff",
+    L"9900ff", L"ff00ff", L"800000", L"804000", L"008000", L"008080",
+    L"000080", L"800080", L"e06666", L"f6b26b", L"ffd966", L"6fa8dc",
+};
+static const int CP_COLS = 6, CP_ROWS = 4; // 24 swatches
+static const int CP_CELL = 22, CP_GAP = 4, CP_PAD = 10, CP_LABEL = 22;
+static int CpCount() { return (int)(sizeof(CP_PALETTE) / sizeof(CP_PALETTE[0])); }
+static SIZE CpWindowSize() {
+    int gridW = CP_COLS * (CP_CELL + CP_GAP) - CP_GAP;
+    int gridH = CP_ROWS * (CP_CELL + CP_GAP) - CP_GAP;
+    return SIZE{ CP_PAD * 2 + gridW, CP_PAD * 2 + gridH + CP_LABEL };
+}
+static COLORREF CpColor(int idx) {
+    const wchar_t* h = CP_PALETTE[idx];
+    auto hx = [](wchar_t c) -> int {
+        if (c >= L'0' && c <= L'9') return c - L'0';
+        if (c >= L'a' && c <= L'f') return c - L'a' + 10;
+        if (c >= L'A' && c <= L'F') return c - L'A' + 10;
+        return 0;
+    };
+    return RGB(hx(h[0]) * 16 + hx(h[1]), hx(h[2]) * 16 + hx(h[3]), hx(h[4]) * 16 + hx(h[5]));
+}
+static int CpHit(int x, int y) {
+    for (int r = 0; r < CP_ROWS; r++) for (int c = 0; c < CP_COLS; c++) {
+        int idx = r * CP_COLS + c; if (idx >= CpCount()) continue;
+        int cx = CP_PAD + c * (CP_CELL + CP_GAP), cy = CP_PAD + r * (CP_CELL + CP_GAP);
+        if (x >= cx && x < cx + CP_CELL && y >= cy && y < cy + CP_CELL) return idx;
+    }
+    return -1;
+}
+static void CloseColorPicker() {
+    if (g_cpHwnd) { HWND h = g_cpHwnd; g_cpHwnd = nullptr; DestroyWindow(h); }
+    if (g_hEdit) SetFocus(g_hEdit);
+}
+static void CpApply() {
+    if (!g_hEdit) return;
+    std::wstring hex = L"#"; hex += CP_PALETTE[g_cpSel];
+    SendMessageW(g_hEdit, EM_SETSEL, g_cpStart, g_cpStart + g_cpLen);
+    SendMessageW(g_hEdit, EM_REPLACESEL, TRUE, (LPARAM)hex.c_str()); // one undoable edit
+    DWORD pos = g_cpStart + (DWORD)hex.size();
+    SendMessageW(g_hEdit, EM_SETSEL, pos, pos);
+}
+static LRESULT CALLBACK ColorPickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_KEYDOWN:
+        switch (wp) {
+            case VK_RIGHT: if (g_cpSel + 1 < CpCount()) g_cpSel++; break;
+            case VK_LEFT:  if (g_cpSel > 0) g_cpSel--; break;
+            case VK_DOWN:  if (g_cpSel + CP_COLS < CpCount()) g_cpSel += CP_COLS; break;
+            case VK_UP:    if (g_cpSel - CP_COLS >= 0) g_cpSel -= CP_COLS; break;
+            case VK_RETURN: CpApply(); CloseColorPicker(); return 0;
+            case VK_ESCAPE: CloseColorPicker(); return 0;
+            default: return 0;
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_MOUSEMOVE: {
+        int idx = CpHit((short)LOWORD(lp), (short)HIWORD(lp));
+        if (idx >= 0 && idx != g_cpSel) { g_cpSel = idx; InvalidateRect(hwnd, nullptr, FALSE); }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        int idx = CpHit((short)LOWORD(lp), (short)HIWORD(lp));
+        if (idx >= 0) { g_cpSel = idx; CpApply(); CloseColorPicker(); }
+        return 0;
+    }
+    case WM_KILLFOCUS:
+        CloseColorPicker();
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+        Theme th = g_dark ? DarkTheme() : LightTheme();
+        HBRUSH bg = CreateSolidBrush(th.bg); FillRect(hdc, &rc, bg); DeleteObject(bg);
+        for (int r = 0; r < CP_ROWS; r++) for (int c = 0; c < CP_COLS; c++) {
+            int idx = r * CP_COLS + c; if (idx >= CpCount()) continue;
+            int x = CP_PAD + c * (CP_CELL + CP_GAP), y = CP_PAD + r * (CP_CELL + CP_GAP);
+            RECT cell{ x, y, x + CP_CELL, y + CP_CELL };
+            HBRUSH b = CreateSolidBrush(CpColor(idx)); FillRect(hdc, &cell, b); DeleteObject(b);
+            if (idx == g_cpSel) {
+                RECT sr = cell; InflateRect(&sr, 2, 2);
+                HBRUSH sel = CreateSolidBrush(th.link); FrameRect(hdc, &sr, sel); DeleteObject(sel);
+            }
+            HBRUSH fr = CreateSolidBrush(th.border); FrameRect(hdc, &cell, fr); DeleteObject(fr);
+        }
+        std::wstring lbl = L"#"; lbl += CP_PALETTE[g_cpSel];
+        SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, th.text);
+        HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT); HFONT of = (HFONT)SelectObject(hdc, f);
+        int gridH = CP_ROWS * (CP_CELL + CP_GAP);
+        TextOutW(hdc, CP_PAD, CP_PAD + gridH, lbl.c_str(), (int)lbl.size());
+        SelectObject(hdc, of);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_CLOSE:
+        CloseColorPicker();
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+static void ShowColorPicker(HWND main) {
+    if (!g_editing || !g_hEdit || g_cpHwnd) return;
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSEXW wc = {}; wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = ColorPickerProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"FMDV_ColorPicker";
+        RegisterClassExW(&wc);
+        reg = true;
+    }
+    DWORD s = 0, e = 0;
+    SendMessageW(g_hEdit, EM_GETSEL, (WPARAM)&s, (LPARAM)&e);
+    int len = GetWindowTextLengthW(g_hEdit);
+    std::wstring text(len + 1, L'\0'); GetWindowTextW(g_hEdit, &text[0], len + 1); text.resize(len);
+    int caret = (int)e;
+    if (caret > (int)text.size()) caret = (int)text.size();
+    int ls = caret; while (ls > 0 && text[ls-1] != L'\n') ls--;
+    int le = caret; while (le < (int)text.size() && text[le] != L'\n') le++;
+    std::wstring line = text.substr(ls, le - ls);
+    fmdv::ColorAt ca = fmdv::ColorLiteralAt(line, caret - ls);
+    g_cpSel = 0;
+    if (ca.found) {
+        g_cpStart = ls + ca.start; g_cpLen = ca.len;
+        for (int i = 0; i < CpCount(); i++) if (ca.rrggbb == CP_PALETTE[i]) { g_cpSel = i; break; }
+    } else {
+        g_cpStart = caret; g_cpLen = 0;
+    }
+    SIZE sz = CpWindowSize();
+    POINT pt; GetCaretPos(&pt); ClientToScreen(g_hEdit, &pt);
+    g_cpHwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"FMDV_ColorPicker", L"",
+        WS_POPUP | WS_BORDER, pt.x, pt.y + 18, sz.cx, sz.cy, main, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (g_cpHwnd) { ShowWindow(g_cpHwnd, SW_SHOW); SetFocus(g_cpHwnd); }
+}
+
 // ---------------- in-app updates (Ctrl+U) ----------------
 //
 // A one-shot timer 2.5s after first paint starts a worker thread that fetches
@@ -1787,6 +1939,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
             case ID_FIND:         ShowFindBar(hwnd); return 0;
+            case ID_COLOR_PICKER: ShowColorPicker(hwnd); return 0;
         }
         return 0;
     }
@@ -2329,6 +2482,7 @@ static int Run(int argc, wchar_t** argv) {
         { FCONTROL | FVIRTKEY, 'U',          ID_UPDATES },
         { (BYTE)(FCONTROL | FSHIFT | FVIRTKEY), 'O', ID_TOC },
         { FCONTROL | FVIRTKEY, 'F',          ID_FIND },
+        { (BYTE)(FCONTROL | FSHIFT | FVIRTKEY), 'C', ID_COLOR_PICKER },
     };
     HACCEL hAccel = CreateAcceleratorTableW(accels, (int)(sizeof(accels)/sizeof(accels[0])));
 

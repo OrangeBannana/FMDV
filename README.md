@@ -40,7 +40,8 @@ app* → browse to `fmdv.exe` → *Always*. Put the exe somewhere stable first
 - Text selection + copy in the preview (double-click word, triple-click line, Ctrl+A).
 - Clickable links, live reload on external file change, per-monitor DPI.
 - Editor: markdown autocomplete (ghost text, Tab commits), list continuation on
-  Enter, **Ctrl+T** table insert.
+  Enter, **Ctrl+T** table insert, **Ctrl+Shift+C** color picker (swatch grid;
+  replaces the hex/keyword color at the caret, or inserts one).
 - **Ctrl+U** in-app updates from GitHub Releases: notify (default), auto-update,
   or pin any version — including downgrades.
 - **Ctrl+Shift+O** table of contents sidebar — click a heading to jump to it.

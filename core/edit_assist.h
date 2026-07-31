@@ -24,6 +24,22 @@ struct Suggestion {
 };
 Suggestion SuggestClose(const Str& line);
 
+// ---- color literals (issue #17) ----
+// Find a CSS-style color literal at or immediately adjacent to `caret` in
+// `line`: a hex color (#rgb or #rrggbb) or one of the common CSS color
+// keywords (the 16 basic HTML colors plus a few aliases). On success `found`
+// is true, [start, start+len) spans the literal in `line`, and `rrggbb` is the
+// normalized 6-digit lowercase hex (no leading '#'). "Adjacent" means the caret
+// may sit at either edge of the literal, not only inside it. When nothing is
+// found the frontend opens the picker to insert a new value at the caret.
+struct ColorAt {
+    bool found = false;
+    int start = 0;
+    int len = 0;
+    Str rrggbb;
+};
+ColorAt ColorLiteralAt(const Str& line, int caret);
+
 // ---- list continuation on Enter ----
 // Decide what pressing Enter inside `line` (the current line up to the caret)
 // should do for bullet / ordered / task-list items:

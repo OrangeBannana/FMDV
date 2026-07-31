@@ -52,6 +52,27 @@ int main() {
     check(sug("") == "0|", "suggest: empty line offers nothing");
     check(sug("plain text") == "0|", "suggest: plain text offers nothing");
 
+    // ---- ColorLiteralAt (issue #17) ----
+    // signature "found|start|len|rrggbb"
+    auto col = [](const char* line, int caret) {
+        ColorAt c = ColorLiteralAt(FromUtf8(line), caret);
+        return std::string(c.found ? "1|" : "0|") + std::to_string(c.start) + "|" +
+               std::to_string(c.len) + "|" + u8(c.rrggbb);
+    };
+    check(col("#ff0000", 3) == "1|0|7|ff0000", "color: 6-digit hex, caret inside");
+    check(col("#ff0000", 0) == "1|0|7|ff0000", "color: caret at left edge is adjacent");
+    check(col("#ff0000", 7) == "1|0|7|ff0000", "color: caret at right edge is adjacent");
+    check(col("#F80", 2) == "1|0|4|ff8800", "color: 3-digit hex expands and lowercases");
+    check(col("color: #00Ff00;", 9) == "1|7|7|00ff00", "color: hex mid-line, span located");
+    check(col("#ff0000ff", 2) == "1|0|7|ff0000", "color: trailing alpha digits ignored (take 6)");
+    check(col("red", 1) == "1|0|3|ff0000", "color: keyword red");
+    check(col("fill:blue", 6) == "1|5|4|0000ff", "color: keyword mid-line");
+    check(col("Grey", 0) == "1|0|4|808080", "color: keyword case-insensitive + alias");
+    check(col("#12", 1) == "0|0|0|", "color: too-few hex digits -> none");
+    check(col("orangey", 2) == "0|0|0|", "color: non-color word -> none");
+    check(col("plain text", 3) == "0|0|0|", "color: no literal -> none");
+    check(col("#abc def", 6) == "0|0|0|", "color: caret past the literal -> none");
+
     // ---- DecideListEnter ----
     {
         ListEnter e = DecideListEnter(FromUtf8("- item"));
