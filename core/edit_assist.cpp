@@ -4,7 +4,7 @@
 
 namespace fmdv {
 
-Suggestion SuggestClose(const Str& line) {
+Suggestion SuggestClose(const Str& line, const Str& before) {
     auto endsWith = [&](const Char* d) {
         size_t n = 0; while (d[n]) n++;
         return line.size() >= n && line.compare(line.size() - n, n, d) == 0;
@@ -17,10 +17,25 @@ Suggestion SuggestClose(const Str& line) {
     auto countCh = [&](Char ch) { int c = 0; for (Char x : line) if (x == ch) c++; return c; };
 
     // fenced code block: only right after typing the opening ``` (no lang yet).
-    // close on its own line, caret on the blank middle line.
+    // close on its own line, caret on the blank middle line. Suppress when this
+    // ``` is CLOSING a block already opened above — an odd number of fence lines
+    // in `before` means the caret sits inside an open fence, so the ``` the user
+    // just typed is the closer and needs no auto-close (issue #8).
     {
         Str t = line; size_t i = 0; while (i < t.size() && (t[i]==U16(' ')||t[i]==U16('\t'))) i++;
-        if (t.substr(i) == U16("```")) return { U16("\n\n```"), 1 };
+        if (t.substr(i) == U16("```")) {
+            int fences = 0; size_t p = 0;
+            while (p < before.size()) {
+                size_t nl = before.find(U16('\n'), p);
+                size_t end = (nl == Str::npos) ? before.size() : nl;
+                size_t q = p; while (q < end && (before[q]==U16(' ')||before[q]==U16('\t'))) q++;
+                if (end - q >= 3 && before[q]==U16('`') && before[q+1]==U16('`') && before[q+2]==U16('`')) fences++;
+                if (nl == Str::npos) break;
+                p = nl + 1;
+            }
+            if (fences % 2 == 0) return { U16("\n\n```"), 1 };
+            return {}; // inside an open fence: the ``` closes it, no suggestion
+        }
     }
     if (endsWith(U16("**")) && !endsWith(U16("***")) && (count(U16("**")) % 2)) return { U16("**"), 0 };
     if (endsWith(U16("__")) && (count(U16("__")) % 2)) return { U16("__"), 0 };

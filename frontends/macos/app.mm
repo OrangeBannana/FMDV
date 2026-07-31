@@ -609,7 +609,8 @@ struct Frag {
         if (atLineEnd) {
             NSUInteger ls = caret;
             while (ls > 0 && [s characterAtIndex:ls - 1] != '\n') ls--;
-            fmdv::Suggestion sg = fmdv::SuggestClose(NSStringToStr([s substringWithRange:NSMakeRange(ls, caret - ls)]));
+            fmdv::Suggestion sg = fmdv::SuggestClose(NSStringToStr([s substringWithRange:NSMakeRange(ls, caret - ls)]),
+                                                     NSStringToStr([s substringWithRange:NSMakeRange(0, ls)]));
             if (!sg.text.empty()) { g = StrToNS(sg.text); gc = sg.caret; }
         }
     }

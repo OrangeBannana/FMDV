@@ -18,11 +18,17 @@ namespace fmdv {
 // `text` is the overlay to show (and to insert on Tab); it may contain '\n',
 // which the frontend expands to its own line ending. `caret` is where the caret
 // should land within the inserted text after commit. Empty text => no suggestion.
+//
+// `before` is the document text preceding the current line (everything up to and
+// including the newline before `line`, or empty if none). It is only used to
+// decide whether a just-typed ``` opens a fence (suggest a closing fence) or
+// closes one already open above (suppress — issue #8). Callers that don't track
+// context can omit it; only the fence suggestion is affected.
 struct Suggestion {
     Str text;
     int caret = 0;
 };
-Suggestion SuggestClose(const Str& line);
+Suggestion SuggestClose(const Str& line, const Str& before = Str());
 
 // ---- list continuation on Enter ----
 // Decide what pressing Enter inside `line` (the current line up to the caret)

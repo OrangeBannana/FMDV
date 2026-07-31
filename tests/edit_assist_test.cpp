@@ -11,8 +11,8 @@ using namespace fmdv;
 static std::string u8(const Str& s) { return ToUtf8(s); }
 
 // SuggestClose as a printable "caret|text" signature ('\n' shown as '\N').
-static std::string sug(const char* line) {
-    Suggestion s = SuggestClose(FromUtf8(line));
+static std::string sug(const char* line, const char* before = "") {
+    Suggestion s = SuggestClose(FromUtf8(line), FromUtf8(before));
     std::string t = u8(s.text), esc;
     for (char c : t) { if (c == '\n') esc += "\\n"; else esc += c; }
     return std::to_string(s.caret) + "|" + esc;
@@ -38,6 +38,17 @@ int main() {
     check(sug("```") == "1|\\n\\n```", "suggest: fence adds closing fence, caret on middle line");
     check(sug("  ```") == "1|\\n\\n```", "suggest: indented fence still closes");
     check(sug("```py") == "0|", "suggest: fence with language offers nothing");
+
+    // ---- SuggestClose: fence re-trigger suppression (issue #8) ----
+    // An open fence above (odd count) means this ``` is the closer: no suggestion.
+    check(sug("```", "```\ncode\n") == "0|", "suggest: ``` closing an open fence is suppressed");
+    check(sug("```", "```py\ncode\n") == "0|", "suggest: closer suppressed with language on opener");
+    check(sug("  ```", "  ```\ncode\n") == "0|", "suggest: indented closer suppressed");
+    // A balanced pair above (even count) means this ``` opens a new block: suggest.
+    check(sug("```", "```\ncode\n```\n") == "1|\\n\\n```", "suggest: opener after a closed fence still suggests");
+    check(sug("```", "# heading\ntext\n") == "1|\\n\\n```", "suggest: opener with no fences above suggests");
+    // Inline/indented backticks that aren't a fence line don't count as toggles.
+    check(sug("```", "use ```code``` inline\n") == "1|\\n\\n```", "suggest: inline backticks don't count as a fence");
 
     // ---- SuggestClose: '[' context split (checkbox vs link) ----
     check(sug("- [") == "3| ] ", "suggest: checkbox after bullet marker");

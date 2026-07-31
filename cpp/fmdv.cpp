@@ -765,7 +765,8 @@ static void UpdateGhost() {
             if (atLineEnd) {
                 int ls = caret;
                 while (ls > 0 && text[ls-1] != L'\n') ls--;
-                fmdv::Suggestion sg = fmdv::SuggestClose(text.substr(ls, caret - ls));
+                fmdv::Suggestion sg = fmdv::SuggestClose(text.substr(ls, caret - ls),
+                                                         text.substr(0, ls));
                 g_ghost = sg.text; g_ghostCaret = sg.caret;
             }
         }
