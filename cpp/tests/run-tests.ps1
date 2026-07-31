@@ -261,6 +261,40 @@ Check "fence ``` (3 lines)" ((($t = AcCase @(96,96,96) $true) -split "`n").Count
 Check "- [ -> checkbox"   ((AcCase @(45,32,91) $true).TrimEnd() -eq "- [ ]")
 Check "x[ -> link []()"   ((AcCase @(120,91)   $true) -eq "x[]()")
 
+Write-Host "`nAutocomplete on/off toggle (Ctrl+Shift+A -> ID_TOGGLE_AC, issue #15):" -ForegroundColor Cyan
+# Type "**" then Tab, once with autocomplete disabled (Tab inserts a real tab,
+# no closer) and once with it re-enabled (Tab commits the "**" closer). The
+# second toggle restores the default (on) so the user's prefs end unchanged.
+function AcType($e) {
+    [T]::SendMessageW($e, $WM_SETTEXT, [IntPtr]::Zero, "") | Out-Null
+    foreach ($c in @(42,42)) { [T]::SendInt($e,$WM_CHAR,[IntPtr]$c,[IntPtr]0)|Out-Null; Start-Sleep -Milliseconds 35 }
+    [T]::SendInt($e,$WM_KEYDOWN,[IntPtr]$VK_TAB,[IntPtr]0)|Out-Null
+    [T]::SendInt($e,$WM_CHAR,[IntPtr]0x09,[IntPtr]0)|Out-Null; Start-Sleep -Milliseconds 50
+}
+$af = "$fix\actoggle.md"; Set-Content $af "" -Encoding utf8
+$p = Launch $af
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_EDIT, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 300
+$e = [T]::FindWindowExW($p.MainWindowHandle, [IntPtr]::Zero, "Edit", $null)
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]2014, [IntPtr]::Zero) | Out-Null  # disable
+Start-Sleep -Milliseconds 150
+AcType $e
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_SAVE, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 300
+$disabled = (Get-Content $af -Raw); if ($disabled -eq $null) { $disabled = "" }
+$cap = New-Object System.Text.StringBuilder 256
+[T]::GetWindowTextW($p.MainWindowHandle, $cap, 256) | Out-Null
+Check "toggle shows an 'Autocomplete off' caption" ($cap.ToString() -match "Autocomplete off")
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]2014, [IntPtr]::Zero) | Out-Null  # re-enable (restore default)
+Start-Sleep -Milliseconds 150
+AcType $e
+[T]::PostMessage($p.MainWindowHandle, $WM_COMMAND, [IntPtr]$ID_SAVE, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 300
+$enabled = (Get-Content $af -Raw); if ($enabled -eq $null) { $enabled = "" }
+if (-not $p.HasExited) { $p.Kill() }
+Check "disabled: Tab inserts a tab, no closer" ($disabled.TrimEnd("`r","`n") -eq "**`t")
+Check "re-enabled: Tab commits ** closer"      ($enabled.TrimEnd("`r","`n") -eq "****")
+
 Write-Host "`nTable grid-picker:" -ForegroundColor Cyan
 $tf = "$fix\tbl.md"; Set-Content $tf "" -Encoding utf8
 $p = Launch $tf

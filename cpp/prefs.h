@@ -6,6 +6,7 @@ enum UpdateMode { UPDATE_NOTIFY = 0, UPDATE_AUTO = 1, UPDATE_PIN = 2 };
 
 struct Prefs {
     bool dark = false;
+    bool autocomplete = true; // editor ghost-text suggestions (issue #15)
     int splitPct = 50;  // editor split percentage
     int zoomPct = 100;  // render zoom percentage
     int updateMode = UPDATE_NOTIFY;

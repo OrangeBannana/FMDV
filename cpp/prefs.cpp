@@ -45,6 +45,7 @@ Prefs LoadPrefs() {
         if (sscanf(line, "%63[^=]=%899[^\r\n]", key, val) == 2) {
             std::string k(key), v(val);
             if (k == "dark") p.dark = (atoi(val) != 0);
+            else if (k == "autocomplete") p.autocomplete = (atoi(val) != 0);
             else if (k == "split") p.splitPct = atoi(val);
             else if (k == "zoom") p.zoomPct = atoi(val);
             else if (k == "update") {
@@ -67,6 +68,7 @@ void SavePrefs(const Prefs& p) {
     FILE* f = _wfopen(path.c_str(), L"w");
     if (!f) return;
     fprintf(f, "dark=%d\n", p.dark ? 1 : 0);
+    fprintf(f, "autocomplete=%d\n", p.autocomplete ? 1 : 0);
     fprintf(f, "split=%d\n", p.splitPct);
     fprintf(f, "zoom=%d\n", p.zoomPct);
     fprintf(f, "update=%s\n", p.updateMode == UPDATE_AUTO ? "auto"

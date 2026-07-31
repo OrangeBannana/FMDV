@@ -64,6 +64,7 @@ static void FlushTiming() {
 static std::wstring g_filePath;
 static Theme g_theme;
 static bool g_dark = false;
+static bool g_autocomplete = true; // editor ghost-text on/off (issue #15)
 static Document g_doc;
 static Prefs g_prefs;
 
@@ -360,7 +361,7 @@ static const int FIND_ID = 1002;
 enum { ID_EDIT_TOGGLE = 2001, ID_DARK = 2002, ID_SAVE = 2003, ID_SAVE_CLOSE = 2004,
        ID_ZOOM_IN = 2005, ID_ZOOM_OUT = 2006, ID_ZOOM_RESET = 2007, ID_COPY = 2008,
        ID_SELECT_ALL = 2009, ID_INSERT_TABLE = 2010, ID_UPDATES = 2011, ID_TOC = 2012,
-       ID_FIND = 2013 };
+       ID_FIND = 2013, ID_TOGGLE_AC = 2014 };
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -399,6 +400,15 @@ static int g_backW = 0, g_backH = 0;
 
 // file-watch (live reload)
 static const UINT_PTR WATCH_TIMER = 1;
+static const UINT_PTR AC_TOAST_TIMER = 4; // reverts the autocomplete on/off caption (issue #15)
+
+// The window's normal caption: "<file> — FMDV", or just "FMDV" with no file open.
+static std::wstring BaseTitle() {
+    if (g_filePath.empty()) return L"FMDV";
+    size_t slash = g_filePath.find_last_of(L"\\/");
+    std::wstring base = (slash == std::wstring::npos) ? g_filePath : g_filePath.substr(slash + 1);
+    return base + L" — FMDV";
+}
 static FILETIME g_fileTime = {};
 
 static FILETIME FileMtime(const std::wstring& path) {
@@ -751,6 +761,9 @@ static void UpdateGhost() {
     if (!g_hEdit) return;
     std::wstring prev = g_ghost;
     g_ghost.clear(); g_ghostCaret = 0;
+
+    // Autocomplete disabled (issue #15): compute nothing, just drop any overlay.
+    if (!g_autocomplete) { if (!prev.empty()) InvalidateRect(g_hEdit, nullptr, FALSE); return; }
 
     DWORD s = 0, e = 0;
     SendMessageW(g_hEdit, EM_GETSEL, (WPARAM)&s, (LPARAM)&e);
@@ -1787,6 +1800,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
             case ID_FIND:         ShowFindBar(hwnd); return 0;
+            case ID_TOGGLE_AC:
+                g_autocomplete = !g_autocomplete;
+                g_prefs.autocomplete = g_autocomplete;
+                SavePrefs(g_prefs);
+                if (!g_autocomplete) ClearGhost();          // drop any showing overlay at once
+                else if (g_editing) UpdateGhost();          // re-offer for the current caret
+                // brief caption toast so the (chrome-less) toggle is visible
+                SetWindowTextW(hwnd, (std::wstring(L"Autocomplete ")
+                                      + (g_autocomplete ? L"on" : L"off") + L" — " + BaseTitle()).c_str());
+                SetTimer(hwnd, AC_TOAST_TIMER, 1400, nullptr);
+                return 0;
         }
         return 0;
     }
@@ -2029,6 +2053,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_TIMER:
+        if (wp == AC_TOAST_TIMER) { // one-shot: restore the normal caption
+            KillTimer(hwnd, AC_TOAST_TIMER);
+            SetWindowTextW(hwnd, BaseTitle().c_str());
+            return 0;
+        }
         if (wp == AUTOSCROLL_TIMER) {
             if (!g_selecting) { KillTimer(hwnd, AUTOSCROLL_TIMER); g_autoScroll = false; return 0; }
             int step = (g_dragPt.y < 0) ? -40 : 40;
@@ -2099,6 +2128,7 @@ static int Run(int argc, wchar_t** argv) {
     g_prefs = LoadPrefs();
     double prefsLoadedMs = NowMs();
     g_dark = g_prefs.dark;
+    g_autocomplete = g_prefs.autocomplete;
     g_zoomPct = g_prefs.zoomPct;
 
     bool parseDump = false;
@@ -2264,12 +2294,7 @@ static int Run(int argc, wchar_t** argv) {
     RegisterClassExW(&wc);
     Timing("class-reg");
 
-    std::wstring title = L"FMDV";
-    if (!g_filePath.empty()) {
-        size_t slash = g_filePath.find_last_of(L"\\/");
-        std::wstring base = (slash == std::wstring::npos) ? g_filePath : g_filePath.substr(slash + 1);
-        title = base + L" — FMDV";
-    }
+    std::wstring title = BaseTitle();
 
     // Test suites can set this to launch off the visible screen entirely
     // (rather than on-screen then relocated, which leaves a visible flash).
@@ -2329,6 +2354,7 @@ static int Run(int argc, wchar_t** argv) {
         { FCONTROL | FVIRTKEY, 'U',          ID_UPDATES },
         { (BYTE)(FCONTROL | FSHIFT | FVIRTKEY), 'O', ID_TOC },
         { FCONTROL | FVIRTKEY, 'F',          ID_FIND },
+        { (BYTE)(FCONTROL | FSHIFT | FVIRTKEY), 'A', ID_TOGGLE_AC },
     };
     HACCEL hAccel = CreateAcceleratorTableW(accels, (int)(sizeof(accels)/sizeof(accels[0])));
 
