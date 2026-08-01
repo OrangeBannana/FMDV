@@ -107,17 +107,20 @@ Shipped since round 8 (see cpp/README.md for behavior):
   cell and wrap instead of overflowing a narrow pane.
 - ✅ **In-app updater (Ctrl+U)** — GitHub Releases list, install any version, modes
   notify/auto-update/pin (`core/release_info` for parse + version compare).
-- ✅ **Mermaid-subset diagrams (#16)** — fenced ```mermaid pie charts and sequence
-  diagrams render natively (`core/diagram`) into the shared display list; a new
-  `FillPolygon` draw command backs wedges/arrowheads. Unsupported types (e.g.
-  `graph TD`) fall back to a plain code block.
+- ✅ **Mermaid-subset diagrams (#16)** — fenced ```mermaid pie charts, sequence
+  diagrams, and flowcharts (`graph`/`flowchart` TD/LR/BT/RL, rect/round/diamond
+  nodes, labeled/dashed/open edges, naive BFS-depth layered layout) render
+  natively (`core/diagram`) into the shared display list; a new `FillPolygon`
+  draw command backs wedges/arrowheads/diamonds. Unsupported types (gantt,
+  class, state, …) fall back to a plain code block.
 
 Remaining roadmap (not yet done):
 - Smarter fence re-trigger suppression on the closing ```
 - Incremental relayout on edit (currently full relayout per keystroke — fine for now)
 - Off-thread / debounced parse
 - DirectWrite renderer; RichEdit editor
-- Diagrams phase 2: flowcharts (`graph TD/LR`) — needs a layered layout pass
+- Diagrams: crossing-minimization / dummy nodes for long edges (current flowchart
+  layout is naive BFS-depth ranking); more node/edge shapes; other diagram types
 - Selection in the editor pane already works (native EDIT control)
 
 > **macOS port.** The parser, edit helpers, layout, find/selection, and release

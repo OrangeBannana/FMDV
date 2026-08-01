@@ -1,5 +1,6 @@
 #include "diagram.h"
 #include <cmath>
+#include <algorithm>
 
 namespace fmdv {
 
@@ -161,6 +162,109 @@ Diagram parseSequence(const std::vector<Str>& lines) {
     return d;
 }
 
+// ---- flowchart ----
+bool isIdChar(Char c) {
+    return (c >= U16('a') && c <= U16('z')) || (c >= U16('A') && c <= U16('Z')) ||
+           (c >= U16('0') && c <= U16('9')) || c == U16('_');
+}
+bool isLinkChar(Char c) {
+    return c == U16('-') || c == U16('.') || c == U16('=') || c == U16('>') || c == U16('<') ||
+           c == U16('o') || c == U16('x');
+}
+
+// Parse a node reference at s[i]: an id plus an optional shape+label:
+//   A   A[rect]   A(round)   A([stadium])   A((circle))   A{diamond}
+// Returns the id (empty if none) and advances i past the ref; shape/label are
+// set when a bracketed form is present.
+Str parseNodeRef(const Str& s, size_t& i, NodeShape& shape, Str& label, bool& hasShape) {
+    while (i < s.size() && (s[i] == U16(' ') || s[i] == U16('\t'))) i++;
+    Str id;
+    while (i < s.size() && isIdChar(s[i])) id += s[i++];
+    hasShape = false;
+    if (id.empty() || i >= s.size()) return id;
+    Char open = s[i];
+    Char close = 0;
+    if (open == U16('[')) { shape = NodeShape::Rect; close = U16(']'); }
+    else if (open == U16('(')) { shape = NodeShape::Round; close = U16(')'); }
+    else if (open == U16('{')) { shape = NodeShape::Diamond; close = U16('}'); }
+    else return id; // bare reference
+    i++;
+    if (i < s.size() && s[i] == open) i++; // doubled: (( , ([ approximated by the first
+    Str lab;
+    while (i < s.size() && s[i] != close) lab += s[i++];
+    if (i < s.size() && s[i] == close) i++;
+    if (i < s.size() && s[i] == close) i++; // doubled close
+    label = trim(lab); hasShape = true;
+    return id;
+}
+
+Diagram parseFlowchart(const std::vector<Str>& lines) {
+    Diagram d; d.kind = DiagramKind::Flowchart;
+    // header: "graph TD" / "flowchart LR" ...
+    {
+        Str first = trim(lines[0]);
+        // drop the keyword
+        size_t k = 0; while (k < first.size() && isIdChar(first[k])) k++;
+        Str dir = lowerStr(trim(first.substr(k)));
+        if (dir.compare(0, 2, U16("lr")) == 0) { d.flow.horizontal = true; }
+        else if (dir.compare(0, 2, U16("rl")) == 0) { d.flow.horizontal = true; d.flow.reverse = true; }
+        else if (dir.compare(0, 2, U16("bt")) == 0) { d.flow.reverse = true; }
+        // td / tb / (default) -> vertical, not reversed
+    }
+    auto nodeIndex = [&](const Str& id, bool hasShape, NodeShape shape, const Str& label) -> int {
+        for (size_t n = 0; n < d.flow.nodes.size(); n++) if (d.flow.nodes[n].id == id) {
+            if (hasShape) { d.flow.nodes[n].shape = shape; if (!label.empty()) d.flow.nodes[n].label = label; }
+            return (int)n;
+        }
+        FlowNode fn; fn.id = id; fn.shape = hasShape ? shape : NodeShape::Rect;
+        fn.label = (hasShape && !label.empty()) ? label : id;
+        d.flow.nodes.push_back(fn);
+        return (int)d.flow.nodes.size() - 1;
+    };
+    for (size_t li = 1; li < lines.size(); li++) {
+        Str line = trim(lines[li]);
+        if (line.empty() || isComment(line)) continue;
+        Str fw = firstWord(line);
+        // structural keywords we don't lay out are skipped (degrade gracefully)
+        if (fw == U16("subgraph") || fw == U16("end") || fw == U16("direction") ||
+            fw == U16("style") || fw == U16("classdef") || fw == U16("class") ||
+            fw == U16("click") || fw == U16("linkstyle")) continue;
+
+        size_t i = 0;
+        NodeShape sh = NodeShape::Rect; Str lab; bool has = false;
+        Str src = parseNodeRef(line, i, sh, lab, has);
+        if (src.empty()) continue;
+        int from = nodeIndex(src, has, sh, lab);
+        // chain: src (op [label]) dst (op [label]) dst ...
+        bool any = false;
+        while (true) {
+            while (i < line.size() && (line[i] == U16(' ') || line[i] == U16('\t'))) i++;
+            if (i >= line.size() || !isLinkChar(line[i])) break;
+            size_t opStart = i;
+            while (i < line.size() && isLinkChar(line[i])) i++;
+            Str op = line.substr(opStart, i - opStart);
+            bool dashed = op.find(U16('.')) != Str::npos;
+            bool arrow = op.find(U16('>')) != Str::npos || op.find(U16('x')) != Str::npos || op.find(U16('o')) != Str::npos;
+            // optional |label|
+            Str elabel;
+            while (i < line.size() && (line[i] == U16(' ') || line[i] == U16('\t'))) i++;
+            if (i < line.size() && line[i] == U16('|')) {
+                i++; size_t bar = line.find(U16('|'), i);
+                if (bar != Str::npos) { elabel = trim(line.substr(i, bar - i)); i = bar + 1; }
+            }
+            NodeShape sh2 = NodeShape::Rect; Str lab2; bool has2 = false;
+            Str dst = parseNodeRef(line, i, sh2, lab2, has2);
+            if (dst.empty()) break;
+            int to = nodeIndex(dst, has2, sh2, lab2);
+            d.flow.edges.push_back(FlowEdge{ from, to, elabel, arrow, dashed });
+            from = to; any = true;
+        }
+        (void)any;
+    }
+    if (d.flow.nodes.empty()) d.kind = DiagramKind::None;
+    return d;
+}
+
 } // namespace
 
 Diagram ParseDiagram(const Str& body) {
@@ -177,7 +281,8 @@ Diagram ParseDiagram(const Str& body) {
     Str kw = firstWord(body2[0]);
     if (kw == U16("pie")) return parsePie(body2);
     if (kw == U16("sequencediagram")) return parseSequence(body2);
-    return Diagram{}; // graph/flowchart/unknown -> None (fall back to code)
+    if (kw == U16("graph") || kw == U16("flowchart")) return parseFlowchart(body2);
+    return Diagram{}; // gantt/class/state/unknown -> None (fall back to code)
 }
 
 // ----------------------------------------------------------------- layout ----
@@ -362,15 +467,149 @@ double layoutSequence(const Sequence& seq, double width, const LayoutTheme& th, 
     return (bottom - oy) + pad;
 }
 
+// exit point on an axis-aligned box (center cx,cy, half-sizes hw,hh) along the
+// ray toward (tx,ty) -- where an edge should meet the node border.
+PointF boxEdge(double cx, double cy, double hw, double hh, double tx, double ty) {
+    double dx = tx - cx, dy = ty - cy;
+    if (dx == 0 && dy == 0) return PointF{ cx, cy };
+    double sx = (dx != 0) ? hw / std::fabs(dx) : 1e18;
+    double sy = (dy != 0) ? hh / std::fabs(dy) : 1e18;
+    double t = std::min(sx, sy);
+    return PointF{ cx + dx * t, cy + dy * t };
+}
+// filled triangular arrowhead: tip at P, pointing along unit vector (ux,uy).
+void arrowHead(LayoutResult& o, PointF P, double ux, double uy, double len, double half, Color c) {
+    double bx = P.x - ux * len, by = P.y - uy * len;
+    double px = -uy, py = ux; // perpendicular
+    polyC(o, { P, { bx + px * half, by + py * half }, { bx - px * half, by - py * half } }, c);
+}
+
+double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th, TextMeasurer& tm,
+                       double scale, double ox, double oy, LayoutResult& out) {
+    int n = (int)fc.nodes.size();
+    if (n == 0) return 0;
+    FontSpec body = bodyFont();
+    double fh = tm.lineHeight(body), asc = tm.ascent(body);
+    double pad = S(scale, 16), padX = S(scale, 14), padY = S(scale, 9);
+    double rankGap = S(scale, 46), sibGap = S(scale, 26);
+
+    // ranks: BFS depth from roots (nodes with no incoming edge). Shortest-path
+    // depth stays compact and is inherently cycle-safe (a visited node keeps its
+    // rank), so a back edge — e.g. a retry loop — doesn't inflate the layout the
+    // way longest-path would. Edge-crossing minimization is intentionally out of
+    // scope (issue #16, naive layered layout).
+    std::vector<int> rank(n, -1), indeg(n, 0);
+    for (const auto& e : fc.edges) if (e.from != e.to) indeg[e.to]++;
+    std::vector<int> q;
+    for (int k = 0; k < n; k++) if (indeg[k] == 0) { rank[k] = 0; q.push_back(k); }
+    size_t qi = 0;
+    auto bfs = [&]() {
+        while (qi < q.size()) {
+            int u = q[qi++];
+            for (const auto& e : fc.edges)
+                if (e.from == u && e.to != u && rank[e.to] < 0) { rank[e.to] = rank[u] + 1; q.push_back(e.to); }
+        }
+    };
+    bfs();
+    // components with no root (pure cycles) or disconnected nodes: seed and continue
+    for (int k = 0; k < n; k++) if (rank[k] < 0) { rank[k] = 0; q.push_back(k); bfs(); }
+    int maxRank = 0; for (int r : rank) maxRank = std::max(maxRank, r);
+
+    double nodeH = fh + 2 * padY;
+    std::vector<double> nodeW(n);
+    for (int k = 0; k < n; k++) {
+        double w = tm.textWidth(body, fc.nodes[k].label) + 2 * padX;
+        if (fc.nodes[k].shape == NodeShape::Diamond) w += S(scale, 24);
+        nodeW[k] = w;
+    }
+
+    std::vector<std::vector<int>> ranks(maxRank + 1);
+    for (int k = 0; k < n; k++) ranks[fc.reverse ? (maxRank - rank[k]) : rank[k]].push_back(k);
+
+    std::vector<RectF> box(n);
+    if (!fc.horizontal) {
+        double diagW = 0;
+        for (auto& rr : ranks) { double w = 0; for (int k : rr) w += nodeW[k]; if (!rr.empty()) w += sibGap * (rr.size() - 1); diagW = std::max(diagW, w); }
+        double startX = ox + std::max(pad, (width - diagW) / 2);
+        double y = oy + pad;
+        for (auto& rr : ranks) {
+            double w = 0; for (int k : rr) w += nodeW[k]; if (!rr.empty()) w += sibGap * (rr.size() - 1);
+            double x = startX + (diagW - w) / 2;
+            for (int k : rr) { box[k] = RectF{ x, y, nodeW[k], nodeH }; x += nodeW[k] + sibGap; }
+            y += nodeH + rankGap;
+        }
+    } else {
+        std::vector<double> colW(ranks.size(), 0);
+        for (size_t r = 0; r < ranks.size(); r++) for (int k : ranks[r]) colW[r] = std::max(colW[r], nodeW[k]);
+        double diagH = 0;
+        for (auto& rr : ranks) { double h = rr.size() * nodeH; if (!rr.empty()) h += sibGap * (rr.size() - 1); diagH = std::max(diagH, h); }
+        double x = ox + pad;
+        for (size_t r = 0; r < ranks.size(); r++) {
+            double h = ranks[r].size() * nodeH; if (!ranks[r].empty()) h += sibGap * (ranks[r].size() - 1);
+            double y = oy + pad + (diagH - h) / 2;
+            for (int k : ranks[r]) { box[k] = RectF{ x + (colW[r] - nodeW[k]) / 2, y, nodeW[k], nodeH }; y += nodeH + sibGap; }
+            x += colW[r] + rankGap;
+        }
+    }
+
+    // edges (under the nodes)
+    double ah = S(scale, 9), ahw = S(scale, 5);
+    for (const auto& e : fc.edges) {
+        if (e.from == e.to) continue; // self-loop: skip (rare in flowcharts)
+        const RectF& a = box[e.from]; const RectF& b = box[e.to];
+        double acx = a.x + a.w / 2, acy = a.y + a.h / 2, bcx = b.x + b.w / 2, bcy = b.y + b.h / 2;
+        PointF p0 = boxEdge(acx, acy, a.w / 2, a.h / 2, bcx, bcy);
+        PointF p1 = boxEdge(bcx, bcy, b.w / 2, b.h / 2, acx, acy);
+        double dx = p1.x - p0.x, dy = p1.y - p0.y, len = std::sqrt(dx * dx + dy * dy);
+        if (len < 1) len = 1;
+        double ux = dx / len, uy = dy / len;
+        PointF lineEnd = e.arrow ? PointF{ p1.x - ux * ah, p1.y - uy * ah } : p1;
+        if (e.dashed) {
+            double dash = S(scale, 5), t = 0, elen = e.arrow ? (len - ah) : len;
+            while (t < elen) { double t2 = std::min(t + dash, elen); lineC(out, p0.x + ux * t, p0.y + uy * t, p0.x + ux * t2, p0.y + uy * t2, th.text2); t = t2 + dash; }
+        } else {
+            lineC(out, p0.x, p0.y, lineEnd.x, lineEnd.y, th.text2);
+        }
+        if (e.arrow) arrowHead(out, p1, ux, uy, ah, ahw, th.text2);
+        if (!e.label.empty()) {
+            double lw = tm.textWidth(body, e.label);
+            double mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+            fillR(out, { mx - lw / 2 - S(scale, 3), my - fh / 2, lw + 2 * S(scale, 3), fh }, th.bg);
+            textC(out, mx - lw / 2, my - fh / 2 + asc, lw, fh, e.label, body, th.text2);
+        }
+    }
+
+    // nodes
+    for (int k = 0; k < n; k++) {
+        const RectF& r = box[k];
+        if (fc.nodes[k].shape == NodeShape::Diamond) {
+            double cx2 = r.x + r.w / 2, cy2 = r.y + r.h / 2;
+            std::vector<PointF> dia = { { cx2, r.y }, { r.x + r.w, cy2 }, { cx2, r.y + r.h }, { r.x, cy2 } };
+            polyC(out, dia, th.bg2);
+            for (size_t p = 0; p < dia.size(); p++) { PointF A = dia[p], B = dia[(p + 1) % dia.size()]; lineC(out, A.x, A.y, B.x, B.y, th.border); }
+        } else {
+            fillR(out, r, th.bg2);
+            frameR(out, r, th.border);
+        }
+        double lw = tm.textWidth(body, fc.nodes[k].label);
+        textC(out, r.x + (r.w - lw) / 2, r.y + (r.h - fh) / 2 + asc, lw, fh, fc.nodes[k].label, body, th.text);
+    }
+
+    double bottom = oy;
+    for (int k = 0; k < n; k++) bottom = std::max(bottom, box[k].y + box[k].h);
+    return (bottom - oy) + pad;
+}
+
 } // namespace
 
 double LayoutDiagram(const Diagram& d, double width, const LayoutTheme& th,
                      TextMeasurer& tm, double scale,
                      double originX, double originY, LayoutResult& out) {
     switch (d.kind) {
-        case DiagramKind::Pie:      return layoutPie(d.pie, width, th, tm, scale, originX, originY, out);
-        case DiagramKind::Sequence: return layoutSequence(d.seq, width, th, tm, scale, originX, originY, out);
-        default:                    return 0;
+        case DiagramKind::Pie:       return layoutPie(d.pie, width, th, tm, scale, originX, originY, out);
+        case DiagramKind::Sequence:  return layoutSequence(d.seq, width, th, tm, scale, originX, originY, out);
+        case DiagramKind::Flowchart: return layoutFlowchart(d.flow, width, th, tm, scale, originX, originY, out);
+        default:                     return 0;
     }
 }
 

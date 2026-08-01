@@ -72,8 +72,31 @@ int main() {
         check(d.seq.messages.size() == 1 && d.seq.messages[0].from == d.seq.messages[0].to, "seq: self message");
     }
 
+    // ---- flowchart parsing ----
+    {
+        Diagram d = parse("graph TD\n  A[Start] --> B{OK?}\n  B -->|yes| C(Done)\n  B -->|no| A\n");
+        check(d.kind == DiagramKind::Flowchart, "flow: graph TD recognized");
+        check(!d.flow.horizontal && !d.flow.reverse, "flow: TD orientation");
+        check(d.flow.nodes.size() == 3, "flow: three nodes");
+        check(ToUtf8(d.flow.nodes[0].label) == "Start", "flow: node label from [..]");
+        check(d.flow.nodes[1].shape == NodeShape::Diamond, "flow: {..} is a diamond");
+        check(d.flow.nodes[2].shape == NodeShape::Round, "flow: (..) is round");
+        check(d.flow.edges.size() == 3, "flow: three edges");
+        check(ToUtf8(d.flow.edges[1].label) == "yes", "flow: edge label |..|");
+    }
+    {   // flowchart LR + chained edges + dashed + open link
+        Diagram d = parse("flowchart LR\n  A --> B --> C\n  A -.-> C\n  B --- C\n");
+        check(d.flow.horizontal, "flow: LR is horizontal");
+        check(d.flow.nodes.size() == 3 && d.flow.edges.size() == 4, "flow: chained edge expands to two");
+        check(d.flow.edges[0].from == 0 && d.flow.edges[0].to == 1, "flow: chain A->B");
+        check(d.flow.edges[1].from == 1 && d.flow.edges[1].to == 2, "flow: chain B->C");
+        check(d.flow.edges[2].dashed, "flow: -.-> is dashed");
+        check(!d.flow.edges[3].arrow, "flow: --- is an open link");
+    }
+    check(parse("graph RL\nA-->B\n").flow.reverse, "flow: RL reverses rank axis");
+
     // ---- unsupported / non-mermaid ----
-    check(parse("graph TD\n  A-->B\n").kind == DiagramKind::None, "unsupported: flowchart -> None");
+    check(parse("gantt\n  title X\n").kind == DiagramKind::None, "unsupported: gantt -> None");
     check(parse("just some text\n").kind == DiagramKind::None, "unsupported: prose -> None");
     check(parse("").kind == DiagramKind::None, "unsupported: empty -> None");
 
@@ -89,10 +112,15 @@ int main() {
         check(hasText(r, "Alice") && hasText(r, "Bob"), "layout: sequence actor boxes labelled");
         check(hasText(r, "Hi"), "layout: sequence message text drawn");
     }
-    {   // unsupported mermaid falls back to a plain code block (raw text as Mono)
-        LayoutResult r = layMd("```mermaid\ngraph TD\nA-->B\n```\n");
+    {
+        LayoutResult r = layMd("```mermaid\ngraph TD\nA[Start]-->B{Q}\nB-->C\n```\n");
+        check(countKind(r, DrawCommand::FillPolygon) >= 2, "layout: flowchart draws diamond + arrowhead polygons");
+        check(hasText(r, "Start") && hasText(r, "Q") && hasText(r, "C"), "layout: flowchart node labels drawn");
+    }
+    {   // truly unsupported mermaid falls back to a plain code block (raw text as Mono)
+        LayoutResult r = layMd("```mermaid\ngantt\ntitle Roadmap\n```\n");
         check(countKind(r, DrawCommand::FillPolygon) == 0, "fallback: no diagram polygons");
-        check(hasText(r, "graph TD") && hasText(r, "A-->B"), "fallback: raw code lines rendered");
+        check(hasText(r, "gantt") && hasText(r, "title Roadmap"), "fallback: raw code lines rendered");
     }
     {   // a normal (non-mermaid) code block is unaffected
         LayoutResult r = layMd("```python\nprint(1)\n```\n");

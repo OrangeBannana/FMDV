@@ -136,9 +136,9 @@ Check "render table (fits, no wrap)" ((Test-Path "$fix\tblwide.png") -and (Get-I
 & $exe $tblWrap --dump "$fix\tblnarrow.png" --width 420 | Out-Null
 Check "render table (shrink + wrap)" ((Test-Path "$fix\tblnarrow.png") -and (Get-Item "$fix\tblnarrow.png").Length -gt 2000)
 
-# mermaid diagrams (issue #16): pie + sequence render natively via the shared
-# display list (incl. FillPolygon wedges/arrowheads); an unsupported type falls
-# back to a code block. Smoke test the whole paint path end to end.
+# mermaid diagrams (issue #16): pie + sequence + flowchart render natively via
+# the shared display list (incl. FillPolygon wedges/arrowheads/diamonds); an
+# unsupported type falls back to a code block. Smoke test the paint path.
 $mmd = "$fix\mermaid.md"
 @'
 ```mermaid
@@ -159,11 +159,18 @@ sequenceDiagram
 
 ```mermaid
 graph TD
-    A --> B
+    A[Start] --> B{OK?}
+    B -->|yes| C(Done)
+    B -->|no| A
+```
+
+```mermaid
+gantt
+    title Unsupported -> code fallback
 ```
 '@ | Set-Content $mmd -Encoding utf8
 & $exe $mmd --dump "$fix\mermaid.png" --width 820 | Out-Null
-Check "render mermaid (pie+sequence+fallback)" ((Test-Path "$fix\mermaid.png") -and (Get-Item "$fix\mermaid.png").Length -gt 3000)
+Check "render mermaid (pie+sequence+flowchart+fallback)" ((Test-Path "$fix\mermaid.png") -and (Get-Item "$fix\mermaid.png").Length -gt 3000)
 
 Write-Host "`nLaunch / stability:" -ForegroundColor Cyan
 $p = Launch $basic

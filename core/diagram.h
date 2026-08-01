@@ -6,8 +6,9 @@
 // which conflicts with FMDV's premise (no browser engine, ~40 ms start, ~400 KB
 // exe). So this handles only the diagram types that need no graph-layout pass:
 //
-//   phase 1 (here): pie charts and sequence diagrams
-//   phase 2 (later): flowcharts (graph TD/LR) -- a separate issue
+//   phase 1: pie charts and sequence diagrams
+//   phase 2: flowcharts (graph/flowchart TD/LR) -- a naive layered layout
+//            (longest-path ranks, no edge-crossing minimization)
 //
 // A ```mermaid block is parsed into this small model; if it is a supported type
 // it is laid out into the shared display list (fmdv::DrawCommand, drawn by every
@@ -19,7 +20,7 @@
 
 namespace fmdv {
 
-enum class DiagramKind { None, Pie, Sequence };
+enum class DiagramKind { None, Pie, Sequence, Flowchart };
 
 // ---- pie ----
 struct PieSlice { Str label; double value = 0; };
@@ -42,10 +43,33 @@ struct Sequence {
     std::vector<SeqMessage> messages;
 };
 
+// ---- flowchart ----
+enum class NodeShape { Rect, Round, Diamond };
+struct FlowNode {
+    Str id;
+    Str label;
+    NodeShape shape = NodeShape::Rect;
+    int rank = 0;   // filled during layout (longest path from a root)
+};
+struct FlowEdge {
+    int from = 0;   // index into Flowchart::nodes
+    int to = 0;
+    Str label;
+    bool arrow = true;    // "-->" (arrowhead) vs "---" (open line)
+    bool dashed = false;  // "-.->" style
+};
+struct Flowchart {
+    bool horizontal = false; // LR/RL lay ranks left->right; TD/TB top->bottom
+    bool reverse = false;    // BT / RL reverse the rank axis
+    std::vector<FlowNode> nodes;
+    std::vector<FlowEdge> edges;
+};
+
 struct Diagram {
     DiagramKind kind = DiagramKind::None;
     Pie pie;
     Sequence seq;
+    Flowchart flow;
 };
 
 // Parse the raw text inside a ```mermaid fence (LF-normalized) into a Diagram.
