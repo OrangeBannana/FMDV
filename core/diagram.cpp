@@ -458,6 +458,49 @@ Diagram parseClass(const std::vector<Str>& lines) {
     return d;
 }
 
+// ---- entity-relationship diagram (erDiagram) ----
+// Entities are boxes (name + optional attribute lines, reusing the Class node);
+// relationships carry crow's-foot cardinality at each end.
+Diagram parseER(const std::vector<Str>& lines) {
+    Diagram d; d.kind = DiagramKind::Flowchart; d.flow.horizontal = false;
+    auto entIndex = [&](const Str& id) -> int {
+        for (size_t k = 0; k < d.flow.nodes.size(); k++) if (d.flow.nodes[k].id == id) return (int)k;
+        FlowNode fn; fn.id = id; fn.shape = NodeShape::Class; fn.label = id;
+        d.flow.nodes.push_back(fn);
+        return (int)d.flow.nodes.size() - 1;
+    };
+    auto isCard = [](Char c) { return c == U16('|') || c == U16('o') || c == U16('{') || c == U16('}'); };
+    int curEnt = -1;
+    for (size_t li = 1; li < lines.size(); li++) {
+        Str line = trim(lines[li]);
+        if (line.empty() || isComment(line)) continue;
+        if (curEnt >= 0) { if (line[0] == U16('}')) { curEnt = -1; continue; } d.flow.nodes[curEnt].members.push_back(line); continue; }
+        // "ENTITY {" opens an attribute block
+        if (line.back() == U16('{')) { Str id; for (Char c : line) { if (c == U16(' ') || c == U16('\t') || c == U16('{')) break; id += c; } if (!id.empty()) curEnt = entIndex(id); continue; }
+        // relationship: A <card>--<card> B : label   (card chars around -- or ..)
+        size_t op0 = Str::npos;
+        for (size_t i = 0; i + 1 < line.size(); i++)
+            if ((line[i] == U16('-') && line[i+1] == U16('-')) || (line[i] == U16('.') && line[i+1] == U16('.'))) { op0 = i; break; }
+        if (op0 == Str::npos) continue;
+        size_t l = op0; while (l > 0 && isCard(line[l-1])) l--;
+        size_t r = op0 + 2; while (r < line.size() && isCard(line[r])) r++;
+        bool dashed = line[op0] == U16('.');
+        Str erTail = line.substr(l, op0 - l), erHead = line.substr(op0 + 2, r - (op0 + 2));
+        Str A = trim(line.substr(0, l)), after = line.substr(r), label;
+        size_t colon = after.find(U16(':'));
+        if (colon != Str::npos) { label = trim(after.substr(colon + 1)); after = after.substr(0, colon); }
+        // entity ids may be quoted; take the id token
+        auto tok = [](const Str& s) { Str t; for (Char c : s) { if (c == U16('"')) continue; if (t.empty() && (c == U16(' ') || c == U16('\t'))) continue; if (c == U16(' ') || c == U16('\t')) break; t += c; } return t; };
+        Str aid = tok(A), bid = tok(after);
+        if (aid.empty() || bid.empty()) continue;
+        FlowEdge e; e.from = entIndex(aid); e.to = entIndex(bid); e.label = label; e.arrow = false; e.dashed = dashed;
+        e.headMarker = 0; e.tailMarker = 0; e.erTail = erTail; e.erHead = erHead;
+        d.flow.edges.push_back(e);
+    }
+    if (d.flow.nodes.empty()) d.kind = DiagramKind::None;
+    return d;
+}
+
 // ---- user journey ----
 // journey / title / section <name> / <task>: <score>: <actor,actor>
 Diagram parseJourney(const std::vector<Str>& lines) {
@@ -512,7 +555,8 @@ Diagram ParseDiagram(const Str& body) {
     if (kw.compare(0, 12, U16("statediagram")) == 0) return parseState(body2);
     if (kw == U16("classdiagram")) return parseClass(body2);
     if (kw == U16("journey")) return parseJourney(body2);
-    return Diagram{}; // gantt/er/gitgraph/unknown -> None (fall back to code)
+    if (kw == U16("erdiagram")) return parseER(body2);
+    return Diagram{}; // gantt/gitgraph/mindmap/unknown -> None (fall back to code)
 }
 
 // ----------------------------------------------------------------- layout ----
@@ -883,6 +927,25 @@ void drawNodeShape(LayoutResult& o, NodeShape shape, const RectF& r, double scal
     }
 }
 
+// ER crow's-foot cardinality at one edge end. `card` holds the marker chars for
+// this end; the char nearest the entity is inner. tip = entity border; (ux,uy)
+// points into the entity, (px,py) perpendicular.
+void drawErEnd(LayoutResult& o, const Str& card, bool tail, PointF tip, double ux, double uy, double scale, const LayoutTheme& th) {
+    if (card.empty()) return;
+    double px = -uy, py = ux;
+    Char inner = tail ? card[0] : card[card.size() - 1];
+    Char outer = (card.size() > 1) ? (tail ? card[1] : card[0]) : (Char)0;
+    auto at = [&](double dist) { return PointF{ tip.x - ux * dist, tip.y - uy * dist }; };
+    auto barTick = [&](double dist) { PointF q = at(dist); double bw = S(scale, 6); lineC(o, q.x + px * bw, q.y + py * bw, q.x - px * bw, q.y - py * bw, th.text2); };
+    auto circle = [&](double dist) { PointF q = at(dist); double cr = S(scale, 4); auto c = roundRectPoly(q.x - cr, q.y - cr, 2 * cr, 2 * cr, cr); polyC(o, c, th.bg); strokePoly(o, c, th.text2); };
+    auto fork = [&]() { double fl = S(scale, 13), fw = S(scale, 7); PointF apex = at(fl); lineC(o, apex.x, apex.y, tip.x, tip.y, th.text2); lineC(o, apex.x, apex.y, tip.x + px * fw, tip.y + py * fw, th.text2); lineC(o, apex.x, apex.y, tip.x - px * fw, tip.y - py * fw, th.text2); };
+    if (inner == U16('{') || inner == U16('}')) fork();
+    else if (inner == U16('|')) barTick(S(scale, 5));
+    else if (inner == U16('o')) circle(S(scale, 6));
+    if (outer == U16('|')) barTick(S(scale, 14));
+    else if (outer == U16('o')) circle(S(scale, 15));
+}
+
 double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th, TextMeasurer& tm,
                        double scale, double ox, double oy, LayoutResult& out) {
     int n = (int)fc.nodes.size();
@@ -1042,8 +1105,15 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
         PointF ut = unit(tailTip.x - wp[1].x, tailTip.y - wp[1].y);
         int head = (e.headMarker >= 0) ? e.headMarker : (e.arrow ? 1 : 0);
         int tail = (e.headMarker >= 0) ? e.tailMarker : 0;
-        if (head) { double hL = markerLen(head, scale); wp.back()  = { headTip.x - uh.x * hL, headTip.y - uh.y * hL }; }
-        if (tail) { double tL = markerLen(tail, scale); wp.front() = { tailTip.x - ut.x * tL, tailTip.y - ut.y * tL }; }
+        bool er = !e.erHead.empty() || !e.erTail.empty();
+        double erL = S(scale, 16);
+        if (er) {
+            if (!e.erHead.empty()) wp.back()  = { headTip.x - uh.x * erL, headTip.y - uh.y * erL };
+            if (!e.erTail.empty()) wp.front() = { tailTip.x - ut.x * erL, tailTip.y - ut.y * erL };
+        } else {
+            if (head) { double hL = markerLen(head, scale); wp.back()  = { headTip.x - uh.x * hL, headTip.y - uh.y * hL }; }
+            if (tail) { double tL = markerLen(tail, scale); wp.front() = { tailTip.x - ut.x * tL, tailTip.y - ut.y * tL }; }
+        }
         for (size_t j = 0; j + 1 < wp.size(); j++) {
             if (e.dashed) {
                 double sx = wp[j].x, sy = wp[j].y, dxx = wp[j+1].x - sx, dyy = wp[j+1].y - sy, L = std::sqrt(dxx*dxx + dyy*dyy);
@@ -1052,8 +1122,13 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
                 while (t < L) { double t2 = std::min(t + dash, L); lineC(out, sx + vx*t, sy + vy*t, sx + vx*t2, sy + vy*t2, th.text2); t = t2 + dash; }
             } else lineC(out, wp[j].x, wp[j].y, wp[j+1].x, wp[j+1].y, th.text2);
         }
-        if (head) drawMarker(out, head, headTip, uh.x, uh.y, scale, th);
-        if (tail) drawMarker(out, tail, tailTip, ut.x, ut.y, scale, th);
+        if (er) {
+            drawErEnd(out, e.erHead, false, headTip, uh.x, uh.y, scale, th);
+            drawErEnd(out, e.erTail, true, tailTip, ut.x, ut.y, scale, th);
+        } else {
+            if (head) drawMarker(out, head, headTip, uh.x, uh.y, scale, th);
+            if (tail) drawMarker(out, tail, tailTip, ut.x, ut.y, scale, th);
+        }
         if (!e.label.empty()) {
             size_t mid = wp.size() / 2;
             PointF A = wp[mid - 1], B = wp[mid];

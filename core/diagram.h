@@ -76,6 +76,7 @@ struct FlowEdge {
     bool dashed = false;  // "-.->" / dependency style
     int headMarker = -1;  // marker at `to`
     int tailMarker = 0;   // marker at `from`
+    Str erTail{}, erHead{}; // ER crow's-foot cardinality (chars |,o,{,}) at from/to
 };
 struct Flowchart {
     bool horizontal = false; // LR/RL lay ranks left->right; TD/TB top->bottom

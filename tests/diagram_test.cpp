@@ -189,6 +189,18 @@ int main() {
     }
     check(parse("journey\n  title Empty\n").kind == DiagramKind::None, "journey: no tasks -> None");
 
+    // ---- ER diagram ----
+    {
+        Diagram d = parse("erDiagram\n  CUSTOMER ||--o{ ORDER : places\n  CUSTOMER {\n    string name\n    string email\n  }\n");
+        check(d.kind == DiagramKind::Flowchart, "er: maps to flowchart model");
+        int ci = -1; for (size_t k = 0; k < d.flow.nodes.size(); k++) if (ToUtf8(d.flow.nodes[k].id) == "CUSTOMER") ci = (int)k;
+        check(ci >= 0 && d.flow.nodes[ci].shape == NodeShape::Class, "er: entity is a box");
+        check(d.flow.nodes[ci].members.size() == 2, "er: entity attributes");
+        check(d.flow.edges.size() == 1, "er: one relationship");
+        check(ToUtf8(d.flow.edges[0].erTail) == "||" && ToUtf8(d.flow.edges[0].erHead) == "o{", "er: crow's-foot cardinality captured");
+        check(ToUtf8(d.flow.edges[0].label) == "places", "er: relationship label");
+    }
+
     // ---- unsupported / non-mermaid ----
     check(parse("gantt\n  title X\n").kind == DiagramKind::None, "unsupported: gantt -> None");
     check(parse("just some text\n").kind == DiagramKind::None, "unsupported: prose -> None");
