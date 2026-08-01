@@ -126,37 +126,75 @@ Diagram parseSequence(const std::vector<Str>& lines) {
         d.seq.actors.push_back(SeqActor{ id, label.empty() ? id : label });
         return (int)d.seq.actors.size() - 1;
     };
+    auto blockStart = [&](SeqBlock b, const Str& label) {
+        SeqEvent e; e.kind = SeqEventKind::BlockStart; e.block = b; e.text = label; d.seq.events.push_back(e);
+    };
     for (size_t li = 1; li < lines.size(); li++) {
         Str line = trim(lines[li]);
         if (line.empty() || isComment(line)) continue;
         Str fw = firstWord(line);
+
+        if (fw == U16("autonumber")) { d.seq.autonumber = true; continue; }
         if (fw == U16("participant") || fw == U16("actor")) {
             Str rest = trim(line.substr(fw.size()));
-            // "<id> as <label>"
             Str id = rest, label;
-            Str lowRest = lowerStr(rest);
-            size_t asPos = lowRest.find(U16(" as "));
+            size_t asPos = lowerStr(rest).find(U16(" as "));
             if (asPos != Str::npos) { id = trim(rest.substr(0, asPos)); label = trim(rest.substr(asPos + 4)); }
             if (!id.empty()) actorIndex(id, label);
             continue;
         }
-        // message: <src> <arrow> <dst> [: text]
+        if (fw == U16("activate") || fw == U16("deactivate")) {
+            int a = actorIndex(trim(line.substr(fw.size())), Str());
+            SeqEvent e; e.kind = SeqEventKind::Message; e.from = a; e.to = a; e.text = Str();
+            e.activate = (fw == U16("activate")) ? 2 : -2; // 2/-2 = standalone (no arrow drawn)
+            d.seq.events.push_back(e); continue;
+        }
+        if (fw == U16("loop")) { blockStart(SeqBlock::Loop, trim(line.substr(4))); continue; }
+        if (fw == U16("opt"))  { blockStart(SeqBlock::Opt,  trim(line.substr(3))); continue; }
+        if (fw == U16("par"))  { blockStart(SeqBlock::Par,  trim(line.substr(3))); continue; }
+        if (fw == U16("alt"))  { blockStart(SeqBlock::Alt,  trim(line.substr(3))); continue; }
+        if (fw == U16("else")) { SeqEvent e; e.kind = SeqEventKind::BlockElse; e.text = trim(line.substr(4)); d.seq.events.push_back(e); continue; }
+        if (fw == U16("end"))  { SeqEvent e; e.kind = SeqEventKind::BlockEnd; d.seq.events.push_back(e); continue; }
+        if (fw == U16("note")) {
+            Str rest = trim(line.substr(4)); Str low = lowerStr(rest);
+            int pos = 0; size_t skip = 0;
+            if (low.compare(0, 9, U16("right of ")) == 0) { pos = 1; skip = 9; }
+            else if (low.compare(0, 8, U16("left of ")) == 0) { pos = -1; skip = 8; }
+            else if (low.compare(0, 5, U16("over ")) == 0) { pos = 0; skip = 5; }
+            else continue;
+            Str body2 = trim(rest.substr(skip));
+            size_t colon = body2.find(U16(':'));
+            Str who = (colon == Str::npos) ? body2 : trim(body2.substr(0, colon));
+            Str text = (colon == Str::npos) ? Str() : trim(body2.substr(colon + 1));
+            size_t comma = who.find(U16(','));
+            int a0 = actorIndex(comma == Str::npos ? who : trim(who.substr(0, comma)), Str());
+            int a1 = (comma == Str::npos) ? a0 : actorIndex(trim(who.substr(comma + 1)), Str());
+            SeqEvent e; e.kind = SeqEventKind::Note; e.from = std::min(a0, a1); e.to = std::max(a0, a1);
+            e.text = text; e.notePos = pos; d.seq.events.push_back(e); continue;
+        }
+
+        // message: <src> <arrow>[+/-] <dst> [: text]
         bool dashed = false; size_t apos = Str::npos; int alen = 0;
         for (size_t i = 0; i < line.size(); i++) {
-            bool dh = false; int n = arrowAt(line, i, dh);
-            if (n) { apos = i; alen = n; dashed = dh; break; }
+            bool dh = false; int nn = arrowAt(line, i, dh);
+            if (nn) { apos = i; alen = nn; dashed = dh; break; }
         }
-        if (apos == Str::npos) continue; // not a message we understand
+        if (apos == Str::npos) continue;
         Str src = trim(line.substr(0, apos));
         Str after = line.substr(apos + alen);
+        int activate = 0;
+        { size_t j = 0; while (j < after.size() && after[j] == U16(' ')) j++;
+          if (j < after.size() && after[j] == U16('+')) { activate = 1; after = after.substr(j + 1); }
+          else if (j < after.size() && after[j] == U16('-')) { activate = -1; after = after.substr(j + 1); } }
         Str dst = after, text;
         size_t colon = after.find(U16(':'));
         if (colon != Str::npos) { dst = trim(after.substr(0, colon)); text = trim(after.substr(colon + 1)); }
         else dst = trim(after);
         if (src.empty() || dst.empty()) continue;
-        int fi = actorIndex(src, Str());
-        int ti = actorIndex(dst, Str());
-        d.seq.messages.push_back(SeqMessage{ fi, ti, text, dashed });
+        SeqEvent e; e.kind = SeqEventKind::Message;
+        e.from = actorIndex(src, Str()); e.to = actorIndex(dst, Str());
+        e.text = text; e.dashed = dashed; e.activate = activate;
+        d.seq.events.push_back(e);
     }
     if (d.seq.actors.empty()) d.kind = DiagramKind::None;
     return d;
@@ -344,6 +382,20 @@ void dashH(LayoutResult& o, double x1, double x2, double y, double dash, Color c
         x = xe + dir * dash; // gap
     }
 }
+// split a label on '\n', measure its widest line, and draw it centered
+std::vector<Str> labelLines(const Str& s) {
+    std::vector<Str> v; Str cur;
+    for (Char c : s) { if (c == U16('\n')) { v.push_back(cur); cur.clear(); } else cur += c; }
+    v.push_back(cur); return v;
+}
+double widestLine(TextMeasurer& tm, const FontSpec& f, const std::vector<Str>& lines) {
+    double w = 0; for (const auto& ln : lines) w = std::max(w, tm.textWidth(f, ln)); return w;
+}
+void drawLabelBlock(LayoutResult& o, const std::vector<Str>& lines, double cx, double blockTop,
+                    double fh, double asc, const FontSpec& f, Color c, TextMeasurer& tm) {
+    double y = blockTop;
+    for (const auto& ln : lines) { double w = tm.textWidth(f, ln); textC(o, cx - w / 2, y + asc, w, fh, ln, f, c); y += fh; }
+}
 
 // A qualitative palette (GitHub-ish), cycled across pie slices.
 const Color PIE_PALETTE[] = {
@@ -419,74 +471,145 @@ double layoutSequence(const Sequence& seq, double width, const LayoutTheme& th, 
     if (n == 0) return 0;
     FontSpec body = bodyFont(), bold = boldFont();
     double fh = tm.lineHeight(body), asc = tm.ascent(body);
-    double pad = S(scale, 16);
-    double boxPadX = S(scale, 12);
-    double boxH = fh + S(scale, 12);
+    double pad = S(scale, 16), boxPadX = S(scale, 12), boxH = fh + S(scale, 12);
+    double ah = S(scale, 6), notePad = S(scale, 6), barW = S(scale, 8);
 
     double maxLabel = 0;
-    for (const auto& a : seq.actors) { double w = tm.textWidth(bold, a.label); if (w > maxLabel) maxLabel = w; }
+    for (const auto& a : seq.actors) maxLabel = std::max(maxLabel, tm.textWidth(bold, a.label));
     double colW = (width - 2 * pad) / n;
-    double minCol = maxLabel + 2 * boxPadX + S(scale, 24);
+    double minCol = maxLabel + 2 * boxPadX + S(scale, 30);
     if (colW < minCol) colW = minCol;
     auto colX = [&](int i) { return ox + pad + colW * i + colW / 2; };
 
     double top = oy + pad;
     double firstMsg = top + boxH + S(scale, 34);
     double msgGap = fh + S(scale, 22);
+    auto textLines = [](const Str& s) { int l = 1; for (Char c : s) if (c == U16('\n')) l++; return l; };
 
-    // total lifeline length (accounting for self-message loops taking extra room)
-    double y = firstMsg;
-    for (const auto& m : seq.messages) y += (m.from == m.to) ? (msgGap + S(scale, 16)) : msgGap;
-    double lifeBottom = y + S(scale, 6);
+    // Single walk: messages/notes/dividers go to the foreground list `fg`; block
+    // frames and activation bars are collected and emitted behind everything.
+    LayoutResult fg;
+    struct Bar { int actor; double y0, y1; int depth; };
+    struct Frame { SeqBlock block; Str label; double y0, y1, x0, x1; };
+    std::vector<Bar> bars; std::vector<Frame> frames;
+    std::vector<std::vector<double>> actStack(n);
+    std::vector<size_t> openBlocks; // indices into frames
+    int number = 0;
 
-    // lifelines (behind boxes/messages)
-    for (int i = 0; i < n; i++) { double x = colX(i); lineC(out, x, top + boxH, x, lifeBottom, th.border); }
+    auto frameBounds = [&](int depth, double& fx0, double& fx1) {
+        double m = std::max(S(scale, 12), S(scale, 34) - depth * S(scale, 8));
+        fx0 = colX(0) - m; fx1 = colX(n - 1) + m;
+    };
 
-    // actor boxes
-    for (int i = 0; i < n; i++) {
-        double cx = colX(i);
-        double w = tm.textWidth(bold, seq.actors[i].label);
-        double bw = w + 2 * boxPadX, bx = cx - bw / 2;
-        fillR(out, { bx, top, bw, boxH }, th.bg2);
-        frameR(out, { bx, top, bw, boxH }, th.border);
-        textC(out, cx - w / 2, top + (boxH - fh) / 2 + asc, w, fh, seq.actors[i].label, bold, th.text);
-    }
-
-    // messages
-    double ah = S(scale, 6);
     double my = firstMsg;
-    for (const auto& m : seq.messages) {
-        if (m.from == m.to) {
-            double x = colX(m.from);
-            double loopW = S(scale, 34), loopH = S(scale, 16);
-            if (!m.text.empty()) {
-                double tw = tm.textWidth(body, m.text);
-                textC(out, x + loopW + S(scale, 6), my + asc, tw, fh, m.text, body, th.text);
+    for (const auto& e : seq.events) {
+        switch (e.kind) {
+        case SeqEventKind::Message: {
+            // activation toggles (from +/- shorthand or activate/deactivate)
+            if (e.activate == 1 || e.activate == 2) actStack[e.to].push_back(my);
+            if (e.activate == -1 || e.activate == -2) {
+                int a = (e.activate == -1) ? e.from : e.to;
+                if (!actStack[a].empty()) { double y0 = actStack[a].back(); actStack[a].pop_back(); bars.push_back({ a, y0, my, (int)actStack[a].size() }); }
             }
-            double yb = my + loopH;
-            lineC(out, x, my, x + loopW, my, th.text);
-            lineC(out, x + loopW, my, x + loopW, yb, th.text);
-            if (m.dashed) dashH(out, x + loopW, x, yb, S(scale, 5), th.text);
-            else lineC(out, x + loopW, yb, x, yb, th.text);
-            polyC(out, { { x, yb }, { x + ah, yb - ah * 0.7 }, { x + ah, yb + ah * 0.7 } }, th.text);
-            my += msgGap + S(scale, 16);
-        } else {
-            double xf = colX(m.from), xt = colX(m.to);
-            double dir = (xt > xf) ? 1 : -1;
-            if (!m.text.empty()) {
-                double tw = tm.textWidth(body, m.text);
-                double midx = (xf + xt) / 2;
-                textC(out, midx - tw / 2, my - S(scale, 6) + asc - fh, tw, fh, m.text, body, th.text);
+            if (e.activate == 2 || e.activate == -2) break; // standalone (no arrow), no advance
+            Str label = e.text;
+            if (seq.autonumber) { number++; label = toStr(number) + U16(" ") + label; }
+            if (e.from == e.to) {
+                double x = colX(e.from), loopW = S(scale, 34), loopH = S(scale, 16);
+                if (!label.empty()) { double tw = tm.textWidth(body, label); textC(fg, x + loopW + S(scale, 6), my + asc, tw, fh, label, body, th.text); }
+                double yb = my + loopH;
+                lineC(fg, x, my, x + loopW, my, th.text);
+                lineC(fg, x + loopW, my, x + loopW, yb, th.text);
+                if (e.dashed) dashH(fg, x + loopW, x, yb, S(scale, 5), th.text);
+                else lineC(fg, x + loopW, yb, x, yb, th.text);
+                polyC(fg, { { x, yb }, { x + ah, yb - ah * 0.7 }, { x + ah, yb + ah * 0.7 } }, th.text);
+                my += msgGap + S(scale, 16);
+            } else {
+                double xf = colX(e.from), xt = colX(e.to), dir = (xt > xf) ? 1 : -1;
+                if (!label.empty()) { double tw = tm.textWidth(body, label); textC(fg, (xf + xt) / 2 - tw / 2, my - S(scale, 6) + asc - fh, tw, fh, label, body, th.text); }
+                if (e.dashed) dashH(fg, xf, xt - dir * ah, my, S(scale, 5), th.text);
+                else lineC(fg, xf, my, xt - dir * ah, my, th.text);
+                polyC(fg, { { xt, my }, { xt - dir * ah, my - ah * 0.7 }, { xt - dir * ah, my + ah * 0.7 } }, th.text);
+                my += msgGap;
             }
-            double ly = my;
-            if (m.dashed) dashH(out, xf, xt - dir * ah, ly, S(scale, 5), th.text);
-            else lineC(out, xf, ly, xt - dir * ah, ly, th.text);
-            polyC(out, { { xt, ly }, { xt - dir * ah, ly - ah * 0.7 }, { xt - dir * ah, ly + ah * 0.7 } }, th.text);
-            my += msgGap;
+            break;
+        }
+        case SeqEventKind::Note: {
+            std::vector<Str> lines = labelLines(e.text);
+            double tw = widestLine(tm, body, lines), nh = lines.size() * fh + 2 * notePad;
+            double nx0, nx1;
+            if (e.notePos > 0)      { nx0 = colX(e.to) + S(scale, 10); nx1 = nx0 + tw + 2 * notePad; }
+            else if (e.notePos < 0) { nx1 = colX(e.from) - S(scale, 10); nx0 = nx1 - tw - 2 * notePad; }
+            else { // over
+                double cxc = (colX(e.from) + colX(e.to)) / 2, halfw = std::max(tw / 2 + notePad, (colX(e.to) - colX(e.from)) / 2 + colW * 0.3);
+                nx0 = cxc - halfw; nx1 = cxc + halfw;
+            }
+            fillR(fg, { nx0, my, nx1 - nx0, nh }, th.bg3);
+            frameR(fg, { nx0, my, nx1 - nx0, nh }, th.border);
+            drawLabelBlock(fg, lines, (nx0 + nx1) / 2, my + notePad, fh, asc, body, th.text, tm);
+            my += nh + S(scale, 12);
+            break;
+        }
+        case SeqEventKind::BlockStart: {
+            double fx0, fx1; frameBounds((int)openBlocks.size(), fx0, fx1);
+            frames.push_back({ e.block, e.text, my, my, fx0, fx1 });
+            openBlocks.push_back(frames.size() - 1);
+            my += 2 * fh + S(scale, 8); // label row + clearance for the first message's text
+            break;
+        }
+        case SeqEventKind::BlockElse: {
+            if (!openBlocks.empty()) {
+                const Frame& f = frames[openBlocks.back()];
+                dashH(fg, f.x0, f.x1, my, S(scale, 5), th.border);
+                Str lbl = U16("[") + e.text + U16("]");
+                textC(fg, f.x0 + S(scale, 8), my + asc + S(scale, 2), tm.textWidth(body, lbl), fh, lbl, body, th.text2);
+            }
+            my += 2 * fh + S(scale, 6);
+            break;
+        }
+        case SeqEventKind::BlockEnd: {
+            if (!openBlocks.empty()) { frames[openBlocks.back()].y1 = my; openBlocks.pop_back(); }
+            my += S(scale, 12);
+            break;
+        }
         }
     }
+    double bottom = my + S(scale, 6);
+    // close anything left open at the bottom
+    for (int a = 0; a < n; a++) for (double y0 : actStack[a]) bars.push_back({ a, y0, bottom - S(scale, 6), 0 });
+    while (!openBlocks.empty()) { frames[openBlocks.back()].y1 = bottom - S(scale, 6); openBlocks.pop_back(); }
 
-    double bottom = std::max(lifeBottom, my);
+    // ---- assemble: lifelines, frames, bars, actor boxes, then foreground ----
+    for (int i = 0; i < n; i++) { double x = colX(i); lineC(out, x, top + boxH, x, bottom, th.border); }
+    auto blockWord = [](SeqBlock b) {
+        switch (b) { case SeqBlock::Loop: return U16("loop"); case SeqBlock::Alt: return U16("alt");
+                     case SeqBlock::Opt: return U16("opt"); default: return U16("par"); }
+    };
+    for (const auto& f : frames) {
+        frameR(out, { f.x0, f.y0, f.x1 - f.x0, f.y1 - f.y0 }, th.border);
+        Str w = blockWord(f.block);
+        double tabW = tm.textWidth(bold, w) + S(scale, 10);
+        fillR(out, { f.x0, f.y0, tabW, fh + S(scale, 4) }, th.bg2);
+        frameR(out, { f.x0, f.y0, tabW, fh + S(scale, 4) }, th.border);
+        textC(out, f.x0 + S(scale, 5), f.y0 + asc + S(scale, 2), tm.textWidth(bold, w), fh, w, bold, th.text2);
+        if (!f.label.empty()) {
+            Str lbl = U16("[") + f.label + U16("]");
+            textC(out, f.x0 + tabW + S(scale, 6), f.y0 + asc + S(scale, 2), tm.textWidth(body, lbl), fh, lbl, body, th.text2);
+        }
+    }
+    for (const auto& b : bars) {
+        double x = colX(b.actor) + b.depth * (barW - S(scale, 2));
+        fillR(out, { x - barW / 2, b.y0, barW, std::max(b.y1 - b.y0, S(scale, 6)) }, th.bg2);
+        frameR(out, { x - barW / 2, b.y0, barW, std::max(b.y1 - b.y0, S(scale, 6)) }, th.border);
+    }
+    for (int i = 0; i < n; i++) {
+        double cx = colX(i), w = tm.textWidth(bold, seq.actors[i].label), bw = w + 2 * boxPadX;
+        fillR(out, { cx - bw / 2, top, bw, boxH }, th.bg2);
+        frameR(out, { cx - bw / 2, top, bw, boxH }, th.border);
+        textC(out, cx - w / 2, top + (boxH - fh) / 2 + asc, w, fh, seq.actors[i].label, bold, th.text);
+    }
+    out.cmds.insert(out.cmds.end(), fg.cmds.begin(), fg.cmds.end());
+    (void)textLines;
     return (bottom - oy) + pad;
 }
 
@@ -507,19 +630,6 @@ void arrowHead(LayoutResult& o, PointF P, double ux, double uy, double len, doub
     polyC(o, { P, { bx + px * half, by + py * half }, { bx - px * half, by - py * half } }, c);
 }
 
-std::vector<Str> labelLines(const Str& s) {
-    std::vector<Str> v; Str cur;
-    for (Char c : s) { if (c == U16('\n')) { v.push_back(cur); cur.clear(); } else cur += c; }
-    v.push_back(cur); return v;
-}
-double widestLine(TextMeasurer& tm, const FontSpec& f, const std::vector<Str>& lines) {
-    double w = 0; for (const auto& ln : lines) w = std::max(w, tm.textWidth(f, ln)); return w;
-}
-void drawLabelBlock(LayoutResult& o, const std::vector<Str>& lines, double cx, double blockTop,
-                    double fh, double asc, const FontSpec& f, Color c, TextMeasurer& tm) {
-    double y = blockTop;
-    for (const auto& ln : lines) { double w = tm.textWidth(f, ln); textC(o, cx - w / 2, y + asc, w, fh, ln, f, c); y += fh; }
-}
 // rounded-rect outline polygon (round / stadium / circle share this).
 std::vector<PointF> roundRectPoly(double x, double y, double w, double h, double r) {
     r = std::min(r, std::min(w / 2, h / 2));

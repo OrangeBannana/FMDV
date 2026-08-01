@@ -58,9 +58,9 @@ int main() {
         check(d.kind == DiagramKind::Sequence, "seq: recognized");
         check(d.seq.actors.size() == 2, "seq: two actors");
         check(ToUtf8(d.seq.actors[1].label) == "Bobby", "seq: 'as' label");
-        check(d.seq.messages.size() == 2, "seq: two messages");
-        check(d.seq.messages[0].from == 0 && d.seq.messages[0].to == 1, "seq: msg endpoints");
-        check(!d.seq.messages[0].dashed && d.seq.messages[1].dashed, "seq: dashed detection (-->>)");
+        check(d.seq.events.size() == 2, "seq: two message events");
+        check(d.seq.events[0].from == 0 && d.seq.events[0].to == 1, "seq: msg endpoints");
+        check(!d.seq.events[0].dashed && d.seq.events[1].dashed, "seq: dashed detection (-->>)");
     }
     {   // actors auto-created in first-seen order from messages
         Diagram d = parse("sequenceDiagram\n  A->>B: x\n  B->>C: y\n");
@@ -69,7 +69,34 @@ int main() {
     }
     {   // self-message
         Diagram d = parse("sequenceDiagram\n  A->>A: think\n");
-        check(d.seq.messages.size() == 1 && d.seq.messages[0].from == d.seq.messages[0].to, "seq: self message");
+        check(d.seq.events.size() == 1 && d.seq.events[0].from == d.seq.events[0].to, "seq: self message");
+    }
+    {   // autonumber, notes, activation +/- , loop block
+        Diagram d = parse("sequenceDiagram\n  autonumber\n  A->>+B: req\n  B-->>-A: res\n"
+                          "  Note over A,B: shared\n  loop retry\n  A->>B: ping\n  end\n");
+        check(d.seq.autonumber, "seq: autonumber flag");
+        int notes = 0, loops = 0, ends = 0, act = 0, deact = 0;
+        for (const auto& e : d.seq.events) {
+            if (e.kind == SeqEventKind::Note) notes++;
+            if (e.kind == SeqEventKind::BlockStart && e.block == SeqBlock::Loop) loops++;
+            if (e.kind == SeqEventKind::BlockEnd) ends++;
+            if (e.kind == SeqEventKind::Message && e.activate == 1) act++;
+            if (e.kind == SeqEventKind::Message && e.activate == -1) deact++;
+        }
+        check(notes == 1 && loops == 1 && ends == 1, "seq: note + loop/end events");
+        check(act == 1 && deact == 1, "seq: +/- activation parsed");
+        check(ToUtf8(d.seq.events[2].text) == "shared", "seq: note text + span");
+    }
+    {   // alt / else / opt structure
+        Diagram d = parse("sequenceDiagram\n  alt ok\n  A->>B: x\n  else fail\n  A->>B: y\n  end\n"
+                          "  opt maybe\n  A->>B: z\n  end\n");
+        int starts = 0, elses = 0, ends = 0;
+        for (const auto& e : d.seq.events) {
+            if (e.kind == SeqEventKind::BlockStart) starts++;
+            if (e.kind == SeqEventKind::BlockElse) elses++;
+            if (e.kind == SeqEventKind::BlockEnd) ends++;
+        }
+        check(starts == 2 && elses == 1 && ends == 2, "seq: alt/else/opt structure");
     }
 
     // ---- flowchart parsing ----

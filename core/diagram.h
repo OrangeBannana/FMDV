@@ -31,16 +31,25 @@ struct Pie {
 };
 
 // ---- sequence ----
+// Modeled as an ordered event stream so messages, notes, and block frames
+// (loop/alt/opt/par) interleave in source order.
 struct SeqActor { Str id; Str label; };
-struct SeqMessage {
-    int from = 0;                       // index into Sequence::actors
-    int to = 0;
-    Str text;
-    bool dashed = false;                // "-->>" / "-->" style
+enum class SeqEventKind { Message, Note, BlockStart, BlockElse, BlockEnd };
+enum class SeqBlock { Loop, Alt, Opt, Par };
+struct SeqEvent {
+    SeqEventKind kind = SeqEventKind::Message;
+    int from = 0;            // Message: source actor; Note: first actor of span
+    int to = 0;              // Message: target actor; Note: last actor of span
+    Str text;               // message / note text, or block label
+    bool dashed = false;     // Message: "-->>" style
+    int activate = 0;        // Message: +1 activate target, -1 deactivate source
+    int notePos = 0;         // Note: -1 left of, 0 over, +1 right of
+    SeqBlock block = SeqBlock::Loop; // BlockStart / BlockElse
 };
 struct Sequence {
     std::vector<SeqActor> actors;
-    std::vector<SeqMessage> messages;
+    std::vector<SeqEvent> events;
+    bool autonumber = false;
 };
 
 // ---- flowchart ----
