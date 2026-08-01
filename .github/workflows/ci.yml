@@ -39,8 +39,8 @@ jobs:
         run: |
           $gxx = "$env:RUNNER_TEMP\msys64\ucrt64\bin\g++.exe"
           New-Item -ItemType Directory -Force build | Out-Null
-          $core = "core/str.cpp","core/markdown.cpp","core/edit_assist.cpp","core/release_info.cpp","core/layout.cpp","core/text_select.cpp"
-          foreach ($t in "str","markdown","edit_assist","release_info","layout","text_select","bench_log") {
+          $core = "core/str.cpp","core/markdown.cpp","core/edit_assist.cpp","core/release_info.cpp","core/layout.cpp","core/text_select.cpp","core/diagram.cpp"
+          foreach ($t in "str","markdown","edit_assist","release_info","layout","text_select","bench_log","diagram") {
             & $gxx -std=c++17 -O2 -Wall -Wextra -Icore "tests/${t}_test.cpp" @core -o "build/${t}-test.exe"
             if ($LASTEXITCODE) { throw "compile ${t}_test failed" }
             & "build/${t}-test.exe"
