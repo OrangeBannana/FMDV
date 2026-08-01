@@ -386,6 +386,78 @@ Diagram parseState(const std::vector<Str>& lines) {
     return d;
 }
 
+// ---- class diagram (classDiagram) ----
+// Classes become multi-compartment boxes (name + members); relationships become
+// edges with UML end markers (triangle/diamond/arrow), mapped onto the shared
+// flowchart layered layout.
+Diagram parseClass(const std::vector<Str>& lines) {
+    Diagram d; d.kind = DiagramKind::Flowchart; d.flow.horizontal = false;
+    auto classIndex = [&](const Str& id) -> int {
+        for (size_t k = 0; k < d.flow.nodes.size(); k++) if (d.flow.nodes[k].id == id) return (int)k;
+        FlowNode fn; fn.id = id; fn.shape = NodeShape::Class; fn.label = id;
+        d.flow.nodes.push_back(fn);
+        return (int)d.flow.nodes.size() - 1;
+    };
+    auto stripQuoted = [](const Str& s) { Str o; bool q = false; for (Char c : s) { if (c == U16('"')) { q = !q; continue; } if (!q) o += c; } return o; };
+    auto firstId = [](const Str& s) { Str t; size_t i = 0; while (i < s.size() && !isIdChar(s[i])) i++; while (i < s.size() && isIdChar(s[i])) t += s[i++]; return t; };
+    auto lastId = [](const Str& s) { Str t; size_t i = s.size(); while (i > 0 && !isIdChar(s[i-1])) i--; size_t e = i; while (i > 0 && isIdChar(s[i-1])) i--; return s.substr(i, e - i); };
+
+    int curClass = -1;
+    for (size_t li = 1; li < lines.size(); li++) {
+        Str line = trim(lines[li]);
+        if (line.empty() || isComment(line)) continue;
+        if (curClass >= 0) { // inside a class { } body
+            if (line[0] == U16('}')) { curClass = -1; continue; }
+            d.flow.nodes[curClass].members.push_back(line);
+            continue;
+        }
+        Str fw = firstWord(line);
+        if (fw == U16("direction")) { Str dir = lowerStr(trim(line.substr(9))); if (dir.compare(0,2,U16("lr"))==0) d.flow.horizontal = true; continue; }
+        if (fw == U16("class")) {
+            Str rest = trim(line.substr(5));
+            Str id; for (Char c : rest) { if (!isIdChar(c)) break; id += c; }
+            if (id.empty()) continue;
+            int k = classIndex(id);
+            if (rest.find(U16('{')) != Str::npos && rest.find(U16('}')) == Str::npos) curClass = k; // open body
+            continue;
+        }
+        if (fw == U16("note") || fw == U16("namespace") || fw == U16("end")) continue;
+
+        // relationship: find the connector run ("--" or "..") with optional markers
+        size_t op0 = Str::npos;
+        for (size_t i = 0; i + 1 < line.size(); i++)
+            if ((line[i] == U16('-') && line[i+1] == U16('-')) || (line[i] == U16('.') && line[i+1] == U16('.'))) { op0 = i; break; }
+        if (op0 != Str::npos) {
+            size_t l = op0; while (l > 0 && (line[l-1]==U16('<')||line[l-1]==U16('|')||line[l-1]==U16('*')||line[l-1]==U16('o'))) l--;
+            size_t r = op0 + 2; while (r < line.size() && (line[r]==U16('|')||line[r]==U16('>')||line[r]==U16('*')||line[r]==U16('o'))) r++;
+            Str op = line.substr(l, r - l);
+            bool dashed = op.find(U16('.')) != Str::npos;
+            int tail = 0, head = 0;
+            if (op.size() >= 2 && op[0]==U16('<') && op[1]==U16('|')) tail = 2;
+            else if (op[0]==U16('<')) tail = 1; else if (op[0]==U16('*')) tail = 3; else if (op[0]==U16('o')) tail = 4;
+            size_t z = op.size();
+            if (z >= 2 && op[z-1]==U16('>') && op[z-2]==U16('|')) head = 2;
+            else if (op[z-1]==U16('>')) head = 1; else if (op[z-1]==U16('*')) head = 3; else if (op[z-1]==U16('o')) head = 4;
+            Str A = line.substr(0, l), after = line.substr(r), label;
+            size_t colon = after.find(U16(':'));
+            if (colon != Str::npos) { label = trim(after.substr(colon + 1)); after = after.substr(0, colon); }
+            Str aid = lastId(stripQuoted(A)), bid = firstId(stripQuoted(after));
+            if (aid.empty() || bid.empty()) continue;
+            int from = classIndex(aid), to = classIndex(bid);
+            d.flow.edges.push_back(FlowEdge{ from, to, label, false, dashed, head, tail });
+            continue;
+        }
+        // member declaration outside a body:  ClassName : +member
+        size_t colon = line.find(U16(':'));
+        if (colon != Str::npos) {
+            Str who = firstId(line);
+            if (!who.empty()) { int k = classIndex(who); Str mem = trim(line.substr(colon + 1)); if (!mem.empty()) d.flow.nodes[k].members.push_back(mem); }
+        }
+    }
+    if (d.flow.nodes.empty()) d.kind = DiagramKind::None;
+    return d;
+}
+
 } // namespace
 
 Diagram ParseDiagram(const Str& body) {
@@ -404,7 +476,8 @@ Diagram ParseDiagram(const Str& body) {
     if (kw == U16("sequencediagram")) return parseSequence(body2);
     if (kw == U16("graph") || kw == U16("flowchart")) return parseFlowchart(body2);
     if (kw.compare(0, 12, U16("statediagram")) == 0) return parseState(body2);
-    return Diagram{}; // gantt/class/er/journey/unknown -> None (fall back to code)
+    if (kw == U16("classdiagram")) return parseClass(body2);
+    return Diagram{}; // gantt/er/journey/unknown -> None (fall back to code)
 }
 
 // ----------------------------------------------------------------- layout ----
@@ -690,6 +763,28 @@ void arrowHead(LayoutResult& o, PointF P, double ux, double uy, double len, doub
     double px = -uy, py = ux; // perpendicular
     polyC(o, { P, { bx + px * half, by + py * half }, { bx - px * half, by - py * half } }, c);
 }
+double markerLen(int m, double scale) { return m == 0 ? 0.0 : m == 1 ? S(scale, 9) : m == 2 ? S(scale, 13) : S(scale, 16); }
+void outlinePoly(LayoutResult& o, const std::vector<PointF>& p, Color c) {
+    for (size_t k = 0; k < p.size(); k++) { const PointF& A = p[k]; const PointF& B = p[(k + 1) % p.size()]; lineC(o, A.x, A.y, B.x, B.y, c); }
+}
+// UML relationship end markers. tip at P; (ux,uy) points INTO the node.
+void drawMarker(LayoutResult& o, int m, PointF P, double ux, double uy, double scale, const LayoutTheme& th) {
+    double px = -uy, py = ux;
+    if (m == 1) { arrowHead(o, P, ux, uy, S(scale, 9), S(scale, 5), th.text2); return; }
+    if (m == 2) { // hollow triangle (inheritance / realization)
+        double len = S(scale, 13), hw = S(scale, 8), bx = P.x - ux * len, by = P.y - uy * len;
+        std::vector<PointF> tri = { P, { bx + px * hw, by + py * hw }, { bx - px * hw, by - py * hw } };
+        polyC(o, tri, th.bg); outlinePoly(o, tri, th.text2);
+        return;
+    }
+    if (m == 3 || m == 4) { // diamond: 3 filled (composition), 4 open (aggregation)
+        double len = S(scale, 16), hw = S(scale, 6);
+        PointF mid = { P.x - ux * (len / 2), P.y - uy * (len / 2) }, tail = { P.x - ux * len, P.y - uy * len };
+        std::vector<PointF> di = { P, { mid.x + px * hw, mid.y + py * hw }, tail, { mid.x - px * hw, mid.y - py * hw } };
+        if (m == 3) polyC(o, di, th.text2);
+        else { polyC(o, di, th.bg); outlinePoly(o, di, th.text2); }
+    }
+}
 
 // rounded-rect outline polygon (round / stadium / circle share this).
 std::vector<PointF> roundRectPoly(double x, double y, double w, double h, double r) {
@@ -757,7 +852,7 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
                        double scale, double ox, double oy, LayoutResult& out) {
     int n = (int)fc.nodes.size();
     if (n == 0) return 0;
-    FontSpec body = bodyFont();
+    FontSpec body = bodyFont(), bold = boldFont();
     double fh = tm.lineHeight(body), asc = tm.ascent(body);
     double pad = S(scale, 16), padX = S(scale, 14), padY = S(scale, 9);
     double rankGap = S(scale, 46), sibGap = S(scale, 26);
@@ -798,6 +893,14 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
             case NodeShape::Cylinder:   h += S(scale, 10); break;
             case NodeShape::Circle: { double d = std::max(tw, (double)lines.size() * fh) + 2 * padX + S(scale, 8); w = h = d; break; }
             case NodeShape::Dot: case NodeShape::DotRing: { double d = S(scale, 15); w = h = d; break; }
+            case NodeShape::Class: {
+                double nameW = tm.textWidth(bold, fc.nodes[k].label), mw = 0;
+                for (const auto& m : fc.nodes[k].members) mw = std::max(mw, tm.textWidth(body, m));
+                w = std::max(nameW, mw) + 2 * padX;
+                h = fh + 2 * padY;
+                if (!fc.nodes[k].members.empty()) h += fc.nodes[k].members.size() * fh + 2 * padY;
+                break;
+            }
             default: break;
         }
         nodeW[k] = w; nodeH[k] = h;
@@ -889,8 +992,8 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
     }
     for (int i = 0; i < (int)ln.size(); i++) if (ln[i].real >= 0) { int k = ln[i].real; box[k] = RectF{ ln[i].x - nodeW[k]/2, ln[i].y - nodeH[k]/2, nodeW[k], nodeH[k] }; }
 
-    // ---- edges: polyline through the chain waypoints ----
-    double ah = S(scale, 9), ahw = S(scale, 5);
+    // ---- edges: polyline through the chain waypoints, with end markers ----
+    auto unit = [](double dx, double dy) { double l = std::sqrt(dx * dx + dy * dy); if (l < 1) l = 1; return PointF{ dx / l, dy / l }; };
     for (size_t ei = 0; ei < fc.edges.size(); ei++) {
         if (skip[ei]) continue;
         const FlowEdge& e = fc.edges[ei];
@@ -899,11 +1002,13 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
         const RectF& a = box[e.from]; const RectF& b = box[e.to];
         wp.front() = boxEdge(a.x + a.w/2, a.y + a.h/2, a.w/2, a.h/2, wp[1].x, wp[1].y);
         wp.back()  = boxEdge(b.x + b.w/2, b.y + b.h/2, b.w/2, b.h/2, wp[wp.size()-2].x, wp[wp.size()-2].y);
-        PointF tip = wp.back();
-        double dxl = tip.x - wp[wp.size()-2].x, dyl = tip.y - wp[wp.size()-2].y, ll = std::sqrt(dxl*dxl + dyl*dyl);
-        if (ll < 1) ll = 1;
-        double ux = dxl/ll, uy = dyl/ll;
-        if (e.arrow) wp.back() = { tip.x - ux*ah, tip.y - uy*ah };
+        PointF headTip = wp.back(), tailTip = wp.front();
+        PointF uh = unit(headTip.x - wp[wp.size()-2].x, headTip.y - wp[wp.size()-2].y);
+        PointF ut = unit(tailTip.x - wp[1].x, tailTip.y - wp[1].y);
+        int head = (e.headMarker >= 0) ? e.headMarker : (e.arrow ? 1 : 0);
+        int tail = (e.headMarker >= 0) ? e.tailMarker : 0;
+        if (head) { double hL = markerLen(head, scale); wp.back()  = { headTip.x - uh.x * hL, headTip.y - uh.y * hL }; }
+        if (tail) { double tL = markerLen(tail, scale); wp.front() = { tailTip.x - ut.x * tL, tailTip.y - ut.y * tL }; }
         for (size_t j = 0; j + 1 < wp.size(); j++) {
             if (e.dashed) {
                 double sx = wp[j].x, sy = wp[j].y, dxx = wp[j+1].x - sx, dyy = wp[j+1].y - sy, L = std::sqrt(dxx*dxx + dyy*dyy);
@@ -912,7 +1017,8 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
                 while (t < L) { double t2 = std::min(t + dash, L); lineC(out, sx + vx*t, sy + vy*t, sx + vx*t2, sy + vy*t2, th.text2); t = t2 + dash; }
             } else lineC(out, wp[j].x, wp[j].y, wp[j+1].x, wp[j+1].y, th.text2);
         }
-        if (e.arrow) arrowHead(out, tip, ux, uy, ah, ahw, th.text2);
+        if (head) drawMarker(out, head, headTip, uh.x, uh.y, scale, th);
+        if (tail) drawMarker(out, tail, tailTip, ut.x, ut.y, scale, th);
         if (!e.label.empty()) {
             size_t mid = wp.size() / 2;
             PointF A = wp[mid - 1], B = wp[mid];
@@ -925,6 +1031,18 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
     // ---- nodes ----
     for (int k = 0; k < n; k++) {
         const RectF& r = box[k];
+        if (fc.nodes[k].shape == NodeShape::Class) {
+            fillR(out, r, th.bg2); frameR(out, r, th.border);
+            double nameW = tm.textWidth(bold, fc.nodes[k].label);
+            textC(out, r.x + (r.w - nameW) / 2, r.y + padY + asc, nameW, fh, fc.nodes[k].label, bold, th.text);
+            if (!fc.nodes[k].members.empty()) {
+                double divY = r.y + fh + 2 * padY;
+                lineC(out, r.x, divY, r.x + r.w, divY, th.border);
+                double my2 = divY + padY;
+                for (const auto& m : fc.nodes[k].members) { double mw = tm.textWidth(body, m); textC(out, r.x + padX, my2 + asc, mw, fh, m, body, th.text); my2 += fh; }
+            }
+            continue;
+        }
         drawNodeShape(out, fc.nodes[k].shape, r, scale, th);
         std::vector<Str> lines = labelLines(fc.nodes[k].label);
         double blockTop = r.y + (r.h - lines.size() * fh) / 2;

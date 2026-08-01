@@ -155,6 +155,27 @@ int main() {
         check(wi >= 0 && ToUtf8(d.flow.nodes[wi].label) == "Waiting room", "state: quoted description alias");
     }
 
+    // ---- class diagram ----
+    {
+        Diagram d = parse("classDiagram\n  class Animal {\n    +String name\n    +makeSound() void\n  }\n"
+                          "  Animal <|-- Dog\n  Animal *-- Leg\n  Dog --> Bone : has\n");
+        check(d.kind == DiagramKind::Flowchart, "class: maps to flowchart model");
+        int ai = -1; for (size_t k = 0; k < d.flow.nodes.size(); k++) if (ToUtf8(d.flow.nodes[k].id) == "Animal") ai = (int)k;
+        check(ai >= 0 && d.flow.nodes[ai].shape == NodeShape::Class, "class: Animal is a class box");
+        check(d.flow.nodes[ai].members.size() == 2, "class: two members parsed from body");
+        check(ToUtf8(d.flow.nodes[ai].members[1]) == "+makeSound() void", "class: member line preserved");
+        check(d.flow.edges.size() == 3, "class: three relationships");
+        check(d.flow.edges[0].tailMarker == 2, "class: <|-- gives an inheritance triangle at the parent");
+        check(d.flow.edges[1].tailMarker == 3, "class: *-- gives a composition diamond");
+        check(d.flow.edges[2].headMarker == 1, "class: --> gives an association arrow");
+    }
+    {   // member declared outside the body + dependency
+        Diagram d = parse("classDiagram\n  Car : +int wheels\n  Car ..> Engine\n");
+        int ci = -1; for (size_t k = 0; k < d.flow.nodes.size(); k++) if (ToUtf8(d.flow.nodes[k].id) == "Car") ci = (int)k;
+        check(ci >= 0 && d.flow.nodes[ci].members.size() == 1, "class: 'Class : member' declaration");
+        check(d.flow.edges[0].dashed && d.flow.edges[0].headMarker == 1, "class: ..> is a dashed dependency arrow");
+    }
+
     // ---- unsupported / non-mermaid ----
     check(parse("gantt\n  title X\n").kind == DiagramKind::None, "unsupported: gantt -> None");
     check(parse("just some text\n").kind == DiagramKind::None, "unsupported: prose -> None");

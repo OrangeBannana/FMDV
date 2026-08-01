@@ -55,20 +55,27 @@ struct Sequence {
 // ---- flowchart ----
 // Mermaid node shapes: A[rect] A(round) A([stadium]) A[[subroutine]]
 // A[(cylinder)] A((circle)) A{diamond} A{{hexagon}}. Labels may contain <br>.
-// Dot / DotRing are the state-diagram start/end pseudo-states ([*]).
-enum class NodeShape { Rect, Round, Stadium, Subroutine, Cylinder, Circle, Diamond, Hexagon, Dot, DotRing };
+// Dot / DotRing are the state-diagram start/end pseudo-states ([*]); Class is a
+// class-diagram box (name + members compartments, held in FlowNode::members).
+enum class NodeShape { Rect, Round, Stadium, Subroutine, Cylinder, Circle, Diamond, Hexagon, Dot, DotRing, Class };
 struct FlowNode {
     Str id;
     Str label;
     NodeShape shape = NodeShape::Rect;
+    std::vector<Str> members; // class diagrams: attribute/method lines (below the name)
     int rank = 0;   // filled during layout (longest path from a root)
 };
+// Edge end markers (class-diagram relationships): 0 none, 1 arrow, 2 triangle
+// (inheritance/realization), 3 filled diamond (composition), 4 open diamond
+// (aggregation). headMarker < 0 means "use the `arrow` flag" (plain flowcharts).
 struct FlowEdge {
     int from = 0;   // index into Flowchart::nodes
     int to = 0;
     Str label;
     bool arrow = true;    // "-->" (arrowhead) vs "---" (open line)
-    bool dashed = false;  // "-.->" style
+    bool dashed = false;  // "-.->" / dependency style
+    int headMarker = -1;  // marker at `to`
+    int tailMarker = 0;   // marker at `from`
 };
 struct Flowchart {
     bool horizontal = false; // LR/RL lay ranks left->right; TD/TB top->bottom
