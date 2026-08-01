@@ -136,6 +136,25 @@ int main() {
         check(ToUtf8(d.flow.nodes[1].label) == "x\ny", "flow: <br/> variant");
     }
 
+    // ---- state diagram (maps onto the flowchart model) ----
+    {
+        Diagram d = parse("stateDiagram-v2\n  [*] --> Idle\n  Idle --> Running : start\n  Running --> [*]\n");
+        check(d.kind == DiagramKind::Flowchart, "state: maps to flowchart model");
+        check(d.flow.nodes.size() == 4, "state: start + 2 states + end");
+        check(d.flow.nodes[0].shape == NodeShape::Dot, "state: [*] as source is a start dot");
+        bool hasEnd = false; for (const auto& nd : d.flow.nodes) if (nd.shape == NodeShape::DotRing) hasEnd = true;
+        check(hasEnd, "state: [*] as target is an end ring");
+        check(d.flow.edges.size() == 3, "state: three transitions");
+        check(ToUtf8(d.flow.edges[1].label) == "start", "state: transition label");
+        check(d.flow.nodes[1].shape == NodeShape::Round, "state: named state is a rounded box");
+    }
+    {   // "state \"desc\" as id" aliasing + direction
+        Diagram d = parse("stateDiagram-v2\n  direction LR\n  state \"Waiting room\" as w\n  [*] --> w\n");
+        check(d.flow.horizontal, "state: direction LR");
+        int wi = -1; for (size_t k = 0; k < d.flow.nodes.size(); k++) if (ToUtf8(d.flow.nodes[k].id) == "w") wi = (int)k;
+        check(wi >= 0 && ToUtf8(d.flow.nodes[wi].label) == "Waiting room", "state: quoted description alias");
+    }
+
     // ---- unsupported / non-mermaid ----
     check(parse("gantt\n  title X\n").kind == DiagramKind::None, "unsupported: gantt -> None");
     check(parse("just some text\n").kind == DiagramKind::None, "unsupported: prose -> None");

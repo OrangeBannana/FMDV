@@ -55,7 +55,8 @@ struct Sequence {
 // ---- flowchart ----
 // Mermaid node shapes: A[rect] A(round) A([stadium]) A[[subroutine]]
 // A[(cylinder)] A((circle)) A{diamond} A{{hexagon}}. Labels may contain <br>.
-enum class NodeShape { Rect, Round, Stadium, Subroutine, Cylinder, Circle, Diamond, Hexagon };
+// Dot / DotRing are the state-diagram start/end pseudo-states ([*]).
+enum class NodeShape { Rect, Round, Stadium, Subroutine, Cylinder, Circle, Diamond, Hexagon, Dot, DotRing };
 struct FlowNode {
     Str id;
     Str label;

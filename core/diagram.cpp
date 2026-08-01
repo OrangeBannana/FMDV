@@ -326,6 +326,66 @@ Diagram parseFlowchart(const std::vector<Str>& lines) {
     return d;
 }
 
+// ---- state diagram (stateDiagram / stateDiagram-v2) ----
+// Maps onto the flowchart model: states are rounded nodes, transitions are
+// edges, and [*] is a start (as source) or end (as target) pseudo-state.
+Diagram parseState(const std::vector<Str>& lines) {
+    Diagram d; d.kind = DiagramKind::Flowchart; d.flow.horizontal = false;
+    auto stateIndex = [&](const Str& token, bool isTarget) -> int {
+        Str id = token;
+        NodeShape shape = NodeShape::Round;
+        if (token == U16("[*]")) { id = isTarget ? U16("[*]__end") : U16("[*]__start"); shape = isTarget ? NodeShape::DotRing : NodeShape::Dot; }
+        for (size_t k = 0; k < d.flow.nodes.size(); k++) if (d.flow.nodes[k].id == id) return (int)k;
+        FlowNode fn; fn.id = id; fn.shape = shape; fn.label = (token == U16("[*]")) ? Str() : id;
+        d.flow.nodes.push_back(fn);
+        return (int)d.flow.nodes.size() - 1;
+    };
+    for (size_t li = 1; li < lines.size(); li++) {
+        Str line = trim(lines[li]);
+        if (line.empty() || isComment(line)) continue;
+        Str fw = firstWord(line);
+        if (fw == U16("direction")) {
+            Str dir = lowerStr(trim(line.substr(9)));
+            if (dir.compare(0, 2, U16("lr")) == 0) d.flow.horizontal = true;
+            else if (dir.compare(0, 2, U16("rl")) == 0) { d.flow.horizontal = true; d.flow.reverse = true; }
+            else if (dir.compare(0, 2, U16("bt")) == 0) d.flow.reverse = true;
+            continue;
+        }
+        if (fw == U16("state")) {
+            Str rest = trim(line.substr(5));
+            if (!rest.empty() && rest[0] == U16('"')) { // state "desc" as id
+                size_t close = rest.find(U16('"'), 1);
+                if (close == Str::npos) continue;
+                Str desc = rest.substr(1, close - 1);
+                size_t asPos = lowerStr(rest).find(U16(" as "), close);
+                if (asPos != Str::npos) { Str id = trim(rest.substr(asPos + 4)); int k = stateIndex(id, false); d.flow.nodes[k].label = desc; }
+            } else { // state id  (ignore composite "{" bodies)
+                Str id; for (Char c : rest) { if (c == U16(' ') || c == U16('\t') || c == U16('{')) break; id += c; }
+                if (!id.empty()) stateIndex(id, false);
+            }
+            continue;
+        }
+        if (fw == U16("note") || fw == U16("end")) continue;
+
+        size_t ar = line.find(U16("-->"));
+        if (ar == Str::npos) continue;
+        Str src = trim(line.substr(0, ar));
+        Str after = line.substr(ar + 3);
+        Str dst = after, label;
+        size_t colon = after.find(U16(':'));
+        if (colon != Str::npos) { dst = trim(after.substr(0, colon)); label = trim(after.substr(colon + 1)); }
+        else dst = trim(after);
+        // take the first whitespace-delimited token as the state name
+        auto firstToken = [](const Str& s) { Str t; for (Char c : s) { if (c == U16(' ') || c == U16('\t')) break; t += c; } return t; };
+        src = firstToken(src); dst = firstToken(dst);
+        if (src.empty() || dst.empty()) continue;
+        int from = stateIndex(src, false), to = stateIndex(dst, true);
+        d.flow.edges.push_back(FlowEdge{ from, to, label, true, false });
+    }
+    if (d.flow.nodes.empty()) d.kind = DiagramKind::None;
+    return d;
+}
+
 } // namespace
 
 Diagram ParseDiagram(const Str& body) {
@@ -343,7 +403,8 @@ Diagram ParseDiagram(const Str& body) {
     if (kw == U16("pie")) return parsePie(body2);
     if (kw == U16("sequencediagram")) return parseSequence(body2);
     if (kw == U16("graph") || kw == U16("flowchart")) return parseFlowchart(body2);
-    return Diagram{}; // gantt/class/state/unknown -> None (fall back to code)
+    if (kw.compare(0, 12, U16("statediagram")) == 0) return parseState(body2);
+    return Diagram{}; // gantt/class/er/journey/unknown -> None (fall back to code)
 }
 
 // ----------------------------------------------------------------- layout ----
@@ -664,6 +725,14 @@ void drawNodeShape(LayoutResult& o, NodeShape shape, const RectF& r, double scal
         case NodeShape::Stadium: case NodeShape::Circle: {
             auto p = roundRectPoly(r.x, r.y, r.w, r.h, r.h / 2); polyC(o, p, th.bg2); strokePoly(o, p, th.border); break;
         }
+        case NodeShape::Dot: { // state start: filled dot
+            auto p = roundRectPoly(r.x, r.y, r.w, r.h, r.h / 2); polyC(o, p, th.text); break;
+        }
+        case NodeShape::DotRing: { // state end: ring around a filled dot
+            auto outer = roundRectPoly(r.x, r.y, r.w, r.h, r.h / 2); polyC(o, outer, th.bg); strokePoly(o, outer, th.text);
+            double in = r.w * 0.3; auto inner = roundRectPoly(r.x + in, r.y + in, r.w - 2 * in, r.h - 2 * in, (r.h - 2 * in) / 2);
+            polyC(o, inner, th.text); break;
+        }
         case NodeShape::Subroutine: {
             fillR(o, r, th.bg2); frameR(o, r, th.border);
             double inset = S(scale, 6);
@@ -728,6 +797,7 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
             case NodeShape::Subroutine: w += S(scale, 18); break;
             case NodeShape::Cylinder:   h += S(scale, 10); break;
             case NodeShape::Circle: { double d = std::max(tw, (double)lines.size() * fh) + 2 * padX + S(scale, 8); w = h = d; break; }
+            case NodeShape::Dot: case NodeShape::DotRing: { double d = S(scale, 15); w = h = d; break; }
             default: break;
         }
         nodeW[k] = w; nodeH[k] = h;
