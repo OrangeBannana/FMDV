@@ -172,12 +172,29 @@ stateDiagram-v2
 ```
 
 ```mermaid
+classDiagram
+    class Animal {
+        +String name
+    }
+    Animal <|-- Dog
+    Dog *-- Leg
+```
+
+```mermaid
+journey
+    title Day
+    section Work
+        Tea: 5: Me
+        Code: 2: Me
+```
+
+```mermaid
 gantt
     title Unsupported -> code fallback
 ```
 '@ | Set-Content $mmd -Encoding utf8
 & $exe $mmd --dump "$fix\mermaid.png" --width 820 | Out-Null
-Check "render mermaid (pie+sequence+flowchart+fallback)" ((Test-Path "$fix\mermaid.png") -and (Get-Item "$fix\mermaid.png").Length -gt 3000)
+Check "render mermaid (pie/seq/flow/state/class/journey+fallback)" ((Test-Path "$fix\mermaid.png") -and (Get-Item "$fix\mermaid.png").Length -gt 3000)
 
 Write-Host "`nLaunch / stability:" -ForegroundColor Cyan
 $p = Launch $basic

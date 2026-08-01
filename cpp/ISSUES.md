@@ -119,7 +119,10 @@ Shipped since round 8 (see cpp/README.md for behavior):
     dashed/open + labeled/chained edges; layered layout with dummy nodes for
     long edges + median crossing-reduction + polyline routing)
   - **stateDiagram-v2** (states, `[*]` start/end, transitions, `state "x" as id`)
-  Unsupported types (gantt, class, ER, journey, …) fall back to a code block.
+  - **classDiagram** (compartment boxes; inheritance/composition/aggregation/
+    association/dependency markers)
+  - **journey** (title/sections/tasks with 1-5 score dots + actors)
+  Unsupported types (gantt, ER, gitGraph, mindmap, …) fall back to a code block.
 
 Remaining roadmap (not yet done):
 - Smarter fence re-trigger suppression on the closing ```
