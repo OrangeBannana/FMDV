@@ -20,7 +20,7 @@
 
 namespace fmdv {
 
-enum class DiagramKind { None, Pie, Sequence, Flowchart };
+enum class DiagramKind { None, Pie, Sequence, Flowchart, Journey };
 
 // ---- pie ----
 struct PieSlice { Str label; double value = 0; };
@@ -84,11 +84,20 @@ struct Flowchart {
     std::vector<FlowEdge> edges;
 };
 
+// ---- user journey ----
+struct JourneyTask { Str name; int score = 3; std::vector<Str> actors; int section = 0; };
+struct Journey {
+    Str title;
+    std::vector<Str> sections;
+    std::vector<JourneyTask> tasks;
+};
+
 struct Diagram {
     DiagramKind kind = DiagramKind::None;
     Pie pie;
     Sequence seq;
     Flowchart flow;
+    Journey journey;
 };
 
 // Parse the raw text inside a ```mermaid fence (LF-normalized) into a Diagram.

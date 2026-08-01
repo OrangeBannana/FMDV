@@ -176,6 +176,19 @@ int main() {
         check(d.flow.edges[0].dashed && d.flow.edges[0].headMarker == 1, "class: ..> is a dashed dependency arrow");
     }
 
+    // ---- user journey ----
+    {
+        Diagram d = parse("journey\n  title My day\n  section Work\n    Tea: 5: Me\n    Code: 2: Me, Cat\n  section Home\n    Relax: 4: Me\n");
+        check(d.kind == DiagramKind::Journey, "journey: recognized");
+        check(ToUtf8(d.journey.title) == "My day", "journey: title");
+        check(d.journey.sections.size() == 2, "journey: two sections");
+        check(d.journey.tasks.size() == 3, "journey: three tasks");
+        check(d.journey.tasks[1].score == 2, "journey: task score parsed");
+        check(d.journey.tasks[1].actors.size() == 2, "journey: multiple actors");
+        check(d.journey.tasks[2].section == 1, "journey: task section index");
+    }
+    check(parse("journey\n  title Empty\n").kind == DiagramKind::None, "journey: no tasks -> None");
+
     // ---- unsupported / non-mermaid ----
     check(parse("gantt\n  title X\n").kind == DiagramKind::None, "unsupported: gantt -> None");
     check(parse("just some text\n").kind == DiagramKind::None, "unsupported: prose -> None");

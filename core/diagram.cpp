@@ -458,6 +458,40 @@ Diagram parseClass(const std::vector<Str>& lines) {
     return d;
 }
 
+// ---- user journey ----
+// journey / title / section <name> / <task>: <score>: <actor,actor>
+Diagram parseJourney(const std::vector<Str>& lines) {
+    Diagram d; d.kind = DiagramKind::Journey;
+    int curSection = -1;
+    for (size_t li = 1; li < lines.size(); li++) {
+        Str line = trim(lines[li]);
+        if (line.empty() || isComment(line)) continue;
+        Str fw = firstWord(line);
+        if (fw == U16("title")) { d.journey.title = trim(line.substr(5)); continue; }
+        if (fw == U16("section")) { d.journey.sections.push_back(trim(line.substr(7))); curSection = (int)d.journey.sections.size() - 1; continue; }
+        // task:  name : score : actorA, actorB
+        size_t c1 = line.find(U16(':'));
+        if (c1 == Str::npos) continue;
+        JourneyTask t; t.section = curSection;
+        t.name = trim(line.substr(0, c1));
+        Str rest = line.substr(c1 + 1);
+        size_t c2 = rest.find(U16(':'));
+        Str scoreStr = (c2 == Str::npos) ? rest : rest.substr(0, c2);
+        double sc = 3; parseNumber(scoreStr, sc); t.score = (int)(sc + 0.5);
+        if (t.score < 1) t.score = 1;
+        if (t.score > 5) t.score = 5;
+        if (c2 != Str::npos) {
+            Str who = rest.substr(c2 + 1);
+            Str cur;
+            for (Char ch : who) { if (ch == U16(',')) { Str a = trim(cur); if (!a.empty()) t.actors.push_back(a); cur.clear(); } else cur += ch; }
+            Str a = trim(cur); if (!a.empty()) t.actors.push_back(a);
+        }
+        if (!t.name.empty()) d.journey.tasks.push_back(t);
+    }
+    if (d.journey.tasks.empty()) d.kind = DiagramKind::None;
+    return d;
+}
+
 } // namespace
 
 Diagram ParseDiagram(const Str& body) {
@@ -477,7 +511,8 @@ Diagram ParseDiagram(const Str& body) {
     if (kw == U16("graph") || kw == U16("flowchart")) return parseFlowchart(body2);
     if (kw.compare(0, 12, U16("statediagram")) == 0) return parseState(body2);
     if (kw == U16("classdiagram")) return parseClass(body2);
-    return Diagram{}; // gantt/er/journey/unknown -> None (fall back to code)
+    if (kw == U16("journey")) return parseJourney(body2);
+    return Diagram{}; // gantt/er/gitgraph/unknown -> None (fall back to code)
 }
 
 // ----------------------------------------------------------------- layout ----
@@ -1054,6 +1089,69 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
     return (bottom - oy) + pad;
 }
 
+double layoutJourney(const Journey& j, double width, const LayoutTheme& th, TextMeasurer& tm,
+                     double scale, double ox, double oy, LayoutResult& out) {
+    FontSpec body = bodyFont(), bold = boldFont();
+    double fh = tm.lineHeight(body), asc = tm.ascent(body);
+    double pad = S(scale, 16), padX = S(scale, 12), gap = S(scale, 18), dotD = S(scale, 16);
+    // score 1..5 -> red..green (index 0 unused)
+    const Color sc[6] = { {0,0,0}, {0xe0,0x6b,0x6b}, {0xef,0xa8,0x5c}, {0xf2,0xcf,0x5a}, {0x9c,0xcc,0x65}, {0x5a,0xb5,0x6a} };
+
+    double y = oy + pad;
+    if (!j.title.empty()) { double w = tm.textWidth(bold, j.title); textC(out, ox + (width - w) / 2, y + asc, w, fh, j.title, bold, th.text); y += fh + gap; }
+    double sectionY = y, taskY = y + fh + S(scale, 8);
+
+    int n = (int)j.tasks.size();
+    auto actorsStr = [](const JourneyTask& t) { Str s; for (size_t a = 0; a < t.actors.size(); a++) { if (a) s += U16(", "); s += t.actors[a]; } return s; };
+    std::vector<double> tw(n); double taskH = fh + S(scale, 8) + dotD;
+    bool anyActors = false;
+    for (int i = 0; i < n; i++) { if (!j.tasks[i].actors.empty()) anyActors = true; }
+    if (anyActors) taskH += S(scale, 4) + fh;
+    for (int i = 0; i < n; i++) {
+        double w = std::max(tm.textWidth(bold, j.tasks[i].name), tm.textWidth(body, actorsStr(j.tasks[i])));
+        tw[i] = std::max(w, dotD) + 2 * padX;
+    }
+
+    std::vector<double> bx(n);
+    std::vector<std::pair<double,double>> span(j.sections.size(), { 1e18, -1e18 });
+    double x = ox + pad; int prevSec = -999;
+    for (int i = 0; i < n; i++) {
+        if (prevSec != -999 && j.tasks[i].section != prevSec) x += gap;
+        bx[i] = x;
+        int s = j.tasks[i].section;
+        if (s >= 0 && s < (int)span.size()) { span[s].first = std::min(span[s].first, x); span[s].second = std::max(span[s].second, x + tw[i]); }
+        x += tw[i] + S(scale, 10);
+        prevSec = j.tasks[i].section;
+    }
+
+    // section bands (behind) + titles
+    for (size_t s = 0; s < j.sections.size(); s++) {
+        if (span[s].second < span[s].first) continue;
+        double bx0 = span[s].first - S(scale, 6), bx1 = span[s].second + S(scale, 6);
+        fillR(out, { bx0, sectionY, bx1 - bx0, (taskY + taskH + S(scale, 6)) - sectionY }, th.bg3);
+        double lw = tm.textWidth(bold, j.sections[s]);
+        textC(out, (bx0 + bx1) / 2 - lw / 2, sectionY + asc, lw, fh, j.sections[s], bold, th.text2);
+    }
+
+    // task cards
+    for (int i = 0; i < n; i++) {
+        const JourneyTask& t = j.tasks[i];
+        RectF r{ bx[i], taskY, tw[i], taskH };
+        auto rp = roundRectPoly(r.x, r.y, r.w, r.h, S(scale, 6)); polyC(out, rp, th.bg2); strokePoly(out, rp, th.border);
+        double nameW = tm.textWidth(bold, t.name);
+        textC(out, r.x + (r.w - nameW) / 2, r.y + S(scale, 5) + asc, nameW, fh, t.name, bold, th.text);
+        // score dot with the number inside
+        double dcx = r.x + r.w / 2, dcy = r.y + fh + S(scale, 8) + dotD / 2;
+        auto dot = roundRectPoly(dcx - dotD / 2, dcy - dotD / 2, dotD, dotD, dotD / 2);
+        polyC(out, dot, sc[t.score]);
+        Str num = toStr(t.score); double nw = tm.textWidth(body, num);
+        textC(out, dcx - nw / 2, dcy - fh / 2 + asc, nw, fh, num, body, th.text);
+        Str who = actorsStr(t);
+        if (!who.empty()) { double ww = tm.textWidth(body, who); textC(out, r.x + (r.w - ww) / 2, r.y + taskH - fh + asc - S(scale, 2), ww, fh, who, body, th.text2); }
+    }
+    return (taskY + taskH - oy) + pad;
+}
+
 } // namespace
 
 double LayoutDiagram(const Diagram& d, double width, const LayoutTheme& th,
@@ -1063,6 +1161,7 @@ double LayoutDiagram(const Diagram& d, double width, const LayoutTheme& th,
         case DiagramKind::Pie:       return layoutPie(d.pie, width, th, tm, scale, originX, originY, out);
         case DiagramKind::Sequence:  return layoutSequence(d.seq, width, th, tm, scale, originX, originY, out);
         case DiagramKind::Flowchart: return layoutFlowchart(d.flow, width, th, tm, scale, originX, originY, out);
+        case DiagramKind::Journey:   return layoutJourney(d.journey, width, th, tm, scale, originX, originY, out);
         default:                     return 0;
     }
 }
