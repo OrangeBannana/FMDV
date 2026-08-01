@@ -13,6 +13,7 @@ namespace fmdv {
 
 struct Color { uint8_t r = 0, g = 0, b = 0, a = 255; };
 struct RectF { double x = 0, y = 0, w = 0, h = 0; };
+struct PointF { double x = 0, y = 0; };
 
 enum class FontRole { Body, Mono, H1, H2, H3, H4, H5, H6 };
 
@@ -49,12 +50,13 @@ public:
 
 // One positioned draw command, document space (y is not scroll-adjusted).
 struct DrawCommand {
-    enum Kind { FillRect, FrameRect, Line, Text };
+    enum Kind { FillRect, FrameRect, Line, Text, FillPolygon };
     Kind kind = FillRect;
     RectF rect;        // FillRect/FrameRect: the box. Line: (x,y)->(w,h) as (x2,y2).
                        // Text: x = rect.x (left), rect.y = baseline y,
                        // rect.w = run advance width, rect.h = the run's own font
                        // height (frontends recover the top as baseline - ascent).
+    std::vector<PointF> points; // FillPolygon: filled with `color` (diagrams, #16)
     Color color;
     FontSpec font;     // Text only
     Str text;          // Text only

@@ -1,4 +1,5 @@
 #include "layout.h"
+#include "diagram.h"
 #include <cmath>
 
 // This is a faithful port of the Win32 frontend's original GDI layout
@@ -385,6 +386,20 @@ LayoutResult LayoutDocument(const Document& doc, double width,
             break;
         }
         case BlockType::CodeBlock: {
+            // ```mermaid: render a supported diagram natively; anything else
+            // (or unparseable) falls through to plain code rendering below (#16).
+            {
+                Str lang; for (Char c : b.lang) lang += (c >= U16('A') && c <= U16('Z')) ? (Char)(c - U16('A') + U16('a')) : c;
+                if (lang == U16("mermaid")) {
+                    Diagram dg = ParseDiagram(b.codeText);
+                    if (dg.kind != DiagramKind::None) {
+                        double h = LayoutDiagram(dg, cx.right - cx.left, *cx.th, *cx.tm,
+                                                 cx.scale, cx.left, y, *cx.out);
+                        y += h + Sc(cx, 16);
+                        break;
+                    }
+                }
+            }
             FontSpec mono = roleFont(FontRole::Mono, false, false);
             double fh = tm.lineHeight(mono), asc = tm.ascent(mono);
             // split code into lines

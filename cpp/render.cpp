@@ -175,13 +175,15 @@ int FragXAtChar(HDC hdc, const TextFrag& f, int ch) {
 // painting culls to the viewport and offsets by scrollY. Scrolling reuses the
 // cached list instead of re-measuring/re-laying-out every frame.
 
-enum CmdKind { C_RECT, C_FRAME, C_LINE, C_TEXT };
+enum CmdKind { C_RECT, C_FRAME, C_LINE, C_TEXT, C_POLY };
 struct DrawCmd {
     int kind;
     int x, y, w, h;      // RECT/FRAME: x,y,w,h ; LINE: (x,y)->(w,h) ; TEXT: x,y + h=run height
+                         // POLY: x,y,w,h = bounding box (for viewport culling)
     COLORREF color;
     HFONT font;          // TEXT only
     std::wstring text;   // TEXT only
+    std::vector<POINT> pts; // POLY only (document space, y not scroll-adjusted)
 };
 static std::vector<DrawCmd> g_cmds;
 
@@ -218,22 +220,35 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
         switch (c.kind) {
         case fmdv::DrawCommand::FillRect:
             g_cmds.push_back({C_RECT, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
-                              ToColorRef(c.color), nullptr, {}});
+                              ToColorRef(c.color), nullptr, {}, {}});
             break;
         case fmdv::DrawCommand::FrameRect:
             g_cmds.push_back({C_FRAME, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
-                              ToColorRef(c.color), nullptr, {}});
+                              ToColorRef(c.color), nullptr, {}, {}});
             break;
         case fmdv::DrawCommand::Line:
             g_cmds.push_back({C_LINE, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
-                              ToColorRef(c.color), nullptr, {}});
+                              ToColorRef(c.color), nullptr, {}, {}});
             break;
+        case fmdv::DrawCommand::FillPolygon: {
+            std::vector<POINT> pts; pts.reserve(c.points.size());
+            int minx = 0, miny = 0, maxx = 0, maxy = 0;
+            for (size_t i = 0; i < c.points.size(); i++) {
+                int px = Px(c.points[i].x), py = Px(c.points[i].y);
+                pts.push_back(POINT{ px, py });
+                if (i == 0) { minx = maxx = px; miny = maxy = py; }
+                else { minx = std::min(minx, px); maxx = std::max(maxx, px); miny = std::min(miny, py); maxy = std::max(maxy, py); }
+            }
+            DrawCmd d{ C_POLY, minx, miny, maxx - minx, maxy - miny, ToColorRef(c.color), nullptr, {}, std::move(pts) };
+            g_cmds.push_back(std::move(d));
+            break;
+        }
         case fmdv::DrawCommand::Text: {
             HFONT f = tm.font(c.font);
             int x = Px(c.rect.x);
             int top = Px(c.rect.y) - FontAscent(hdc, f); // rect.y is the baseline
             int h = Px(c.rect.h);
-            g_cmds.push_back({C_TEXT, x, top, 0, h, ToColorRef(c.color), f, c.text});
+            g_cmds.push_back({C_TEXT, x, top, 0, h, ToColorRef(c.color), f, c.text, {}});
             if (frags && c.selectable)
                 frags->push_back(TextFrag{ RECT{ x, top, x + Px(c.rect.w), top + h },
                                            c.text, f, c.spaceBefore });
@@ -277,6 +292,17 @@ void PaintDocument(HDC hdc, int scrollY, int clientW, int clientH, const Theme& 
             MoveToEx(hdc, c.x, c.y - scrollY, nullptr);
             LineTo(hdc, c.w, c.h - scrollY);
             SelectObject(hdc, op); DeleteObject(pen);
+        } else if (c.kind == C_POLY) {
+            if (!vis(c.y, c.y + c.h) || c.pts.size() < 2) continue;
+            std::vector<POINT> p(c.pts);
+            for (auto& pt : p) pt.y -= scrollY;
+            HBRUSH br = CreateSolidBrush(c.color);
+            HPEN pen = CreatePen(PS_SOLID, 1, c.color); // pen matches fill so edges don't seam
+            HBRUSH ob = (HBRUSH)SelectObject(hdc, br);
+            HPEN op = (HPEN)SelectObject(hdc, pen);
+            Polygon(hdc, p.data(), (int)p.size());
+            SelectObject(hdc, ob); SelectObject(hdc, op);
+            DeleteObject(br); DeleteObject(pen);
         } else {
             if (!vis(c.y, c.y + c.h)) continue;
             RECT rc{ c.x, c.y - scrollY, c.x + c.w, c.y + c.h - scrollY };

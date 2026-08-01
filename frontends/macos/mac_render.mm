@@ -135,6 +135,20 @@ void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
             CGColorRelease(col);
             break;
         }
+        case DrawCommand::FillPolygon: {
+            if (c.points.size() >= 2) {
+                CGColorRef col = cg(cs, c.color);
+                CGContextSetFillColorWithColor(ctx, col);
+                CGContextBeginPath(ctx);
+                CGContextMoveToPoint(ctx, c.points[0].x, flipY(c.points[0].y));
+                for (size_t i = 1; i < c.points.size(); i++)
+                    CGContextAddLineToPoint(ctx, c.points[i].x, flipY(c.points[i].y));
+                CGContextClosePath(ctx);
+                CGContextFillPath(ctx);
+                CGColorRelease(col);
+            }
+            break;
+        }
         case DrawCommand::Text: {
             CGColorRef col = cg(cs, c.color);
             CTLineRef line = makeLine(tm.font(c.font), c.text, col);

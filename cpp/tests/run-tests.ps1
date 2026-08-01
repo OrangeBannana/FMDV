@@ -136,6 +136,35 @@ Check "render table (fits, no wrap)" ((Test-Path "$fix\tblwide.png") -and (Get-I
 & $exe $tblWrap --dump "$fix\tblnarrow.png" --width 420 | Out-Null
 Check "render table (shrink + wrap)" ((Test-Path "$fix\tblnarrow.png") -and (Get-Item "$fix\tblnarrow.png").Length -gt 2000)
 
+# mermaid diagrams (issue #16): pie + sequence render natively via the shared
+# display list (incl. FillPolygon wedges/arrowheads); an unsupported type falls
+# back to a code block. Smoke test the whole paint path end to end.
+$mmd = "$fix\mermaid.md"
+@'
+```mermaid
+pie showData
+    title Langs
+    "C++" : 3
+    "PS" : 1
+```
+
+```mermaid
+sequenceDiagram
+    participant A
+    participant B
+    A->>B: hi
+    B-->>A: yo
+    A->>A: think
+```
+
+```mermaid
+graph TD
+    A --> B
+```
+'@ | Set-Content $mmd -Encoding utf8
+& $exe $mmd --dump "$fix\mermaid.png" --width 820 | Out-Null
+Check "render mermaid (pie+sequence+fallback)" ((Test-Path "$fix\mermaid.png") -and (Get-Item "$fix\mermaid.png").Length -gt 3000)
+
 Write-Host "`nLaunch / stability:" -ForegroundColor Cyan
 $p = Launch $basic
 Check "window stays open"  (-not $p.HasExited)
