@@ -44,7 +44,9 @@ struct Sequence {
 };
 
 // ---- flowchart ----
-enum class NodeShape { Rect, Round, Diamond };
+// Mermaid node shapes: A[rect] A(round) A([stadium]) A[[subroutine]]
+// A[(cylinder)] A((circle)) A{diamond} A{{hexagon}}. Labels may contain <br>.
+enum class NodeShape { Rect, Round, Stadium, Subroutine, Cylinder, Circle, Diamond, Hexagon };
 struct FlowNode {
     Str id;
     Str label;

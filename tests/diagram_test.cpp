@@ -94,6 +94,20 @@ int main() {
         check(!d.flow.edges[3].arrow, "flow: --- is an open link");
     }
     check(parse("graph RL\nA-->B\n").flow.reverse, "flow: RL reverses rank axis");
+    {   // node shapes
+        Diagram d = parse("graph TD\n  A([stad]) --> B[[sub]]\n  C[(db)] --> D((circ))\n  E{{hex}} --> F(round)\n");
+        check(d.flow.nodes[0].shape == NodeShape::Stadium, "flow: ([..]) stadium");
+        check(d.flow.nodes[1].shape == NodeShape::Subroutine, "flow: [[..]] subroutine");
+        check(d.flow.nodes[2].shape == NodeShape::Cylinder, "flow: [(..)] cylinder");
+        check(d.flow.nodes[3].shape == NodeShape::Circle, "flow: ((..)) circle");
+        check(d.flow.nodes[4].shape == NodeShape::Hexagon, "flow: {{..}} hexagon");
+        check(d.flow.nodes[5].shape == NodeShape::Round, "flow: (..) round");
+    }
+    {   // multi-line labels via <br>
+        Diagram d = parse("graph TD\n  A[Line1<br>Line2] --> B[x<br/>y]\n");
+        check(ToUtf8(d.flow.nodes[0].label) == "Line1\nLine2", "flow: <br> becomes newline");
+        check(ToUtf8(d.flow.nodes[1].label) == "x\ny", "flow: <br/> variant");
+    }
 
     // ---- unsupported / non-mermaid ----
     check(parse("gantt\n  title X\n").kind == DiagramKind::None, "unsupported: gantt -> None");

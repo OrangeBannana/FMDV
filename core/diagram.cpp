@@ -172,30 +172,53 @@ bool isLinkChar(Char c) {
            c == U16('o') || c == U16('x');
 }
 
-// Parse a node reference at s[i]: an id plus an optional shape+label:
-//   A   A[rect]   A(round)   A([stadium])   A((circle))   A{diamond}
-// Returns the id (empty if none) and advances i past the ref; shape/label are
-// set when a bracketed form is present.
+// Fold Mermaid <br> / <br/> / <br /> line breaks to '\n' and trim.
+Str normalizeLabel(const Str& s) {
+    Str out;
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] == U16('<') && i + 2 < s.size() &&
+            (s[i+1] == U16('b') || s[i+1] == U16('B')) && (s[i+2] == U16('r') || s[i+2] == U16('R'))) {
+            size_t k = i + 3; while (k < s.size() && s[k] != U16('>')) k++;
+            if (k < s.size()) { out += U16('\n'); i = k + 1; continue; }
+        }
+        out += s[i++];
+    }
+    return trim(out);
+}
+
+// Parse a node reference at s[i]: an id plus an optional shape+label. Handles the
+// multi-char shape delimiters, longest opener first:
+//   A  A[rect]  A(round)  A([stadium])  A[[subroutine]]  A[(cylinder)]
+//   A((circle))  A{diamond}  A{{hexagon}}
 Str parseNodeRef(const Str& s, size_t& i, NodeShape& shape, Str& label, bool& hasShape) {
     while (i < s.size() && (s[i] == U16(' ') || s[i] == U16('\t'))) i++;
     Str id;
     while (i < s.size() && isIdChar(s[i])) id += s[i++];
     hasShape = false;
     if (id.empty() || i >= s.size()) return id;
-    Char open = s[i];
-    Char close = 0;
-    if (open == U16('[')) { shape = NodeShape::Rect; close = U16(']'); }
-    else if (open == U16('(')) { shape = NodeShape::Round; close = U16(')'); }
-    else if (open == U16('{')) { shape = NodeShape::Diamond; close = U16('}'); }
-    else return id; // bare reference
-    i++;
-    if (i < s.size() && s[i] == open) i++; // doubled: (( , ([ approximated by the first
-    Str lab;
-    while (i < s.size() && s[i] != close) lab += s[i++];
-    if (i < s.size() && s[i] == close) i++;
-    if (i < s.size() && s[i] == close) i++; // doubled close
-    label = trim(lab); hasShape = true;
-    return id;
+
+    struct Delim { const char* open; const char* close; NodeShape shape; };
+    static const Delim delims[] = {
+        {"([", "])", NodeShape::Stadium},    {"[[", "]]", NodeShape::Subroutine},
+        {"[(", ")]", NodeShape::Cylinder},   {"((", "))", NodeShape::Circle},
+        {"{{", "}}", NodeShape::Hexagon},
+        {"[",  "]",  NodeShape::Rect},       {"(",  ")",  NodeShape::Round},
+        {"{",  "}",  NodeShape::Diamond},
+    };
+    for (const Delim& d : delims) {
+        size_t ol = 0; while (d.open[ol]) ol++;
+        bool match = true;
+        for (size_t k = 0; k < ol; k++) if (i + k >= s.size() || s[i + k] != (Char)d.open[k]) { match = false; break; }
+        if (!match) continue;
+        size_t start = i + ol;
+        Str closeStr; for (size_t k = 0; d.close[k]; k++) closeStr += (Char)d.close[k];
+        size_t found = s.find(closeStr, start);
+        Str lab = s.substr(start, (found == Str::npos ? s.size() : found) - start);
+        i = (found == Str::npos) ? s.size() : found + closeStr.size();
+        shape = d.shape; label = normalizeLabel(lab); hasShape = true;
+        return id;
+    }
+    return id; // bare reference, no shape
 }
 
 Diagram parseFlowchart(const std::vector<Str>& lines) {
@@ -484,6 +507,73 @@ void arrowHead(LayoutResult& o, PointF P, double ux, double uy, double len, doub
     polyC(o, { P, { bx + px * half, by + py * half }, { bx - px * half, by - py * half } }, c);
 }
 
+std::vector<Str> labelLines(const Str& s) {
+    std::vector<Str> v; Str cur;
+    for (Char c : s) { if (c == U16('\n')) { v.push_back(cur); cur.clear(); } else cur += c; }
+    v.push_back(cur); return v;
+}
+double widestLine(TextMeasurer& tm, const FontSpec& f, const std::vector<Str>& lines) {
+    double w = 0; for (const auto& ln : lines) w = std::max(w, tm.textWidth(f, ln)); return w;
+}
+void drawLabelBlock(LayoutResult& o, const std::vector<Str>& lines, double cx, double blockTop,
+                    double fh, double asc, const FontSpec& f, Color c, TextMeasurer& tm) {
+    double y = blockTop;
+    for (const auto& ln : lines) { double w = tm.textWidth(f, ln); textC(o, cx - w / 2, y + asc, w, fh, ln, f, c); y += fh; }
+}
+// rounded-rect outline polygon (round / stadium / circle share this).
+std::vector<PointF> roundRectPoly(double x, double y, double w, double h, double r) {
+    r = std::min(r, std::min(w / 2, h / 2));
+    std::vector<PointF> p; int seg = 5;
+    auto arc = [&](double cx, double cy, double a0, double a1) {
+        for (int k = 0; k <= seg; k++) { double a = (a0 + (a1 - a0) * k / seg) * 3.14159265358979 / 180.0; p.push_back({ cx + r * std::cos(a), cy + r * std::sin(a) }); }
+    };
+    arc(x + r, y + r, 180, 270); arc(x + w - r, y + r, 270, 360);
+    arc(x + w - r, y + h - r, 0, 90); arc(x + r, y + h - r, 90, 180);
+    return p;
+}
+void strokePoly(LayoutResult& o, const std::vector<PointF>& p, Color c) {
+    for (size_t k = 0; k < p.size(); k++) { const PointF& A = p[k]; const PointF& B = p[(k + 1) % p.size()]; lineC(o, A.x, A.y, B.x, B.y, c); }
+}
+// Draw a node's shape (fill bg2 + border) at rect r.
+void drawNodeShape(LayoutResult& o, NodeShape shape, const RectF& r, double scale, const LayoutTheme& th) {
+    double cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    switch (shape) {
+        case NodeShape::Diamond: {
+            std::vector<PointF> dia = { { cx, r.y }, { r.x + r.w, cy }, { cx, r.y + r.h }, { r.x, cy } };
+            polyC(o, dia, th.bg2); strokePoly(o, dia, th.border); break;
+        }
+        case NodeShape::Hexagon: {
+            double hx = std::min(r.h / 2, r.w / 4);
+            std::vector<PointF> hex = { { r.x + hx, r.y }, { r.x + r.w - hx, r.y }, { r.x + r.w, cy },
+                                        { r.x + r.w - hx, r.y + r.h }, { r.x + hx, r.y + r.h }, { r.x, cy } };
+            polyC(o, hex, th.bg2); strokePoly(o, hex, th.border); break;
+        }
+        case NodeShape::Round: {
+            auto p = roundRectPoly(r.x, r.y, r.w, r.h, S(scale, 8)); polyC(o, p, th.bg2); strokePoly(o, p, th.border); break;
+        }
+        case NodeShape::Stadium: case NodeShape::Circle: {
+            auto p = roundRectPoly(r.x, r.y, r.w, r.h, r.h / 2); polyC(o, p, th.bg2); strokePoly(o, p, th.border); break;
+        }
+        case NodeShape::Subroutine: {
+            fillR(o, r, th.bg2); frameR(o, r, th.border);
+            double inset = S(scale, 6);
+            lineC(o, r.x + inset, r.y, r.x + inset, r.y + r.h, th.border);
+            lineC(o, r.x + r.w - inset, r.y, r.x + r.w - inset, r.y + r.h, th.border);
+            break;
+        }
+        case NodeShape::Cylinder: {
+            double cap = std::min(S(scale, 8), r.h / 4);
+            fillR(o, r, th.bg2); frameR(o, r, th.border);
+            // suggest a lid: a shallow arc line near the top
+            std::vector<PointF> lid;
+            for (int k = 0; k <= 8; k++) { double t = k / 8.0; lid.push_back({ r.x + t * r.w, r.y + cap + (0.5 - std::fabs(t - 0.5)) * cap }); }
+            for (size_t k = 1; k < lid.size(); k++) lineC(o, lid[k-1].x, lid[k-1].y, lid[k].x, lid[k].y, th.border);
+            break;
+        }
+        default: /* Rect */ fillR(o, r, th.bg2); frameR(o, r, th.border); break;
+    }
+}
+
 double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th, TextMeasurer& tm,
                        double scale, double ox, double oy, LayoutResult& out) {
     int n = (int)fc.nodes.size();
@@ -515,12 +605,22 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
     for (int k = 0; k < n; k++) if (rank[k] < 0) { rank[k] = 0; q.push_back(k); bfs(); }
     int maxRank = 0; for (int r : rank) maxRank = std::max(maxRank, r);
 
-    double nodeH = fh + 2 * padY;
-    std::vector<double> nodeW(n);
+    // per-node sizes (multi-line labels + shape padding)
+    std::vector<double> nodeW(n), nodeH(n);
     for (int k = 0; k < n; k++) {
-        double w = tm.textWidth(body, fc.nodes[k].label) + 2 * padX;
-        if (fc.nodes[k].shape == NodeShape::Diamond) w += S(scale, 24);
-        nodeW[k] = w;
+        std::vector<Str> lines = labelLines(fc.nodes[k].label);
+        double tw = widestLine(tm, body, lines);
+        double w = tw + 2 * padX, h = lines.size() * fh + 2 * padY;
+        switch (fc.nodes[k].shape) {
+            case NodeShape::Diamond:    w += S(scale, 30); h += S(scale, 14); break;
+            case NodeShape::Hexagon:    w += S(scale, 26); break;
+            case NodeShape::Stadium:    w += h; break; // room for the semicircle ends
+            case NodeShape::Subroutine: w += S(scale, 18); break;
+            case NodeShape::Cylinder:   h += S(scale, 10); break;
+            case NodeShape::Circle: { double d = std::max(tw, (double)lines.size() * fh) + 2 * padX + S(scale, 8); w = h = d; break; }
+            default: break;
+        }
+        nodeW[k] = w; nodeH[k] = h;
     }
 
     std::vector<std::vector<int>> ranks(maxRank + 1);
@@ -528,26 +628,29 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
 
     std::vector<RectF> box(n);
     if (!fc.horizontal) {
+        // vertical: ranks stack top->bottom; each row's height is its tallest node
         double diagW = 0;
         for (auto& rr : ranks) { double w = 0; for (int k : rr) w += nodeW[k]; if (!rr.empty()) w += sibGap * (rr.size() - 1); diagW = std::max(diagW, w); }
         double startX = ox + std::max(pad, (width - diagW) / 2);
         double y = oy + pad;
         for (auto& rr : ranks) {
-            double w = 0; for (int k : rr) w += nodeW[k]; if (!rr.empty()) w += sibGap * (rr.size() - 1);
+            double w = 0, rowH = 0; for (int k : rr) { w += nodeW[k]; rowH = std::max(rowH, nodeH[k]); }
+            if (!rr.empty()) w += sibGap * (rr.size() - 1);
             double x = startX + (diagW - w) / 2;
-            for (int k : rr) { box[k] = RectF{ x, y, nodeW[k], nodeH }; x += nodeW[k] + sibGap; }
-            y += nodeH + rankGap;
+            for (int k : rr) { box[k] = RectF{ x, y + (rowH - nodeH[k]) / 2, nodeW[k], nodeH[k] }; x += nodeW[k] + sibGap; }
+            y += rowH + rankGap;
         }
     } else {
+        // horizontal: ranks march left->right; each column's width is its widest node
         std::vector<double> colW(ranks.size(), 0);
         for (size_t r = 0; r < ranks.size(); r++) for (int k : ranks[r]) colW[r] = std::max(colW[r], nodeW[k]);
         double diagH = 0;
-        for (auto& rr : ranks) { double h = rr.size() * nodeH; if (!rr.empty()) h += sibGap * (rr.size() - 1); diagH = std::max(diagH, h); }
+        for (auto& rr : ranks) { double h = 0; for (int k : rr) h += nodeH[k]; if (!rr.empty()) h += sibGap * (rr.size() - 1); diagH = std::max(diagH, h); }
         double x = ox + pad;
         for (size_t r = 0; r < ranks.size(); r++) {
-            double h = ranks[r].size() * nodeH; if (!ranks[r].empty()) h += sibGap * (ranks[r].size() - 1);
+            double h = 0; for (int k : ranks[r]) h += nodeH[k]; if (!ranks[r].empty()) h += sibGap * (ranks[r].size() - 1);
             double y = oy + pad + (diagH - h) / 2;
-            for (int k : ranks[r]) { box[k] = RectF{ x + (colW[r] - nodeW[k]) / 2, y, nodeW[k], nodeH }; y += nodeH + sibGap; }
+            for (int k : ranks[r]) { box[k] = RectF{ x + (colW[r] - nodeW[k]) / 2, y, nodeW[k], nodeH[k] }; y += nodeH[k] + sibGap; }
             x += colW[r] + rankGap;
         }
     }
@@ -582,17 +685,10 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
     // nodes
     for (int k = 0; k < n; k++) {
         const RectF& r = box[k];
-        if (fc.nodes[k].shape == NodeShape::Diamond) {
-            double cx2 = r.x + r.w / 2, cy2 = r.y + r.h / 2;
-            std::vector<PointF> dia = { { cx2, r.y }, { r.x + r.w, cy2 }, { cx2, r.y + r.h }, { r.x, cy2 } };
-            polyC(out, dia, th.bg2);
-            for (size_t p = 0; p < dia.size(); p++) { PointF A = dia[p], B = dia[(p + 1) % dia.size()]; lineC(out, A.x, A.y, B.x, B.y, th.border); }
-        } else {
-            fillR(out, r, th.bg2);
-            frameR(out, r, th.border);
-        }
-        double lw = tm.textWidth(body, fc.nodes[k].label);
-        textC(out, r.x + (r.w - lw) / 2, r.y + (r.h - fh) / 2 + asc, lw, fh, fc.nodes[k].label, body, th.text);
+        drawNodeShape(out, fc.nodes[k].shape, r, scale, th);
+        std::vector<Str> lines = labelLines(fc.nodes[k].label);
+        double blockTop = r.y + (r.h - lines.size() * fh) / 2;
+        drawLabelBlock(out, lines, r.x + r.w / 2, blockTop, fh, asc, body, th.text, tm);
     }
 
     double bottom = oy;
