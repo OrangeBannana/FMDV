@@ -803,66 +803,126 @@ double layoutFlowchart(const Flowchart& fc, double width, const LayoutTheme& th,
         nodeW[k] = w; nodeH[k] = h;
     }
 
-    std::vector<std::vector<int>> ranks(maxRank + 1);
-    for (int k = 0; k < n; k++) ranks[fc.reverse ? (maxRank - rank[k]) : rank[k]].push_back(k);
+    // display rank (BT/RL reverse the axis)
+    std::vector<int> dr(n);
+    for (int k = 0; k < n; k++) dr[k] = fc.reverse ? (maxRank - rank[k]) : rank[k];
+    int R = maxRank;
 
+    // ---- layered graph with dummy nodes for edges that span >1 rank ----
+    // A long edge becomes a chain through one dummy per intermediate rank, so
+    // it routes through the gaps between ranks (its label lands there too, not
+    // on a node) and ordering can treat every segment as rank-adjacent.
+    struct LN { int rank; int real; double x = 0, y = 0; }; // real < 0 => dummy
+    std::vector<LN> ln;
+    std::vector<int> realL(n);
+    for (int k = 0; k < n; k++) { realL[k] = (int)ln.size(); ln.push_back({ dr[k], k }); }
+    std::vector<std::vector<int>> chain(fc.edges.size());
+    std::vector<char> skip(fc.edges.size(), 0);
+    for (size_t ei = 0; ei < fc.edges.size(); ei++) {
+        const FlowEdge& e = fc.edges[ei];
+        if (e.from == e.to) { skip[ei] = 1; continue; }
+        int r0 = dr[e.from], r1 = dr[e.to];
+        std::vector<int>& ch = chain[ei];
+        ch.push_back(realL[e.from]);
+        int span = (r0 > r1) ? (r0 - r1) : (r1 - r0);
+        if (span > 1) { int step = (r1 > r0) ? 1 : -1; for (int r = r0 + step; r != r1; r += step) { ch.push_back((int)ln.size()); ln.push_back({ r, -1 }); } }
+        ch.push_back(realL[e.to]);
+    }
+
+    std::vector<std::vector<int>> layer(R + 1);
+    for (int i = 0; i < (int)ln.size(); i++) layer[ln[i].rank].push_back(i);
+    std::vector<std::vector<int>> adj(ln.size());
+    for (auto& ch : chain) for (size_t j = 0; j + 1 < ch.size(); j++) { adj[ch[j]].push_back(ch[j+1]); adj[ch[j+1]].push_back(ch[j]); }
+
+    // ---- crossing reduction: median-heuristic ordering sweeps ----
+    std::vector<int> posIn(ln.size(), 0);
+    for (auto& lay : layer) for (int p = 0; p < (int)lay.size(); p++) posIn[lay[p]] = p;
+    auto median = [&](int node, int fromRank) -> double {
+        std::vector<int> ps;
+        for (int nb : adj[node]) if (ln[nb].rank == fromRank) ps.push_back(posIn[nb]);
+        if (ps.empty()) return -1.0;
+        std::sort(ps.begin(), ps.end());
+        size_t m = ps.size();
+        return (m % 2) ? (double)ps[m/2] : (ps[m/2 - 1] + ps[m/2]) / 2.0;
+    };
+    auto reorder = [&](int r, int fromRank) {
+        std::vector<int>& lay = layer[r];
+        std::vector<std::pair<double,int>> keyed;
+        for (int nd : lay) { double md = median(nd, fromRank); keyed.push_back({ md < 0 ? (double)posIn[nd] : md, nd }); }
+        std::stable_sort(keyed.begin(), keyed.end(), [](const std::pair<double,int>& a, const std::pair<double,int>& b){ return a.first < b.first; });
+        for (int p = 0; p < (int)lay.size(); p++) { lay[p] = keyed[p].second; posIn[lay[p]] = p; }
+    };
+    for (int sweep = 0; sweep < 4; sweep++) {
+        if (sweep % 2 == 0) for (int r = 1; r <= R; r++) reorder(r, r - 1);
+        else                for (int r = R - 1; r >= 0; r--) reorder(r, r + 1);
+    }
+
+    // ---- coordinate assignment ----
+    double dummyLane = S(scale, 12);
+    auto lnW = [&](int i) { return ln[i].real >= 0 ? nodeW[ln[i].real] : dummyLane; };
+    auto lnH = [&](int i) { return ln[i].real >= 0 ? nodeH[ln[i].real] : dummyLane; };
     std::vector<RectF> box(n);
+
     if (!fc.horizontal) {
-        // vertical: ranks stack top->bottom; each row's height is its tallest node
-        double diagW = 0;
-        for (auto& rr : ranks) { double w = 0; for (int k : rr) w += nodeW[k]; if (!rr.empty()) w += sibGap * (rr.size() - 1); diagW = std::max(diagW, w); }
-        double startX = ox + std::max(pad, (width - diagW) / 2);
+        std::vector<double> rowH(R + 1, fh);
+        for (int i = 0; i < (int)ln.size(); i++) if (ln[i].real >= 0) rowH[ln[i].rank] = std::max(rowH[ln[i].rank], nodeH[ln[i].real]);
+        std::vector<double> layW(R + 1, 0); double diagW = 0;
+        for (int r = 0; r <= R; r++) { double w = 0; for (int nd : layer[r]) w += lnW(nd); if (!layer[r].empty()) w += sibGap * (layer[r].size() - 1); layW[r] = w; diagW = std::max(diagW, w); }
+        double centerX = ox + std::max(pad + diagW / 2, width / 2);
         double y = oy + pad;
-        for (auto& rr : ranks) {
-            double w = 0, rowH = 0; for (int k : rr) { w += nodeW[k]; rowH = std::max(rowH, nodeH[k]); }
-            if (!rr.empty()) w += sibGap * (rr.size() - 1);
-            double x = startX + (diagW - w) / 2;
-            for (int k : rr) { box[k] = RectF{ x, y + (rowH - nodeH[k]) / 2, nodeW[k], nodeH[k] }; x += nodeW[k] + sibGap; }
-            y += rowH + rankGap;
+        for (int r = 0; r <= R; r++) {
+            double x = centerX - layW[r] / 2;
+            for (int nd : layer[r]) { double w = lnW(nd); ln[nd].x = x + w / 2; ln[nd].y = y + rowH[r] / 2; x += w + sibGap; }
+            y += rowH[r] + rankGap;
         }
     } else {
-        // horizontal: ranks march left->right; each column's width is its widest node
-        std::vector<double> colW(ranks.size(), 0);
-        for (size_t r = 0; r < ranks.size(); r++) for (int k : ranks[r]) colW[r] = std::max(colW[r], nodeW[k]);
-        double diagH = 0;
-        for (auto& rr : ranks) { double h = 0; for (int k : rr) h += nodeH[k]; if (!rr.empty()) h += sibGap * (rr.size() - 1); diagH = std::max(diagH, h); }
+        std::vector<double> colW(R + 1, fh);
+        for (int i = 0; i < (int)ln.size(); i++) if (ln[i].real >= 0) colW[ln[i].rank] = std::max(colW[ln[i].rank], nodeW[ln[i].real]);
+        std::vector<double> layH(R + 1, 0); double diagH = 0;
+        for (int r = 0; r <= R; r++) { double h = 0; for (int nd : layer[r]) h += lnH(nd); if (!layer[r].empty()) h += sibGap * (layer[r].size() - 1); layH[r] = h; diagH = std::max(diagH, h); }
         double x = ox + pad;
-        for (size_t r = 0; r < ranks.size(); r++) {
-            double h = 0; for (int k : ranks[r]) h += nodeH[k]; if (!ranks[r].empty()) h += sibGap * (ranks[r].size() - 1);
-            double y = oy + pad + (diagH - h) / 2;
-            for (int k : ranks[r]) { box[k] = RectF{ x + (colW[r] - nodeW[k]) / 2, y, nodeW[k], nodeH[k] }; y += nodeH[k] + sibGap; }
+        for (int r = 0; r <= R; r++) {
+            double y = oy + pad + (diagH - layH[r]) / 2;
+            for (int nd : layer[r]) { double h = lnH(nd); ln[nd].x = x + colW[r] / 2; ln[nd].y = y + h / 2; y += h + sibGap; }
             x += colW[r] + rankGap;
         }
     }
+    for (int i = 0; i < (int)ln.size(); i++) if (ln[i].real >= 0) { int k = ln[i].real; box[k] = RectF{ ln[i].x - nodeW[k]/2, ln[i].y - nodeH[k]/2, nodeW[k], nodeH[k] }; }
 
-    // edges (under the nodes)
+    // ---- edges: polyline through the chain waypoints ----
     double ah = S(scale, 9), ahw = S(scale, 5);
-    for (const auto& e : fc.edges) {
-        if (e.from == e.to) continue; // self-loop: skip (rare in flowcharts)
+    for (size_t ei = 0; ei < fc.edges.size(); ei++) {
+        if (skip[ei]) continue;
+        const FlowEdge& e = fc.edges[ei];
+        const std::vector<int>& ch = chain[ei];
+        std::vector<PointF> wp; for (int idx : ch) wp.push_back({ ln[idx].x, ln[idx].y });
         const RectF& a = box[e.from]; const RectF& b = box[e.to];
-        double acx = a.x + a.w / 2, acy = a.y + a.h / 2, bcx = b.x + b.w / 2, bcy = b.y + b.h / 2;
-        PointF p0 = boxEdge(acx, acy, a.w / 2, a.h / 2, bcx, bcy);
-        PointF p1 = boxEdge(bcx, bcy, b.w / 2, b.h / 2, acx, acy);
-        double dx = p1.x - p0.x, dy = p1.y - p0.y, len = std::sqrt(dx * dx + dy * dy);
-        if (len < 1) len = 1;
-        double ux = dx / len, uy = dy / len;
-        PointF lineEnd = e.arrow ? PointF{ p1.x - ux * ah, p1.y - uy * ah } : p1;
-        if (e.dashed) {
-            double dash = S(scale, 5), t = 0, elen = e.arrow ? (len - ah) : len;
-            while (t < elen) { double t2 = std::min(t + dash, elen); lineC(out, p0.x + ux * t, p0.y + uy * t, p0.x + ux * t2, p0.y + uy * t2, th.text2); t = t2 + dash; }
-        } else {
-            lineC(out, p0.x, p0.y, lineEnd.x, lineEnd.y, th.text2);
+        wp.front() = boxEdge(a.x + a.w/2, a.y + a.h/2, a.w/2, a.h/2, wp[1].x, wp[1].y);
+        wp.back()  = boxEdge(b.x + b.w/2, b.y + b.h/2, b.w/2, b.h/2, wp[wp.size()-2].x, wp[wp.size()-2].y);
+        PointF tip = wp.back();
+        double dxl = tip.x - wp[wp.size()-2].x, dyl = tip.y - wp[wp.size()-2].y, ll = std::sqrt(dxl*dxl + dyl*dyl);
+        if (ll < 1) ll = 1;
+        double ux = dxl/ll, uy = dyl/ll;
+        if (e.arrow) wp.back() = { tip.x - ux*ah, tip.y - uy*ah };
+        for (size_t j = 0; j + 1 < wp.size(); j++) {
+            if (e.dashed) {
+                double sx = wp[j].x, sy = wp[j].y, dxx = wp[j+1].x - sx, dyy = wp[j+1].y - sy, L = std::sqrt(dxx*dxx + dyy*dyy);
+                if (L < 1) L = 1;
+                double vx = dxx/L, vy = dyy/L, dash = S(scale, 5), t = 0;
+                while (t < L) { double t2 = std::min(t + dash, L); lineC(out, sx + vx*t, sy + vy*t, sx + vx*t2, sy + vy*t2, th.text2); t = t2 + dash; }
+            } else lineC(out, wp[j].x, wp[j].y, wp[j+1].x, wp[j+1].y, th.text2);
         }
-        if (e.arrow) arrowHead(out, p1, ux, uy, ah, ahw, th.text2);
+        if (e.arrow) arrowHead(out, tip, ux, uy, ah, ahw, th.text2);
         if (!e.label.empty()) {
-            double lw = tm.textWidth(body, e.label);
-            double mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
-            fillR(out, { mx - lw / 2 - S(scale, 3), my - fh / 2, lw + 2 * S(scale, 3), fh }, th.bg);
-            textC(out, mx - lw / 2, my - fh / 2 + asc, lw, fh, e.label, body, th.text2);
+            size_t mid = wp.size() / 2;
+            PointF A = wp[mid - 1], B = wp[mid];
+            double mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2, lw = tm.textWidth(body, e.label);
+            fillR(out, { mx - lw/2 - S(scale, 3), my - fh/2, lw + 2*S(scale, 3), fh }, th.bg);
+            textC(out, mx - lw/2, my - fh/2 + asc, lw, fh, e.label, body, th.text2);
         }
     }
 
-    // nodes
+    // ---- nodes ----
     for (int k = 0; k < n; k++) {
         const RectF& r = box[k];
         drawNodeShape(out, fc.nodes[k].shape, r, scale, th);

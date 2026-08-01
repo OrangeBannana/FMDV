@@ -36,8 +36,10 @@ app* → browse to `fmdv.exe` → *Always*. Put the exe somewhere stable first
   code, blockquotes, bullet/ordered/nested/task lists, tables with alignment,
   rules, links, images (alt text). Light + dark themes.
 - **Mermaid diagrams (subset)**: fenced ` ```mermaid ` pie charts, sequence
-  diagrams, and flowcharts (`graph`/`flowchart`) render natively via GDI — no
-  browser engine. Unsupported diagram types degrade to a plain code block.
+  diagrams (notes, activations, loop/alt/opt/par, autonumber), flowcharts
+  (`graph`/`flowchart`, eight node shapes, layered auto-layout), and state
+  diagrams (`stateDiagram-v2`) render natively via GDI — no browser engine.
+  Unsupported diagram types degrade to a plain code block.
 - **Ctrl+E** split editor with live preview · **Ctrl+D** dark mode · **Ctrl+S**
   save (`Ctrl+Shift+S` save & close) · **Ctrl+±/0** and Ctrl+scroll zoom.
 - Text selection + copy in the preview (double-click word, triple-click line, Ctrl+A).

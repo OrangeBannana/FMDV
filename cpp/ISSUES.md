@@ -107,20 +107,27 @@ Shipped since round 8 (see cpp/README.md for behavior):
   cell and wrap instead of overflowing a narrow pane.
 - ✅ **In-app updater (Ctrl+U)** — GitHub Releases list, install any version, modes
   notify/auto-update/pin (`core/release_info` for parse + version compare).
-- ✅ **Mermaid-subset diagrams (#16)** — fenced ```mermaid pie charts, sequence
-  diagrams, and flowcharts (`graph`/`flowchart` TD/LR/BT/RL, rect/round/diamond
-  nodes, labeled/dashed/open edges, naive BFS-depth layered layout) render
-  natively (`core/diagram`) into the shared display list; a new `FillPolygon`
-  draw command backs wedges/arrowheads/diamonds. Unsupported types (gantt,
-  class, state, …) fall back to a plain code block.
+- ✅ **Mermaid-subset diagrams (#16)** — fenced ```mermaid render natively
+  (`core/diagram`) into the shared display list; a `FillPolygon` draw command
+  backs wedges/arrowheads/diamonds/shapes. Covered:
+  - **pie** (title, legend, `showData` percentages)
+  - **sequenceDiagram** (participants/`as`, solid/dashed messages, self-loops,
+    notes over/left/right, activation bars via `+`/`-` and activate/deactivate,
+    `loop`/`alt`/`else`/`opt`/`par` frames, `autonumber`)
+  - **flowchart** / **graph** (TD/TB/BT/RL/LR; rect/round/stadium/subroutine/
+    cylinder/circle/diamond/hexagon nodes; `<br>` multi-line labels; solid/
+    dashed/open + labeled/chained edges; layered layout with dummy nodes for
+    long edges + median crossing-reduction + polyline routing)
+  - **stateDiagram-v2** (states, `[*]` start/end, transitions, `state "x" as id`)
+  Unsupported types (gantt, class, ER, journey, …) fall back to a code block.
 
 Remaining roadmap (not yet done):
 - Smarter fence re-trigger suppression on the closing ```
 - Incremental relayout on edit (currently full relayout per keystroke — fine for now)
 - Off-thread / debounced parse
 - DirectWrite renderer; RichEdit editor
-- Diagrams: crossing-minimization / dummy nodes for long edges (current flowchart
-  layout is naive BFS-depth ranking); more node/edge shapes; other diagram types
+- Diagrams: more types (class, ER, gantt, gitGraph, journey, mindmap); composite
+  states / subgraphs; barycenter x-alignment for straighter edges
 - Selection in the editor pane already works (native EDIT control)
 
 > **macOS port.** The parser, edit helpers, layout, find/selection, and release

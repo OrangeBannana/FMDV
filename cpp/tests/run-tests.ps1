@@ -160,8 +160,15 @@ sequenceDiagram
 ```mermaid
 graph TD
     A[Start] --> B{OK?}
-    B -->|yes| C(Done)
+    B -->|yes| C([Done])
     B -->|no| A
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Busy : go
+    Busy --> [*]
 ```
 
 ```mermaid
