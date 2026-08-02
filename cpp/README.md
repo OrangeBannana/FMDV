@@ -100,6 +100,8 @@ Shared core (`../core/`):
 - `markdown.h/.cpp` — parser (text → Document)
 - `layout.h/.cpp` — layout engine (Document → draw commands); shared with the
   macOS frontend, measured through a per-frontend `TextMeasurer`
+- `diagram.h/.cpp` — native Mermaid-subset diagrams (pie + sequence): parse a
+  ```mermaid block and lay it out into the shared display list
 - `edit_assist.h/.cpp` — autocomplete, list continuation, table generation
 - `release_info.h/.cpp` — release JSON parsing + version comparison
 - `bench_log.h` — structured benchmark logging schema
