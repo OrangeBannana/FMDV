@@ -38,9 +38,9 @@ app* → browse to `fmdv.exe` → *Always*. Put the exe somewhere stable first
 - **Mermaid diagrams (subset)**: fenced ` ```mermaid ` **pie** charts,
   **sequence** diagrams (notes, activations, loop/alt/opt/par, autonumber),
   **flowcharts** (`graph`/`flowchart`, eight node shapes, layered auto-layout),
-  **state** (`stateDiagram-v2`), **class**, and **journey** diagrams render
-  natively via GDI — no browser engine. Unsupported types degrade to a plain
-  code block.
+  **state** (`stateDiagram-v2`), **class**, **journey**, and **ER** diagrams
+  render natively via GDI — no browser engine. Unsupported types degrade to a
+  plain code block.
 - **Ctrl+E** split editor with live preview · **Ctrl+D** dark mode · **Ctrl+S**
   save (`Ctrl+Shift+S` save & close) · **Ctrl+±/0** and Ctrl+scroll zoom.
 - Text selection + copy in the preview (double-click word, triple-click line, Ctrl+A).

@@ -122,7 +122,8 @@ Shipped since round 8 (see cpp/README.md for behavior):
   - **classDiagram** (compartment boxes; inheritance/composition/aggregation/
     association/dependency markers)
   - **journey** (title/sections/tasks with 1-5 score dots + actors)
-  Unsupported types (gantt, ER, gitGraph, mindmap, …) fall back to a code block.
+  - **erDiagram** (entity boxes + attributes; crow's-foot cardinality)
+  Unsupported types (gantt, gitGraph, mindmap, …) fall back to a code block.
 
 Remaining roadmap (not yet done):
 - Smarter fence re-trigger suppression on the closing ```
