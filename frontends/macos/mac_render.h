@@ -36,6 +36,17 @@ void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
 // Render a laid-out document to a PNG at `outPath`. Returns false on failure.
 bool RenderMarkdownToPng(const Document& doc, double width, bool dark, const char* outPath);
 
+// Regression probe for the highlight-layering fix. Renders `doc` twice — once
+// with a selection highlight over the first monospace (code-block) line and
+// once without — and checks that the code-line region differs between the two.
+// A correct painter draws the highlight over the block background (region
+// differs); the old painter drew it behind the block background (region
+// identical, selection invisible). Returns true if the selection is visible
+// over the code block (and *selRGB is set to th.sel), false otherwise. Returns
+// false with no code block present.
+bool RenderSelProbe(const Document& doc, double width, bool dark,
+                    int* selR, int* selG, int* selB);
+
 // Open the AppKit window showing `file` and run the app loop (app.mm).
 int RunApp(const char* file, bool dark);
 
