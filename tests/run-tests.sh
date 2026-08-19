@@ -139,6 +139,19 @@ check "render table (fits, no wrap)" "$([ "$(stat -f%z "$FIX/tblwide.png")" -gt 
 "$BIN" --dump "$FIX/tblwrap.md" "$FIX/tblnarrow.png" --width 420 >/dev/null
 check "render table (shrink + wrap)" "$([ "$(stat -f%z "$FIX/tblnarrow.png")" -gt 2000 ] && echo 1 || echo 0)"
 
+# Selection inside a code block must be painted over the block background, not
+# under it. --sel-probe renders the doc with and without a selection highlight
+# on a code line and reports the selection color only if the two renders differ
+# (i.e. the highlight is visible). The old painter drew highlights before the
+# code-block background fill, so the two renders were identical and the probe
+# returned "-1 -1 -1" (exit 1).
+SP_LIGHT=$("$BIN" --sel-probe "$FIX/basic.md" --width 900)
+check "selection visible in code block (light)" \
+    "$([ "${SP_LIGHT}" != "selprobe -1 -1 -1" ] && echo 1 || echo 0)" "got '$SP_LIGHT'"
+SP_DARK=$("$BIN" --sel-probe "$FIX/basic.md" --width 900 --dark)
+check "selection visible in code block (dark)" \
+    "$([ "${SP_DARK}" != "selprobe -1 -1 -1" ] && echo 1 || echo 0)" "got '$SP_DARK'"
+
 echo
 echo "Launch / stability:"
 start_app "$FIX/basic.md"

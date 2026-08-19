@@ -37,6 +37,7 @@ static int usage() {
         "fmdv-macos — FMDV macOS frontend\n\n"
         "  fmdv-macos <file.md> [--dark]                 open in a window\n"
         "  fmdv-macos --dump <file.md> <out.png> [--width W] [--dark]\n"
+        "  fmdv-macos --sel-probe <file.md> [--width W] [--dark]\n"
         "  fmdv-macos --bench-render <file.md> [--width W] [--runs N] [--dark]\n");
     return 2;
 }
@@ -77,11 +78,13 @@ int main(int argc, char** argv) {
     const char* out = nullptr;
     double width = 900;
     int runs = 100;
-    bool dark = false, dump = false, bench = false;
+    bool dark = false, dump = false, bench = false, selprobe = false;
 
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--dump") == 0 && i + 2 < argc) {
             dump = true; file = argv[++i]; out = argv[++i];
+        } else if (std::strcmp(argv[i], "--sel-probe") == 0 && i + 1 < argc) {
+            selprobe = true; file = argv[++i];
         } else if (std::strcmp(argv[i], "--bench-render") == 0 && i + 1 < argc) {
             bench = true; file = argv[++i];
         } else if (std::strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
@@ -112,6 +115,18 @@ int main(int argc, char** argv) {
         }
         std::printf("wrote %s (%zu blocks, width %.0f%s)\n", out, doc.blocks.size(), width, dark ? ", dark" : "");
         return 0;
+    }
+    if (selprobe) {
+        if (!file) return usage();
+        std::string u8;
+        if (!readFileUtf8(file, u8)) { std::fprintf(stderr, "fmdv-macos: cannot read %s\n", file); return 1; }
+        Document doc = ParseMarkdown(loadDoc(u8));
+        int r = -1, g = -1, b = -1;
+        bool ok = fmdv::RenderSelProbe(doc, width, dark, &r, &g, &b);
+        // Print the sampled selection pixel so tests can assert the highlight is
+        // visible over the code block: "selprobe R G B" (or "selprobe -1 -1 -1").
+        std::printf("selprobe %d %d %d\n", r, g, b);
+        return ok ? 0 : 1;
     }
     // Window mode: `file` may be null (a bare .app launch opens a file panel; the
     // Finder passes documents via the openFile: Apple Event, not argv).
