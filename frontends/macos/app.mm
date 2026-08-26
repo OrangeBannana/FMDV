@@ -323,13 +323,53 @@ struct Frag {
     NSMutableString* html = [NSMutableString stringWithString:@"<html><body>"];
     long a, aCh, b, bCh;
     [self normSelA:&a aCh:&aCh b:&b bCh:&bCh];
+
+    // Never split a UTF-16 surrogate pair when slicing a fragment's text: a
+    // lone surrogate encodes to invalid UTF-8, which makes NSString's UTF-8
+    // initializers return nil and crash the appendString: calls below.
+    auto splitsUtf16Pair = [](const Str& t, int idx) {
+        return idx > 0 && idx < (int)t.size() &&
+               t[idx - 1] >= 0xD800 && t[idx - 1] <= 0xDBFF &&
+               t[idx] >= 0xDC00 && t[idx] <= 0xDFFF;
+    };
+    // Escaping shared by text content and (quoted) attribute values; also
+    // guards against stringWithUTF8String: returning nil for malformed input.
+    auto htmlEscape = [](const std::string& utf8) -> NSString* {
+        NSString* raw = [NSString stringWithUTF8String:utf8.c_str()];
+        if (!raw) return @"";
+        NSString* out = [raw stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"];
+        out = [out stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
+        out = [out stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
+        out = [out stringByReplacingOccurrencesOfString:@"\"" withString:@"&quot;"];
+        return out;
+    };
+    auto headingTag = [](fmdv::FontRole r) -> const char* {
+        switch (r) {
+            case fmdv::FontRole::H1: return "h1";
+            case fmdv::FontRole::H2: return "h2";
+            case fmdv::FontRole::H3: return "h3";
+            case fmdv::FontRole::H4: return "h4";
+            case fmdv::FontRole::H5: return "h5";
+            case fmdv::FontRole::H6: return "h6";
+            default: return nullptr;
+        }
+    };
+
     bool inLink = false;
     std::string currentHref;
+    // A heading can wrap onto more than one display line, each its own Frag;
+    // track the open <hN> across those fragments instead of re-emitting it
+    // per fragment (which produced one sibling heading per line).
+    bool inHeading = false;
+    fmdv::FontRole currentHeadingRole = fmdv::FontRole::Body;
+
     for (long i = a; i <= b && i < (long)_frags.size(); i++) {
         const Frag& f = _frags[i];
         Str fragStr = f.text;
         int c0 = (i == a) ? (int)aCh : 0;
         int c1 = (i == b) ? (int)bCh : (int)fragStr.size();
+        if (splitsUtf16Pair(fragStr, c0)) c0--;
+        if (splitsUtf16Pair(fragStr, c1)) c1++;
         if (c1 < c0) continue;
         Str sub = fragStr.substr(c0, (size_t)(c1 - c0));
         std::string subUtf8 = ToUtf8(sub);
@@ -345,39 +385,63 @@ struct Frag {
                 break;
             }
         }
-        bool openLink = !hrefForFrag.empty() && hrefForFrag != currentHref;
         bool closeLink = inLink && (currentHref.empty() || currentHref != hrefForFrag);
+        bool closeHeading = inHeading && f.font.role != currentHeadingRole;
+        // Nesting: heading (block, outermost) wraps link (inline); close
+        // innermost (link) first, then the heading it was nested in.
         if (closeLink) {
             [html appendString:@"</a>"];
             inLink = false; currentHref.clear();
         }
+        if (closeHeading) {
+            [html appendFormat:@"</%s>", headingTag(currentHeadingRole)];
+            inHeading = false;
+        }
+
+        // A break is inserted between fragments on different lines and a
+        // space between fragments separated by a horizontal gap — matches
+        // SelectionText's plain-text spacing so the two copies stay in sync,
+        // instead of running adjacent fragments' text together.
+        if (i > a) {
+            const Frag& prev = _frags[i - 1];
+            if (std::abs(f.baseline - prev.baseline) > 1) [html appendString:@"<br>"];
+            else if (f.box.x - (prev.box.x + prev.box.w) > 2) [html appendString:@" "];
+        }
+
+        const char* fragHeadingTag = headingTag(f.font.role);
+        bool openHeading = fragHeadingTag && !inHeading;
+        bool openLink = !hrefForFrag.empty() && hrefForFrag != currentHref;
+        if (openHeading) {
+            [html appendFormat:@"<%s>", fragHeadingTag];
+            inHeading = true; currentHeadingRole = f.font.role;
+        }
         if (openLink) {
-            [html appendFormat:@"<a href=\"%s\">", hrefForFrag.c_str()];
+            [html appendString:@"<a href=\""];
+            [html appendString:htmlEscape(hrefForFrag)];
+            [html appendString:@"\">"];
             inLink = true; currentHref = hrefForFrag;
         }
 
         std::string openTags, closeTags;
-        if (f.font.role == fmdv::FontRole::H1) { openTags += "<h1>"; closeTags = "</h1>" + closeTags; }
-        else if (f.font.role == fmdv::FontRole::H2) { openTags += "<h2>"; closeTags = "</h2>" + closeTags; }
-        else if (f.font.role == fmdv::FontRole::H3) { openTags += "<h3>"; closeTags = "</h3>" + closeTags; }
-        else if (f.font.role == fmdv::FontRole::H4) { openTags += "<h4>"; closeTags = "</h4>" + closeTags; }
-        else if (f.font.role == fmdv::FontRole::H5) { openTags += "<h5>"; closeTags = "</h5>" + closeTags; }
-        else if (f.font.role == fmdv::FontRole::H6) { openTags += "<h6>"; closeTags = "</h6>" + closeTags; }
-        if (f.font.role == fmdv::FontRole::Mono) { openTags += "<code>"; closeTags = "</code>" + closeTags; }
+        // white-space:pre keeps a code line's literal spacing/indentation;
+        // line breaks between code lines come from the baseline check above.
+        if (f.font.role == fmdv::FontRole::Mono) {
+            openTags += "<code style=\"white-space:pre\">"; closeTags = "</code>" + closeTags;
+        }
         if (f.font.bold) { openTags += "<b>"; closeTags = "</b>" + closeTags; }
         if (f.font.italic) { openTags += "<i>"; closeTags = "</i>" + closeTags; }
 
         [html appendString:[NSString stringWithUTF8String:openTags.c_str()]];
-        NSString* rawStr = [NSString stringWithUTF8String:subUtf8.c_str()];
-        NSString* escaped = [[rawStr stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"]
-            stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
-        escaped = [escaped stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
-        [html appendString:escaped];
+        [html appendString:htmlEscape(subUtf8)];
         [html appendString:[NSString stringWithUTF8String:closeTags.c_str()]];
     }
     if (inLink) {
         [html appendString:@"</a>"];
         inLink = false; currentHref.clear();
+    }
+    if (inHeading) {
+        [html appendFormat:@"</%s>", headingTag(currentHeadingRole)];
+        inHeading = false;
     }
     [html appendString:@"</body></html>"];
     [pb setString:[html description] forType:NSPasteboardTypeHTML];

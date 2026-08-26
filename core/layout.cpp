@@ -73,21 +73,21 @@ struct Ctx {
 inline double Sc(const Ctx& cx, double v) { return std::floor(v * cx.scale + 0.5); }
 
 // emit helpers (all coordinates in document space)
-void fill(Ctx& cx, RectF r, Color c) {
-    DrawCommand d; d.kind = DrawCommand::FillRect; d.rect = r; d.color = c;
+void fill(Ctx& cx, RectF r, Color c, bool afterText = false) {
+    DrawCommand d; d.kind = DrawCommand::FillRect; d.rect = r; d.color = c; d.afterText = afterText;
     cx.out->cmds.push_back(d);
 }
-void frame(Ctx& cx, RectF r, Color c) {
-    DrawCommand d; d.kind = DrawCommand::FrameRect; d.rect = r; d.color = c;
+void frame(Ctx& cx, RectF r, Color c, bool afterText = false) {
+    DrawCommand d; d.kind = DrawCommand::FrameRect; d.rect = r; d.color = c; d.afterText = afterText;
     cx.out->cmds.push_back(d);
 }
-void drawLine(Ctx& cx, double x1, double y1, double x2, double y2, Color c) {
-    DrawCommand d; d.kind = DrawCommand::Line; d.rect = {x1, y1, x2, y2}; d.color = c;
+void drawLine(Ctx& cx, double x1, double y1, double x2, double y2, Color c, bool afterText = false) {
+    DrawCommand d; d.kind = DrawCommand::Line; d.rect = {x1, y1, x2, y2}; d.color = c; d.afterText = afterText;
     cx.out->cmds.push_back(d);
 }
 // A 1-px-high horizontal rule (the old code drew rules as fills, not lines).
-void hline(Ctx& cx, double l, double r, double y, Color c) {
-    fill(cx, {l, y, r - l, 1}, c);
+void hline(Ctx& cx, double l, double r, double y, Color c, bool afterText = false) {
+    fill(cx, {l, y, r - l, 1}, c, afterText);
 }
 void textCmd(Ctx& cx, double x, double baseline, double w, double h, const Str& s,
              const FontSpec& f, Color c, bool spaceBefore, bool selectable) {
@@ -171,13 +171,18 @@ double layoutWords(Ctx& cx, std::vector<Word>& words, double indentLeft, double 
             double ty = topY(line[i]);
             fill(cx, {dxs[i] - 2, ty, line[i]->w + 4, line[i]->h}, cx.th->bg2);
         }
-        // 2. text (group consecutive same-font+color words -> one run for natural spacing)
+        // 2. text (group consecutive same-font+color words -> one run for natural
+        // spacing). Also require the same href: two adjacent links in identical
+        // styling must stay separate runs, or a frontend that recovers per-link
+        // ranges by overlapping a run's box against the link rects (e.g. macOS
+        // rich-text copy) can't tell them apart.
         for (size_t i = 0; i < n; ) {
             size_t j = i;
             Str s = line[i]->text;
             while (j + 1 < n && line[j+1]->gRole == line[i]->gRole
                              && line[j+1]->gBold == line[i]->gBold
                              && line[j+1]->gItalic == line[i]->gItalic
+                             && line[j+1]->href == line[i]->href
                              && sameColor(line[j+1]->color, line[i]->color)) {
                 j++;
                 if (line[j]->space) s += U16(' ');
@@ -189,19 +194,21 @@ double layoutWords(Ctx& cx, std::vector<Word>& words, double indentLeft, double 
                     line[i]->color, (i > 0 && line[i]->space), true);
             i = j + 1;
         }
-        // 3. strikethrough
+        // 3. strikethrough — must stay visually on top of the glyphs it
+        // strikes through, so it paints in the post-text pass.
         for (size_t i = 0; i < n; i++) if (line[i]->strike) {
             double my = topY(line[i]) + std::floor(line[i]->h / 2);
-            drawLine(cx, dxs[i], my, dxs[i] + line[i]->w, my, line[i]->color);
+            drawLine(cx, dxs[i], my, dxs[i] + line[i]->w, my, line[i]->color, /*afterText=*/true);
         }
-        // 4. link underline + hit-rect (span consecutive same-href words)
+        // 4. link underline + hit-rect (span consecutive same-href words) —
+        // the underline paints in the post-text pass for the same reason.
         for (size_t i = 0; i < n; ) {
             if (line[i]->href.empty()) { i++; continue; }
             size_t j = i;
             while (j + 1 < n && line[j+1]->href == line[i]->href) j++;
             double x0 = dxs[i], x1 = dxs[j] + line[j]->w;
             double ty = topY(line[i]);
-            drawLine(cx, x0, ty + line[i]->h - 2, x1, ty + line[i]->h - 2, line[i]->color);
+            drawLine(cx, x0, ty + line[i]->h - 2, x1, ty + line[i]->h - 2, line[i]->color, /*afterText=*/true);
             cx.out->links.push_back({{x0, ty, x1 - x0, line[i]->h}, line[i]->href});
             i = j + 1;
         }
@@ -562,10 +569,12 @@ LayoutResult LayoutDocument(const Document& doc, double width,
             }
             double tableBottom = y;
 
-            // grid lines
+            // grid lines — drawn crisply on top of cell text, so they paint
+            // in the post-text pass (matches how they were previously the
+            // last commands emitted for the table, painted over its text).
             for (int c = 0; c <= cols; c++)
-                fill(cx, {colX[c], tableTop, 1, tableBottom - tableTop}, th.border);
-            for (double ry : rowYs) hline(cx, cx.left, colX[cols], ry, th.border);
+                fill(cx, {colX[c], tableTop, 1, tableBottom - tableTop}, th.border, /*afterText=*/true);
+            for (double ry : rowYs) hline(cx, cx.left, colX[cols], ry, th.border, /*afterText=*/true);
 
             y = tableBottom + Sc(cx, 16);
             break;

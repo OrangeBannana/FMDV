@@ -97,14 +97,8 @@ void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
     CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
     auto flipY = [&](double docY) { return H - docY; }; // top-left -> CG bottom-left
 
-    // Paint in three passes so layering is correct regardless of command order:
-    //   1. backgrounds/borders/rules (FillRect, FrameRect, Line)
-    //   2. highlights (selection, find matches) — over the block backgrounds
-    //   3. text (Text) — over the highlights
-    // Previously highlights were drawn before the command loop, so a code
-    // block's background fill (emitted as a FillRect) painted over the
-    // selection, hiding word/line selection inside code blocks.
-    for (const DrawCommand& c : r.cmds) {
+    // Paints one FillRect/FrameRect/Line command (Text is handled separately).
+    auto paintNonText = [&](const DrawCommand& c) {
         switch (c.kind) {
         case DrawCommand::FillRect: {
             CGColorRef col = cg(cs, c.color);
@@ -134,9 +128,22 @@ void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
             break;
         }
         case DrawCommand::Text:
-            break; // drawn in pass 3, below
+            break;
         }
-    }
+    };
+
+    // Paint in four passes so layering is correct regardless of command order:
+    //   1. backgrounds (FillRect/FrameRect/Line not marked afterText)
+    //   2. highlights (selection, find matches) — over the block backgrounds
+    //   3. text — over the highlights
+    //   4. decorations marked afterText (table grid lines, strikethrough,
+    //      link underlines) — these are emitted right after their own text
+    //      specifically so they stay on top of it.
+    // Previously highlights were drawn before the command loop, so a code
+    // block's background fill (emitted as a FillRect) painted over the
+    // selection, hiding word/line selection inside code blocks.
+    for (const DrawCommand& c : r.cmds)
+        if (!c.afterText) paintNonText(c);
 
     // highlights (selection, find matches, ...), over the backgrounds, behind text
     if (highlights) {
@@ -166,6 +173,9 @@ void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
         }
         CGColorRelease(col);
     }
+
+    for (const DrawCommand& c : r.cmds)
+        if (c.afterText) paintNonText(c);
 
     CGColorSpaceRelease(cs);
 }

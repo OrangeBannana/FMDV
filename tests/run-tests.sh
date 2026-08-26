@@ -145,12 +145,16 @@ check "render table (shrink + wrap)" "$([ "$(stat -f%z "$FIX/tblnarrow.png")" -g
 # (i.e. the highlight is visible). The old painter drew highlights before the
 # code-block background fill, so the two renders were identical and the probe
 # returned "-1 -1 -1" (exit 1).
-SP_LIGHT=$("$BIN" --sel-probe "$FIX/basic.md" --width 900)
-check "selection visible in code block (light)" \
-    "$([ "${SP_LIGHT}" != "selprobe -1 -1 -1" ] && echo 1 || echo 0)" "got '$SP_LIGHT'"
-SP_DARK=$("$BIN" --sel-probe "$FIX/basic.md" --width 900 --dark)
-check "selection visible in code block (dark)" \
-    "$([ "${SP_DARK}" != "selprobe -1 -1 -1" ] && echo 1 || echo 0)" "got '$SP_DARK'"
+SP_LIGHT=$("$BIN" --sel-probe "$FIX/basic.md" --width 900); RC_LIGHT=$?
+SPL_OK=0; case "$SP_LIGHT" in
+    selprobe\ *) [ "$RC_LIGHT" -eq 0 ] && [ "$SP_LIGHT" != "selprobe -1 -1 -1" ] && SPL_OK=1 ;;
+esac
+check "selection visible in code block (light)" "$SPL_OK" "exit=$RC_LIGHT got '$SP_LIGHT'"
+SP_DARK=$("$BIN" --sel-probe "$FIX/basic.md" --width 900 --dark); RC_DARK=$?
+SPD_OK=0; case "$SP_DARK" in
+    selprobe\ *) [ "$RC_DARK" -eq 0 ] && [ "$SP_DARK" != "selprobe -1 -1 -1" ] && SPD_OK=1 ;;
+esac
+check "selection visible in code block (dark)" "$SPD_OK" "exit=$RC_DARK got '$SP_DARK'"
 
 echo
 echo "Launch / stability:"

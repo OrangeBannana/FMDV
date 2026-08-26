@@ -64,6 +64,10 @@ struct DrawCommand {
                               // one on the line (drives copy spacing)
     bool selectable = true;   // Text: false for list markers (bullet/number),
                               // which are drawn but not selectable/copyable
+    bool afterText = false;  // FillRect/FrameRect/Line: paint after all Text
+                             // instead of before — for decorations (table grid
+                             // lines, strikethrough, link underlines) that must
+                             // stay on top of the glyphs they were emitted next to.
 };
 
 // A clickable link rectangle (document space) recorded during layout.
