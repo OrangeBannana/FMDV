@@ -318,6 +318,69 @@ struct Frag {
     NSPasteboard* pb = [NSPasteboard generalPasteboard];
     [pb clearContents];
     [pb setString:s forType:NSPasteboardTypeString];
+
+    // Issue #36: preserve rich formatting by writing HTML to the clipboard.
+    NSMutableString* html = [NSMutableString stringWithString:@"<html><body>"];
+    long a, aCh, b, bCh;
+    [self normSelA:&a aCh:&aCh b:&b bCh:&bCh];
+    bool inLink = false;
+    std::string currentHref;
+    for (long i = a; i <= b && i < (long)_frags.size(); i++) {
+        const Frag& f = _frags[i];
+        Str fragStr = f.text;
+        int c0 = (i == a) ? (int)aCh : 0;
+        int c1 = (i == b) ? (int)bCh : (int)fragStr.size();
+        if (c1 < c0) continue;
+        Str sub = fragStr.substr(c0, (size_t)(c1 - c0));
+        std::string subUtf8 = ToUtf8(sub);
+
+        // Check for overlapping links in this fragment range
+        std::string hrefForFrag;
+        for (const auto& lk : _layout.links) {
+            double fy = f.box.y;
+            double fh = f.box.h;
+            if (lk.rect.y + lk.rect.h > fy && lk.rect.y < fy + fh &&
+                lk.rect.x + lk.rect.w > f.box.x && lk.rect.x < f.box.x + f.box.w) {
+                hrefForFrag = ToUtf8(lk.href);
+                break;
+            }
+        }
+        bool openLink = !hrefForFrag.empty() && hrefForFrag != currentHref;
+        bool closeLink = inLink && (currentHref.empty() || currentHref != hrefForFrag);
+        if (closeLink) {
+            [html appendString:@"</a>"];
+            inLink = false; currentHref.clear();
+        }
+        if (openLink) {
+            [html appendFormat:@"<a href=\"%s\">", hrefForFrag.c_str()];
+            inLink = true; currentHref = hrefForFrag;
+        }
+
+        std::string openTags, closeTags;
+        if (f.font.role == fmdv::FontRole::H1) { openTags += "<h1>"; closeTags = "</h1>" + closeTags; }
+        else if (f.font.role == fmdv::FontRole::H2) { openTags += "<h2>"; closeTags = "</h2>" + closeTags; }
+        else if (f.font.role == fmdv::FontRole::H3) { openTags += "<h3>"; closeTags = "</h3>" + closeTags; }
+        else if (f.font.role == fmdv::FontRole::H4) { openTags += "<h4>"; closeTags = "</h4>" + closeTags; }
+        else if (f.font.role == fmdv::FontRole::H5) { openTags += "<h5>"; closeTags = "</h5>" + closeTags; }
+        else if (f.font.role == fmdv::FontRole::H6) { openTags += "<h6>"; closeTags = "</h6>" + closeTags; }
+        if (f.font.role == fmdv::FontRole::Mono) { openTags += "<code>"; closeTags = "</code>" + closeTags; }
+        if (f.font.bold) { openTags += "<b>"; closeTags = "</b>" + closeTags; }
+        if (f.font.italic) { openTags += "<i>"; closeTags = "</i>" + closeTags; }
+
+        [html appendString:[NSString stringWithUTF8String:openTags.c_str()]];
+        NSString* rawStr = [NSString stringWithUTF8String:subUtf8.c_str()];
+        NSString* escaped = [[rawStr stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"]
+            stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
+        escaped = [escaped stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
+        [html appendString:escaped];
+        [html appendString:[NSString stringWithUTF8String:closeTags.c_str()]];
+    }
+    if (inLink) {
+        [html appendString:@"</a>"];
+        inLink = false; currentHref.clear();
+    }
+    [html appendString:@"</body></html>"];
+    [pb setString:[html description] forType:NSPasteboardTypeHTML];
 }
 - (void)selectAll:(id)sender {
     (void)sender;
