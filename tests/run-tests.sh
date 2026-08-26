@@ -441,8 +441,12 @@ stop_app
 # full install E2E on a staged bundle: auto mode downloads + swaps on launch
 INST_BIN="$FIX/install/FMDV.app/Contents/MacOS/FMDV"
 rm -f "$FIX/in" "$FIX/out"; mkfifo "$FIX/in" "$FIX/out"
+# -FMDVUpdateNotify 1 overrides any real, persisted preference for this
+# bundle ID (NSUserDefaults' argument domain wins over ~/Library/Preferences)
+# so the launch-time auto-check runs regardless of what a developer's own
+# installed FMDV.app has saved for "check for updates on launch" locally.
 FMDV_RELEASES_URL="http://127.0.0.1:$PORT/releases.json" \
-    "$INST_BIN" "$FIX/basic.md" --test-drive -FMDVUpdateMode auto < "$FIX/in" > "$FIX/out" 2>/dev/null &
+    "$INST_BIN" "$FIX/basic.md" --test-drive -FMDVUpdateMode auto -FMDVUpdateNotify 1 < "$FIX/in" > "$FIX/out" 2>/dev/null &
 APP_PID=$!
 exec 3>"$FIX/in" 4<"$FIX/out"
 poll "query installing" "1" >/dev/null   # install kicked off...
