@@ -293,19 +293,39 @@ Document ParseMarkdown(const Str& text) {
         // blockquote
         if (t[0] == U16('>')) {
             flushParagraph(para);
+            std::vector<Str> paragraphs; // one per "> "-separated paragraph
             Str quote;
             while (i < N) {
                 Str ql = trim(rtrim(lines[i]));
                 if (ql.empty() || ql[0] != U16('>')) break;
                 Str inner = ql.substr(1);
                 if (!inner.empty() && inner[0] == U16(' ')) inner = inner.substr(1);
-                if (!quote.empty()) quote += U16(" ");
-                quote += inner;
+                if (inner.empty()) {
+                    // a bare ">" line breaks the quote into paragraphs instead
+                    // of joining everything into one run-on line of text
+                    if (!quote.empty()) { paragraphs.push_back(quote); quote.clear(); }
+                } else {
+                    if (!quote.empty()) quote += U16(" ");
+                    quote += inner;
+                }
                 i++;
             }
-            Block b; b.type = BlockType::BlockQuote;
-            b.runs = ParseInline(trim(quote));
-            doc.blocks.push_back(std::move(b));
+            if (!quote.empty()) paragraphs.push_back(quote);
+            for (Str& p : paragraphs) {
+                Str trimmed = trim(p);
+                // A leading ATX marker ("#" .. "######" + space) isn't
+                // re-parsed as a nested heading here (each quote paragraph is
+                // one flat run of inline text) -- left alone, the literal "#"
+                // characters would leak into the rendered output. Strip it,
+                // matching how GitHub renders a heading-led quote paragraph.
+                int hashes = 0;
+                while (hashes < (int)trimmed.size() && hashes < 6 && trimmed[hashes] == U16('#')) hashes++;
+                if (hashes > 0 && hashes < (int)trimmed.size() && trimmed[hashes] == U16(' '))
+                    trimmed = trim(trimmed.substr(hashes + 1));
+                Block b; b.type = BlockType::BlockQuote;
+                b.runs = ParseInline(trimmed);
+                doc.blocks.push_back(std::move(b));
+            }
             continue;
         }
 

@@ -193,6 +193,34 @@ int main() {
               "quote: consecutive lines join with a space");
         check(d.blocks[1].type == BlockType::Paragraph, "quote: ends at non-quote line");
     }
+    {
+        // a bare ">" line splits the quote into separate paragraph blocks
+        // instead of joining everything into one run-on line
+        Document d = parse("> first para\n>\n> second para");
+        check(d.blocks.size() == 2, "quote: bare '>' line splits into paragraphs");
+        check(d.blocks[0].type == BlockType::BlockQuote &&
+                  d.blocks[1].type == BlockType::BlockQuote,
+              "quote: both paragraphs are BlockQuote");
+        check(runText(d.blocks[0].runs) == "first para", "quote: first paragraph text");
+        check(runText(d.blocks[1].runs) == "second para", "quote: second paragraph text");
+    }
+    {
+        // a leading ATX marker on a quote paragraph is stripped, not left as
+        // literal "#" characters (a blockquote is one flat run of inline
+        // text here -- it isn't re-parsed into a nested block-level heading)
+        Document d = parse("> ## Status line\n>\n> body");
+        check(d.blocks.size() == 2, "quote: heading-marker paragraph still splits");
+        check(runText(d.blocks[0].runs) == "Status line",
+              "quote: leading '#'s stripped from a quote paragraph");
+        check(runText(d.blocks[1].runs) == "body", "quote: following paragraph unaffected");
+    }
+    {
+        // a hash inside the text (not a marker: no trailing space, or not at
+        // the start) is left alone
+        Document d = parse("> not #a marker");
+        check(runText(d.blocks[0].runs) == "not #a marker",
+              "quote: '#' mid-line is not treated as a heading marker");
+    }
 
     // ---- lists ----
     {

@@ -191,6 +191,33 @@ int main() {
         check(l1 && l2 && near(l2->rect.y - l1->rect.y, 24), "code: line advance = height + 4");
         check(l1 && l1->selectable, "code: lines are selectable");
     }
+    // A code line with no spaces, wider than the box, must wrap character by
+    // character instead of spilling past the box's right edge uncut.
+    {
+        std::string longLine(100, 'a');
+        std::string md = "```\n" + longLine + "\n```";
+        LayoutResult r = lay(md.c_str());
+        int textCount = 0;
+        std::string joined;
+        double maxTextW = 0;
+        for (const auto& c : r.cmds) {
+            if (c.kind != DrawCommand::Text) continue;
+            textCount++;
+            joined += ToUtf8(c.text);
+            if (c.rect.w > maxTextW) maxTextW = c.rect.w;
+        }
+        check(textCount > 1, "code: a too-long line wraps onto more than one display line");
+        check(maxTextW <= 820 - 32 + 0.001, "code: no wrapped piece overflows the box width");
+        check(joined == longLine, "code: wrapping loses or duplicates no characters");
+    }
+    // Leading indentation on a line that already fits must survive untouched
+    // -- the code wrapper must not rebuild/collapse whitespace the way the
+    // table-cell word-wrapper does for prose.
+    {
+        LayoutResult r = lay("```\n    indented\n```");
+        check(firstText(r, "    indented") != nullptr,
+              "code: leading indentation preserved on a short line");
+    }
 
     // ---- blockquote ----
     {
@@ -203,6 +230,20 @@ int main() {
             if (c.kind == DrawCommand::FillRect && near(c.rect.w, 4)
                 && sameColor(c.color, light.border)) bar = true;
         check(bar, "quote: 4px border bar");
+    }
+    // A quote with a bare ">" paragraph break parses into multiple BlockQuote
+    // blocks (core/markdown.cpp); layout must still draw one continuous
+    // border bar spanning all of them, not one short bar per paragraph.
+    {
+        LayoutResult r = lay("> first\n>\n> second");
+        int bars = 0; double barH = 0;
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::FillRect && near(c.rect.w, 4)
+                && sameColor(c.color, light.border)) { bars++; barH = c.rect.h; }
+        check(bars == 1, "quote: multi-paragraph quote has one border bar, not one per paragraph");
+        check(barH > 20 + 16, "quote: border bar spans both paragraphs plus the gap");
+        check(r.blockTops.size() == 2, "quote: blockTops has one entry per paragraph block");
+        check(r.blockTops[1] > r.blockTops[0], "quote: second paragraph's top is below the first's");
     }
 
     // ---- links ----

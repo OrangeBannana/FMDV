@@ -297,6 +297,56 @@ std::vector<Str> WrapCellText(TextMeasurer& tm, const FontSpec& f, const Str& te
     return lines;
 }
 
+// Soft-wrap one line of code to fit maxWidth, preserving every character
+// exactly. WrapCellText (above) rebuilds a cell's text from words joined by a
+// single space, which is invisible for prose but would collapse a code
+// line's own indentation/alignment spacing -- unsafe to reuse here. Wraps
+// after a run of spaces when one is available, so words stay whole; a run
+// with none (a single token wider than the whole line) is cut character by
+// character so nothing is left invisible past the box's right edge.
+std::vector<Str> WrapCodeLine(TextMeasurer& tm, const FontSpec& f, const Str& text,
+                              double maxWidth) {
+    if (maxWidth < 1) maxWidth = 1;
+    if (tm.textWidth(f, text) <= maxWidth) return {text};
+
+    // Tokens are maximal runs of spaces or maximal runs of non-spaces;
+    // concatenated in order they reproduce `text` exactly.
+    std::vector<Str> tokens;
+    for (size_t i = 0; i < text.size(); ) {
+        size_t j = i;
+        bool sp = (text[i] == U16(' '));
+        while (j < text.size() && (text[j] == U16(' ')) == sp) j++;
+        tokens.push_back(text.substr(i, j - i));
+        i = j;
+    }
+
+    std::vector<Str> out;
+    Str line;
+    for (const Str& tok : tokens) {
+        Str trial = line + tok;
+        if (!line.empty() && tm.textWidth(f, trial) > maxWidth) {
+            out.push_back(line);
+            line.clear();
+            if (!tok.empty() && tok[0] == U16(' ')) continue; // drop the wrap-point space
+            trial = tok;
+        }
+        if (tm.textWidth(f, trial) <= maxWidth) { line = trial; continue; }
+        // this token alone overflows the line width: hard-cut it char by char
+        Str piece;
+        for (Char ch : tok) {
+            Str withCh = piece + ch;
+            if (!piece.empty() && tm.textWidth(f, withCh) > maxWidth) {
+                out.push_back(piece);
+                piece.clear();
+            }
+            piece += ch;
+        }
+        line = piece;
+    }
+    if (!line.empty() || out.empty()) out.push_back(line);
+    return out;
+}
+
 } // namespace
 
 LayoutResult LayoutDocument(const Document& doc, double width,
@@ -341,13 +391,25 @@ LayoutResult LayoutDocument(const Document& doc, double width,
             break;
         }
         case BlockType::BlockQuote: {
-            auto words = buildWords(cx, b.runs, FontRole::Body);
-            for (auto& w : words) if (!w.link) w.color = th.text2;
+            // A source blockquote with blank-">" paragraph breaks parses into
+            // several consecutive BlockQuote blocks (core/markdown.cpp); lay
+            // them all out here under one continuous left border bar instead
+            // of one per paragraph, with a normal paragraph gap between them.
             double top = y;
-            double yy = layoutWords(cx, words, cx.left + Sc(cx, 16), y);
-            // left border bar
-            fill(cx, {cx.left, top - 2, Sc(cx, 4), (yy + 2) - (top - 2)}, th.border);
-            y = yy + Sc(cx, 16);
+            size_t bj = bi;
+            while (bj < doc.blocks.size() && doc.blocks[bj].type == BlockType::BlockQuote) {
+                if (bj > bi) res.blockTops.push_back(y); // blockTops[bi] already pushed above
+                auto words = buildWords(cx, doc.blocks[bj].runs, FontRole::Body);
+                for (auto& w : words) if (!w.link) w.color = th.text2;
+                y = layoutWords(cx, words, cx.left + Sc(cx, 16), y);
+                bj++;
+                if (bj < doc.blocks.size() && doc.blocks[bj].type == BlockType::BlockQuote)
+                    y += Sc(cx, 16); // gap before the next paragraph in this quote
+            }
+            // left border bar, spanning every paragraph in this quote
+            fill(cx, {cx.left, top - 2, Sc(cx, 4), (y + 2) - (top - 2)}, th.border);
+            y += Sc(cx, 16);
+            bi = bj - 1; // for-loop's bi++ lands on the first non-quote block
             break;
         }
         case BlockType::ListItem: {
@@ -394,16 +456,26 @@ LayoutResult LayoutDocument(const Document& doc, double width,
         case BlockType::CodeBlock: {
             FontSpec mono = roleFont(FontRole::Mono, false, false);
             double fh = tm.lineHeight(mono), asc = tm.ascent(mono);
-            // split code into lines
+            // split code into (source) lines
             std::vector<Str> lines; Str cur;
             for (Char c : b.codeText) { if (c == U16('\n')) { lines.push_back(cur); cur.clear(); } else cur += c; }
             lines.push_back(cur);
+            // Wrap each source line to the box's inner width (reusing the same
+            // helper table cells use) so a long line overflows onto extra
+            // display lines instead of getting clipped past the box's right
+            // edge with no way to see the rest of it.
+            double innerW = (cx.right - cx.left) - Sc(cx, 32); // 16px pad each side
+            std::vector<Str> displayLines;
+            for (const auto& ln : lines) {
+                auto wrapped = WrapCodeLine(tm, mono, ln, innerW > 1 ? innerW : 1);
+                displayLines.insert(displayLines.end(), wrapped.begin(), wrapped.end());
+            }
             double lineH = fh + Sc(cx, 4);
             double boxTop = y;
-            double boxH = (double)lines.size() * lineH + Sc(cx, 24);
+            double boxH = (double)displayLines.size() * lineH + Sc(cx, 24);
             fill(cx, {cx.left, boxTop, cx.right - cx.left, boxH}, th.bg2);
             double ty = boxTop + Sc(cx, 12);
-            for (const auto& ln : lines) {
+            for (const auto& ln : displayLines) {
                 double wpx = tm.textWidth(mono, ln);
                 textCmd(cx, cx.left + Sc(cx, 16), ty + asc, wpx, fh, ln, mono,
                         th.codeText, false, true);
