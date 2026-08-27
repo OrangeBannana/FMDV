@@ -169,18 +169,24 @@ double layoutWords(Ctx& cx, std::vector<Word>& words, double indentLeft, double 
         size_t n = line.size();
         std::vector<double> dxs(n);
         double dx = lineStart;
-        double codePad = Sc(cx, 2); // breathing room around an inline-code box
+        // Breathing room around an inline-code box. Uneven on purpose: a
+        // leading neighbor with no space (e.g. the "(" right before "`dsh`")
+        // reads as crowded at the same gap that looks fine trailing (e.g. the
+        // ")" right after) -- glyphs like "(" carry very little of their own
+        // right-side bearing, so the box's left edge needs more reserved
+        // room than its right edge to look visually even.
+        double codePadLead = Sc(cx, 4), codePadTrail = Sc(cx, 2);
         for (size_t i = 0; i < n; i++) {
             if (i > 0 && line[i]->space) dx += spaceW;
             // Reserve room for the code box's own background padding at the
             // start/end of a run of code words, so a neighbor with no space
-            // before/after it (e.g. the ")" right after "`dsh`") isn't
-            // crowded against the tinted box -- the gap belongs to the box,
-            // not to whatever character happens to sit next to it.
-            if (line[i]->code && (i == 0 || !line[i - 1]->code)) dx += codePad;
+            // before/after it isn't crowded against the tinted box -- the
+            // gap belongs to the box, not to whatever character happens to
+            // sit next to it.
+            if (line[i]->code && (i == 0 || !line[i - 1]->code)) dx += codePadLead;
             dxs[i] = dx;
             dx += line[i]->w;
-            if (line[i]->code && (i + 1 >= n || !line[i + 1]->code)) dx += codePad;
+            if (line[i]->code && (i + 1 >= n || !line[i + 1]->code)) dx += codePadTrail;
         }
         auto topY = [&](const Word* w) { return y + (lineH - w->h); };
 
@@ -192,7 +198,7 @@ double layoutWords(Ctx& cx, std::vector<Word>& words, double indentLeft, double 
             size_t j = i;
             while (j + 1 < n && line[j + 1]->code) j++;
             double ty = topY(line[i]);
-            double x0 = dxs[i] - codePad, x1 = dxs[j] + line[j]->w + codePad;
+            double x0 = dxs[i] - codePadLead, x1 = dxs[j] + line[j]->w + codePadTrail;
             fill(cx, {x0, ty, x1 - x0, line[i]->h}, cx.th->bg2);
             i = j + 1;
         }

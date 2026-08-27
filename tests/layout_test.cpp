@@ -116,6 +116,13 @@ int main() {
               "code-adjacent: background box doesn't overlap the preceding '('");
         check(bg && close && close->rect.x >= bg->rect.x + bg->rect.w,
               "code-adjacent: following ')' doesn't overlap the background box");
+        // The leading inset (box edge to code text) is deliberately larger
+        // than the trailing one: a leading neighbor with no space reads as
+        // crowded at the same gap that looks fine trailing, since glyphs
+        // like "(" carry very little of their own right-side bearing.
+        check(bg && code &&
+                  (code->rect.x - bg->rect.x) > ((bg->rect.x + bg->rect.w) - (code->rect.x + code->rect.w)),
+              "code-adjacent: leading inset is larger than the trailing inset");
     }
 
     // ---- headings ----
