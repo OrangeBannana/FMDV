@@ -494,15 +494,37 @@ LayoutResult LayoutDocument(const Document& doc, double width,
                 displayLines.insert(displayLines.end(), wrapped.begin(), wrapped.end());
             }
             double lineH = fh + Sc(cx, 4);
+            // A header strip reserves room for the copy button below, so it
+            // never sits on top of (and obscures) the first line of code.
+            double headerH = Sc(cx, 28);
             double boxTop = y;
-            double boxH = (double)displayLines.size() * lineH + Sc(cx, 24);
+            double boxH = headerH + (double)displayLines.size() * lineH + Sc(cx, 12);
             fill(cx, {cx.left, boxTop, cx.right - cx.left, boxH}, th.bg2);
-            double ty = boxTop + Sc(cx, 12);
+            double ty = boxTop + headerH;
             for (const auto& ln : displayLines) {
                 double wpx = tm.textWidth(mono, ln);
                 textCmd(cx, cx.left + Sc(cx, 16), ty + asc, wpx, fh, ln, mono,
                         th.codeText, false, true);
                 ty += lineH;
+            }
+            // Copy-to-clipboard button: two overlapping outlined squares (the
+            // conventional "copy" glyph) in the header strip's top-right
+            // corner, using only FrameRect so it costs no extra background
+            // fill. The hit rect is padded a little beyond the icon itself
+            // for easier clicking, matching the checkbox hit area above.
+            {
+                double iconSize = Sc(cx, 11), iconGap = Sc(cx, 3);
+                double backX = cx.right - Sc(cx, 16) - iconSize;
+                double backY = boxTop + (headerH - (iconSize + iconGap)) / 2.0;
+                RectF back{backX, backY, iconSize, iconSize};
+                RectF front{backX - iconGap, backY + iconGap, iconSize, iconSize};
+                frame(cx, back, th.text2);
+                frame(cx, front, th.text2);
+                double hpad = Sc(cx, 6);
+                RectF hit{front.x - hpad, back.y - hpad,
+                          (back.x + back.w - front.x) + 2 * hpad,
+                          (iconSize + iconGap) + 2 * hpad};
+                cx.out->codeCopyHits.push_back({hit, b.codeText});
             }
             y = boxTop + boxH + Sc(cx, 16);
             break;

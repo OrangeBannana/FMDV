@@ -380,6 +380,8 @@ static void ApplyScale() { SetRenderScale((g_zoomPct / 100.0) * (g_dpi / 96.0));
 static std::vector<LinkHit> g_links;
 // clickable task-list checkboxes from the last layout (same coord space as links)
 static std::vector<TaskHit> g_taskHits;
+// clickable code-block copy buttons from the last layout (same coord space as links)
+static std::vector<CodeCopyHit> g_codeCopyHits;
 
 // text selection state
 static std::vector<TextFrag> g_frags;   // drawn text runs from the last paint
@@ -513,6 +515,23 @@ static void SelectAll(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// Put plain text on the clipboard (shared by CopySelection and the code-block
+// copy button below).
+static void SetClipboardText(HWND hwnd, const std::wstring& s) {
+    if (s.empty()) return;
+    if (!OpenClipboard(hwnd)) return;
+    EmptyClipboard();
+    size_t bytes = (s.size() + 1) * sizeof(wchar_t);
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (h) {
+        void* p = GlobalLock(h);
+        memcpy(p, s.c_str(), bytes);
+        GlobalUnlock(h);
+        SetClipboardData(CF_UNICODETEXT, h);
+    }
+    CloseClipboard();
+}
+
 // Build the selected text and put it on the clipboard.
 static void CopySelection(HWND hwnd) {
     if (!g_sel.active) return;
@@ -530,18 +549,7 @@ static void CopySelection(HWND hwnd) {
         out += f.text.substr(c0, c1 - c0);
         top = f.rc.top;
     }
-    if (out.empty()) return;
-    if (!OpenClipboard(hwnd)) return;
-    EmptyClipboard();
-    size_t bytes = (out.size() + 1) * sizeof(wchar_t);
-    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (h) {
-        void* p = GlobalLock(h);
-        memcpy(p, out.c_str(), bytes);
-        GlobalUnlock(h);
-        SetClipboardData(CF_UNICODETEXT, h);
-    }
-    CloseClipboard();
+    SetClipboardText(hwnd, out);
 }
 
 static void ApplyZoom(HWND hwnd, int pct) {
@@ -601,7 +609,7 @@ static void UpdateLayout(HWND hwnd, bool redrawScrollbar) {
     bool logFirstLayout = BenchLogActive() && !g_firstLayoutLogged;
     double layoutStart = NowMs();
     if (logFirstLayout) BenchLog("first_layout_start", layoutStart, PreviewWidth(), g_clientH, g_contentH, "elapsed");
-    g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags, &g_blockTops, &g_taskHits);
+    g_contentH = LayoutDocument(dc, PreviewWidth(), g_doc, g_theme, &g_links, &g_frags, &g_blockTops, &g_taskHits, &g_codeCopyHits);
     if (logFirstLayout) {
         g_firstLayoutLogged = true;
         BenchLog("first_layout_done", NowMs() - layoutStart, PreviewWidth(), g_clientH, g_contentH, "duration");
@@ -698,6 +706,20 @@ static bool SaveToFile() {
         g_rawText = norm;
     }
     return WriteTextToFile(text);
+}
+
+// Copy the code block under a client point's raw text to the clipboard, if
+// its copy button is there. Returns true if a button was hit (click
+// consumed) — mirrors LinkAt/ToggleTaskAt's coordinate handling.
+static bool CopyCodeBlockAt(HWND hwnd, int clientX, int clientY) {
+    int bx = clientX - PreviewLeft();
+    int by = clientY + g_scrollY;
+    for (const auto& h : g_codeCopyHits) {
+        if (bx < h.rc.left || bx >= h.rc.right || by < h.rc.top || by >= h.rc.bottom) continue;
+        SetClipboardText(hwnd, h.text);
+        return true;
+    }
+    return false;
 }
 
 // Toggle the task-list checkbox under a client point, if one is there. Returns
@@ -1971,9 +1993,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_autoScroll) { KillTimer(hwnd, AUTOSCROLL_TIMER); g_autoScroll = false; }
             g_selAnchor.frag = -1;
             if (!g_selecting) {
-                // a plain click (no drag): toggle a task checkbox, else follow a link
+                // a plain click (no drag): copy a code block, else toggle a task
+                // checkbox, else follow a link
                 int cx = GET_X_LPARAM(lp), cy = GET_Y_LPARAM(lp);
-                if (!ToggleTaskAt(hwnd, cx, cy)) {
+                if (!CopyCodeBlockAt(hwnd, cx, cy) && !ToggleTaskAt(hwnd, cx, cy)) {
                     std::wstring href = LinkAt(cx, cy);
                     if (!href.empty()) {
                         // Test hook: the live-UI suite can't trigger a real

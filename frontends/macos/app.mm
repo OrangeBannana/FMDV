@@ -82,6 +82,7 @@ struct Frag {
     NSTextField* _findLabel;
     std::vector<fmdv::FindMatch> _matches;
     long _curMatch;
+    long _codeCopyFlashIndex; // index into _layout.codeCopyHits briefly highlighted after a click, -1 = none
 }
 // Directory of the open document; scheme-less link hrefs resolve against it.
 @property (nonatomic, copy) NSString* baseDir;
@@ -156,6 +157,7 @@ struct Frag {
     }
     _hasSel = false;
     _matches.clear(); _curMatch = -1;
+    _codeCopyFlashIndex = -1; // layout changed; any hit index would be stale
     [self setFrameSize:NSMakeSize(viewW, _layout.contentHeight * _zoom)];
     if (_findBar && !_findBar.hidden) [self updateMatches];
     self.needsDisplay = YES;
@@ -278,6 +280,8 @@ struct Frag {
     fmdv::Color hit{250, 220, 90}, cur{255, 168, 40};
     for (long i = 0; i < (long)_matches.size(); i++)
         out.push_back({[self matchRect:_matches[i]], (i == _curMatch) ? cur : hit});
+    if (_codeCopyFlashIndex >= 0 && _codeCopyFlashIndex < (long)_layout.codeCopyHits.size())
+        out.push_back({_layout.codeCopyHits[_codeCopyFlashIndex].rect, th.link});
     return out;
 }
 - (NSString*)selectedString {
@@ -308,6 +312,14 @@ struct Frag {
 - (NSPoint)windowPointForTaskHit:(long)i {
     if (i < 0 || i >= (long)_layout.taskHits.size()) return NSZeroPoint;
     const fmdv::RectF& r = _layout.taskHits[i].rect;         // document space
+    double vx = (r.x + r.w * 0.5) * _zoom, vy = (r.y + r.h * 0.5) * _zoom;
+    [self scrollRectToVisible:NSMakeRect(vx - 1, vy - 1, 2, 2)];
+    return [self convertPoint:NSMakePoint(vx, vy) toView:nil];
+}
+- (long)codeCopyHitCount { return (long)_layout.codeCopyHits.size(); }
+- (NSPoint)windowPointForCodeCopyHit:(long)i {
+    if (i < 0 || i >= (long)_layout.codeCopyHits.size()) return NSZeroPoint;
+    const fmdv::RectF& r = _layout.codeCopyHits[i].rect;     // document space
     double vx = (r.x + r.w * 0.5) * _zoom, vy = (r.y + r.h * 0.5) * _zoom;
     [self scrollRectToVisible:NSMakeRect(vx - 1, vy - 1, 2, 2)];
     return [self convertPoint:NSMakePoint(vx, vy) toView:nil];
@@ -659,6 +671,30 @@ struct Frag {
     [super keyDown:ev];
 }
 
+// Copy code block i's raw text to the clipboard (plain text only -- this is
+// a "grab the commands" action, not a rich-text selection copy), then flash
+// its copy-button rect briefly so the click has visible confirmation.
+- (void)copyCodeBlock:(long)i {
+    if (i < 0 || i >= (long)_layout.codeCopyHits.size()) return;
+    NSString* s = StrToNS(_layout.codeCopyHits[i].text);
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb setString:s forType:NSPasteboardTypeString];
+
+    _codeCopyFlashIndex = i;
+    self.needsDisplay = YES;
+    __unsafe_unretained FMDVPreviewView* weak = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                    dispatch_get_main_queue(), ^{ [weak clearCodeCopyFlash:i]; });
+}
+// Ends the post-copy flash, but only if it's still the same click's flash
+// (a later click on another block, or a relayout, may have already changed it).
+- (void)clearCodeCopyFlash:(long)i {
+    if (_codeCopyFlashIndex != i) return;
+    _codeCopyFlashIndex = -1;
+    self.needsDisplay = YES;
+}
+
 // Open a link target. Absolute URLs (http:, mailto:, ...) go straight to the
 // workspace. A scheme-less href (docs/guide.md, /tmp/x.md) used to be fed to
 // URLWithString:, which yields a schemeless NSURL that openURL: silently
@@ -683,6 +719,14 @@ struct Frag {
     if (_dragging) { _dragging = false; return; } // a drag made a selection; keep it
     // A plain click: toggle a task checkbox, else follow a link, else drop selection.
     NSPoint p = [self logicalPoint:ev];
+    for (long i = 0; i < (long)_layout.codeCopyHits.size(); i++) {
+        const auto& r = _layout.codeCopyHits[i].rect;
+        if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) {
+            [self clearSelection];
+            [self copyCodeBlock:i];
+            return;
+        }
+    }
     for (const auto& th : _layout.taskHits) {
         const auto& r = th.rect;
         if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) {
@@ -1853,6 +1897,15 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     [_preview mouseUp:[self testMouseEvent:NSEventTypeLeftMouseUp at:p clicks:1]];
     return @"ok";
 }
+// Click code block i's copy button (runs the real mouseUp -> copyCodeBlock:).
+- (NSString*)testClickCodeCopy:(long)i {
+    if (!_preview) return @"err no preview";
+    if (i < 0 || i >= [_preview codeCopyHitCount]) return @"err codecopy out of range";
+    NSPoint p = [_preview windowPointForCodeCopyHit:i];
+    [_preview mouseDown:[self testMouseEvent:NSEventTypeLeftMouseDown at:p clicks:1]];
+    [_preview mouseUp:[self testMouseEvent:NSEventTypeLeftMouseUp at:p clicks:1]];
+    return @"ok";
+}
 
 // Execute one command line; returns the reply ("ok", "ok <data>", "err <why>").
 - (NSString*)testCommand:(NSString*)line {
@@ -1864,6 +1917,7 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     if ([cmd isEqualToString:@"dblclick-frag"])    return [self testClickFrag:arg.integerValue clicks:2];
     if ([cmd isEqualToString:@"tripleclick-frag"]) return [self testClickFrag:arg.integerValue clicks:3];
     if ([cmd isEqualToString:@"click-task"])       return [self testClickTask:arg.integerValue];
+    if ([cmd isEqualToString:@"click-codecopy"])   return [self testClickCodeCopy:arg.integerValue];
     if ([cmd isEqualToString:@"drag-frag"]) {
         NSArray<NSString*>* ij = [arg componentsSeparatedByString:@" "];
         if (ij.count != 2) return @"err bad drag-frag";

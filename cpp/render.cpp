@@ -195,12 +195,14 @@ static int Px(double v) { return (int)std::llround(v); }
 
 int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
                    std::vector<LinkHit>* links, std::vector<TextFrag>* frags,
-                   std::vector<int>* blockTops, std::vector<TaskHit>* taskHits) {
+                   std::vector<int>* blockTops, std::vector<TaskHit>* taskHits,
+                   std::vector<CodeCopyHit>* codeCopyHits) {
     g_cmds.clear();
     if (links) links->clear();
     if (frags) frags->clear();
     if (blockTops) blockTops->clear();
     if (taskHits) taskHits->clear();
+    if (codeCopyHits) codeCopyHits->clear();
 
     fmdv::LayoutTheme lth;
     lth.bg = ToColor(th.bg);     lth.bg2 = ToColor(th.bg2);       lth.bg3 = ToColor(th.bg3);
@@ -251,6 +253,11 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
             taskHits->push_back(TaskHit{ RECT{ Px(t.rect.x), Px(t.rect.y),
                                                Px(t.rect.x + t.rect.w), Px(t.rect.y + t.rect.h) },
                                          t.srcLine, t.state });
+    if (codeCopyHits)
+        for (const auto& h : res.codeCopyHits)
+            codeCopyHits->push_back(CodeCopyHit{ RECT{ Px(h.rect.x), Px(h.rect.y),
+                                                        Px(h.rect.x + h.rect.w), Px(h.rect.y + h.rect.h) },
+                                                 h.text });
     if (blockTops)
         for (double t : res.blockTops) blockTops->push_back(Px(t));
 

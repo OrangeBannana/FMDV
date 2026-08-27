@@ -24,6 +24,14 @@ struct TaskHit {
     int state = 0;
 };
 
+// A clickable "copy to clipboard" button in a code block's top-right corner.
+// rc is in DOCUMENT space (not scroll-adjusted, like LinkHit/TaskHit). text is
+// that block's raw code, verbatim, ready to paste into a terminal.
+struct CodeCopyHit {
+    RECT rc;
+    std::wstring text;
+};
+
 // An ordered run of drawn text (one TextOut group), used for selection +
 // copy. rc is in DOCUMENT space (not scroll-adjusted). Frags are appended in
 // reading order each paint, so indices are stable while layout is unchanged.
@@ -64,10 +72,13 @@ int FragXAtChar(HDC hdc, const TextFrag& f, int ch);
 // to scroll to a heading without re-measuring the whole document.
 // `taskHits`, if non-null, is filled with one entry per task-list checkbox for
 // click-to-toggle.
+// `codeCopyHits`, if non-null, is filled with one entry per code block's
+// copy-to-clipboard button.
 int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
                    std::vector<LinkHit>* links, std::vector<TextFrag>* frags,
                    std::vector<int>* blockTops = nullptr,
-                   std::vector<TaskHit>* taskHits = nullptr);
+                   std::vector<TaskHit>* taskHits = nullptr,
+                   std::vector<CodeCopyHit>* codeCopyHits = nullptr);
 
 // Paint the cached display list, culled to the viewport [scrollY, scrollY+clientH],
 // plus the current selection highlight. Cheap enough to call every frame/scroll.

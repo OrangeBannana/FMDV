@@ -204,6 +204,12 @@ has "copy: code text"  "$GOT" "print("
 has "copy: table cells" "$GOT" "Cell A1"
 has "copy: link text"  "$GOT" "Example Link"
 check "copy: multi-line" "$([ "$(printf '%s' "$GOT" | wc -l | tr -d ' ')" -ge 8 ] && echo 1 || echo 0)"
+# The code block's own copy button writes just that block's raw text (not
+# whatever the current selection happens to be) to the clipboard.
+cmd "click-codecopy 0"
+CODE=$(pbpaste)
+has "copy: code block button copies its own text" "$CODE" "def greet():"
+has "copy: code block button includes every line" "$CODE" 'print("hi there")'
 stop_app
 
 echo

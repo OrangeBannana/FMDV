@@ -85,6 +85,13 @@ struct TaskHit {
     int state = 0;
 };
 
+// A clickable "copy to clipboard" button in a code block's top-right corner.
+// `text` is that block's raw code, verbatim, ready to paste into a terminal.
+struct CodeCopyHit {
+    RectF rect;
+    Str text;
+};
+
 struct LayoutTheme {
     Color bg, bg2, bg3, text, text2, border, link, codeText, sel;
 };
@@ -102,6 +109,7 @@ struct LayoutResult {
     std::vector<DrawCommand> cmds;
     std::vector<LinkHit> links;
     std::vector<TaskHit> taskHits;
+    std::vector<CodeCopyHit> codeCopyHits;
     std::vector<HeadingRef> headings;
     std::vector<double> blockTops; // document-space top y per doc.blocks[i]
                                    // (TOC scroll anchors)

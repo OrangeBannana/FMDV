@@ -220,7 +220,7 @@ int main() {
         check(box.kind == DrawCommand::FillRect && sameColor(box.color, light.bg2),
               "code: box uses bg2 and is drawn first");
         check(near(box.rect.x, 40) && near(box.rect.y, 32) && near(box.rect.w, 820)
-                  && near(box.rect.h, 2 * 24 + 24),
+                  && near(box.rect.h, 28 + 2 * 24 + 12), // header strip + 2 lines + bottom pad
               "code: box geometry (2 lines)");
         const DrawCommand* l1 = firstText(r, "ab");
         const DrawCommand* l2 = firstText(r, "cd");
@@ -228,6 +228,30 @@ int main() {
         check(l1 && near(l1->rect.x, 56), "code: text inset 16px into the box");
         check(l1 && l2 && near(l2->rect.y - l1->rect.y, 24), "code: line advance = height + 4");
         check(l1 && l1->selectable, "code: lines are selectable");
+    }
+    // ---- code block: copy-to-clipboard button ----
+    {
+        LayoutResult r = lay("```\nab\ncd\n```");
+        check(r.codeCopyHits.size() == 1, "code copy: one hit per code block");
+        const auto& h = r.codeCopyHits[0];
+        check(ToUtf8(h.text) == "ab\ncd", "code copy: hit carries the raw code text verbatim");
+        const DrawCommand& box = r.cmds[0];
+        check(h.rect.x > box.rect.x && h.rect.x + h.rect.w < box.rect.x + box.rect.w,
+              "code copy: button sits inside the box horizontally");
+        check(h.rect.x + h.rect.w > box.rect.x + box.rect.w * 0.5,
+              "code copy: button is in the right half of the box");
+        check(h.rect.y >= box.rect.y && h.rect.y < box.rect.y + 28,
+              "code copy: button sits in the header strip, not over the code text");
+        check(h.rect.y + h.rect.h <= box.rect.y + 28,
+              "code copy: button stays within the header strip, never over the code text");
+        check(countKind(r, DrawCommand::FrameRect) == 2, "code copy: icon is two outlined squares");
+    }
+    {
+        // two code blocks each get their own button, carrying their own text
+        LayoutResult r = lay("```\nfirst\n```\n\n```\nsecond\n```");
+        check(r.codeCopyHits.size() == 2, "code copy: one hit per block, not shared");
+        check(ToUtf8(r.codeCopyHits[0].text) == "first" && ToUtf8(r.codeCopyHits[1].text) == "second",
+              "code copy: each hit carries its own block's text");
     }
     // A code line with no spaces, wider than the box, must wrap character by
     // character instead of spilling past the box's right edge uncut.
