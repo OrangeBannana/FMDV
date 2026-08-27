@@ -99,6 +99,24 @@ int main() {
         check(b && b->font.bold, "runs: middle command is bold");
         check(b && b->spaceBefore, "runs: bold word remembers the space before it");
     }
+    // A code span with no source space on either side (e.g. "(`x`)") must not
+    // have its background box crowd the adjacent punctuation -- the padding
+    // is reserved as real layout space, not just painted overlap.
+    {
+        LayoutResult r = lay("(`x`)");
+        const DrawCommand* open = firstText(r, "(");
+        const DrawCommand* code = firstText(r, "x");
+        const DrawCommand* close = firstText(r, ")");
+        check(open && code && close, "code-adjacent: all three runs present");
+        const DrawCommand* bg = nullptr;
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::FillRect && sameColor(c.color, light.bg2)) bg = &c;
+        check(bg != nullptr, "code-adjacent: background box drawn");
+        check(bg && open && bg->rect.x >= open->rect.x + open->rect.w,
+              "code-adjacent: background box doesn't overlap the preceding '('");
+        check(bg && close && close->rect.x >= bg->rect.x + bg->rect.w,
+              "code-adjacent: following ')' doesn't overlap the background box");
+    }
 
     // ---- headings ----
     {

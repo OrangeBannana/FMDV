@@ -167,17 +167,32 @@ double layoutWords(Ctx& cx, std::vector<Word>& words, double indentLeft, double 
         size_t n = line.size();
         std::vector<double> dxs(n);
         double dx = lineStart;
+        double codePad = Sc(cx, 2); // breathing room around an inline-code box
         for (size_t i = 0; i < n; i++) {
             if (i > 0 && line[i]->space) dx += spaceW;
+            // Reserve room for the code box's own background padding at the
+            // start/end of a run of code words, so a neighbor with no space
+            // before/after it (e.g. the ")" right after "`dsh`") isn't
+            // crowded against the tinted box -- the gap belongs to the box,
+            // not to whatever character happens to sit next to it.
+            if (line[i]->code && (i == 0 || !line[i - 1]->code)) dx += codePad;
             dxs[i] = dx;
             dx += line[i]->w;
+            if (line[i]->code && (i + 1 >= n || !line[i + 1]->code)) dx += codePad;
         }
         auto topY = [&](const Word* w) { return y + (lineH - w->h); };
 
-        // 1. inline-code backgrounds
-        for (size_t i = 0; i < n; i++) if (line[i]->code) {
+        // 1. inline-code backgrounds: one continuous box per run of adjacent
+        // code words, not one per word (which would double the gap between
+        // two code words sitting next to each other on the same line).
+        for (size_t i = 0; i < n; ) {
+            if (!line[i]->code) { i++; continue; }
+            size_t j = i;
+            while (j + 1 < n && line[j + 1]->code) j++;
             double ty = topY(line[i]);
-            fill(cx, {dxs[i] - 2, ty, line[i]->w + 4, line[i]->h}, cx.th->bg2);
+            double x0 = dxs[i] - codePad, x1 = dxs[j] + line[j]->w + codePad;
+            fill(cx, {x0, ty, x1 - x0, line[i]->h}, cx.th->bg2);
+            i = j + 1;
         }
         // 2. text (group consecutive same-font+color words -> one run for natural
         // spacing). Also require the same href: two adjacent links in identical
