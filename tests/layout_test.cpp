@@ -113,6 +113,26 @@ int main() {
         check(countKind(r, DrawCommand::FillRect) == 1, "h1: underline rule emitted");
         check(near(r.contentHeight, 124), "h1: content height");
     }
+    // Inline code inside a heading must scale up with the heading instead of
+    // staying at Mono's fixed 14px, which looked tiny/subscript-like next to
+    // much larger heading text.
+    {
+        LayoutResult r = lay("# a `code` b");
+        const DrawCommand* c = firstText(r, "code");
+        check(c && c->font.role == FontRole::Mono, "h1 code: still uses the Mono font family");
+        check(c && c->font.px > RoleSizePx(FontRole::Mono),
+              "h1 code: scaled above Mono's fixed default size");
+        check(c && near(c->font.px, RoleSizePx(FontRole::H1) *
+                             (RoleSizePx(FontRole::Mono) / RoleSizePx(FontRole::Body))),
+              "h1 code: scaled proportionally to the heading's own size");
+    }
+    {
+        // outside a heading, inline code keeps its normal fixed size
+        LayoutResult r = lay("a `code` b");
+        const DrawCommand* c = firstText(r, "code");
+        check(c && near(c->font.px, RoleSizePx(FontRole::Mono)),
+              "body code: unscaled outside a heading");
+    }
     {
         LayoutResult r = lay("### Sub");
         check(countKind(r, DrawCommand::FillRect) == 0, "h3: no underline rule");

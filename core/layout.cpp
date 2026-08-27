@@ -102,9 +102,17 @@ void textCmd(Ctx& cx, double x, double baseline, double w, double h, const Str& 
 std::vector<Word> buildWords(Ctx& cx, const std::vector<InlineRun>& runs, FontRole base) {
     std::vector<Word> words;
     bool pendingSpace = false; // whitespace seen since last emitted word (carries across runs)
+    bool baseHeading = base >= FontRole::H1 && base <= FontRole::H6;
     for (const auto& r : runs) {
         FontRole useRole = r.code ? FontRole::Mono : base;
         FontSpec f = roleFont(useRole, r.bold, r.italic);
+        if (r.code && baseHeading) {
+            // Inline code is Mono's fixed 14px by default, which looks tiny
+            // and subscript-like next to a much larger heading; scale it up
+            // proportionally with the heading instead (this reduces to the
+            // unscaled 14px when base is Body, since RoleSizePx(Body) == 16).
+            f.px = RoleSizePx(base) * (RoleSizePx(FontRole::Mono) / RoleSizePx(FontRole::Body));
+        }
         Color col = cx.th->text;
         if (!r.href.empty()) col = cx.th->link;
         else if (r.code) col = cx.th->codeText;
