@@ -68,6 +68,7 @@ struct DrawCommand {
                              // instead of before — for decorations (table grid
                              // lines, strikethrough, link underlines) that must
                              // stay on top of the glyphs they were emitted next to.
+    double radius = 0;       // FillRect/FrameRect: corner radius, 0 = square corners
 };
 
 // A clickable link rectangle (document space) recorded during layout.
@@ -86,9 +87,13 @@ struct TaskHit {
 };
 
 // A clickable "copy to clipboard" button in a code block's top-right corner.
-// `text` is that block's raw code, verbatim, ready to paste into a terminal.
+// `rect` is the padded, easier-to-click hit area; `iconRect` is the icon's own
+// tight visual bounds, for a frontend that wants to highlight just the icon
+// (not the extra click padding) as click feedback. `text` is that block's raw
+// code, verbatim, ready to paste into a terminal.
 struct CodeCopyHit {
     RectF rect;
+    RectF iconRect;
     Str text;
 };
 

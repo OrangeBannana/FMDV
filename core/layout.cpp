@@ -73,12 +73,14 @@ struct Ctx {
 inline double Sc(const Ctx& cx, double v) { return std::floor(v * cx.scale + 0.5); }
 
 // emit helpers (all coordinates in document space)
-void fill(Ctx& cx, RectF r, Color c, bool afterText = false) {
-    DrawCommand d; d.kind = DrawCommand::FillRect; d.rect = r; d.color = c; d.afterText = afterText;
+void fill(Ctx& cx, RectF r, Color c, bool afterText = false, double radius = 0) {
+    DrawCommand d; d.kind = DrawCommand::FillRect; d.rect = r; d.color = c;
+    d.afterText = afterText; d.radius = radius;
     cx.out->cmds.push_back(d);
 }
-void frame(Ctx& cx, RectF r, Color c, bool afterText = false) {
-    DrawCommand d; d.kind = DrawCommand::FrameRect; d.rect = r; d.color = c; d.afterText = afterText;
+void frame(Ctx& cx, RectF r, Color c, bool afterText = false, double radius = 0) {
+    DrawCommand d; d.kind = DrawCommand::FrameRect; d.rect = r; d.color = c;
+    d.afterText = afterText; d.radius = radius;
     cx.out->cmds.push_back(d);
 }
 void drawLine(Ctx& cx, double x1, double y1, double x2, double y2, Color c, bool afterText = false) {
@@ -499,7 +501,7 @@ LayoutResult LayoutDocument(const Document& doc, double width,
             double headerH = Sc(cx, 28);
             double boxTop = y;
             double boxH = headerH + (double)displayLines.size() * lineH + Sc(cx, 12);
-            fill(cx, {cx.left, boxTop, cx.right - cx.left, boxH}, th.bg2);
+            fill(cx, {cx.left, boxTop, cx.right - cx.left, boxH}, th.bg2, false, Sc(cx, 8));
             double ty = boxTop + headerH;
             for (const auto& ln : displayLines) {
                 double wpx = tm.textWidth(mono, ln);
@@ -507,24 +509,27 @@ LayoutResult LayoutDocument(const Document& doc, double width,
                         th.codeText, false, true);
                 ty += lineH;
             }
-            // Copy-to-clipboard button: two overlapping outlined squares (the
+            // Copy-to-clipboard button: two overlapping rounded squares (the
             // conventional "copy" glyph) in the header strip's top-right
             // corner, using only FrameRect so it costs no extra background
             // fill. The hit rect is padded a little beyond the icon itself
             // for easier clicking, matching the checkbox hit area above.
             {
-                double iconSize = Sc(cx, 11), iconGap = Sc(cx, 3);
+                double iconSize = Sc(cx, 12), iconGap = Sc(cx, 4), iconRadius = Sc(cx, 3);
                 double backX = cx.right - Sc(cx, 16) - iconSize;
                 double backY = boxTop + (headerH - (iconSize + iconGap)) / 2.0;
                 RectF back{backX, backY, iconSize, iconSize};
                 RectF front{backX - iconGap, backY + iconGap, iconSize, iconSize};
-                frame(cx, back, th.text2);
-                frame(cx, front, th.text2);
+                // Drawn after text/highlights (afterText) so a click-feedback
+                // highlight behind the icon (painted in the highlights pass)
+                // never covers the icon itself.
+                frame(cx, back, th.text2, true, iconRadius);
+                frame(cx, front, th.text2, true, iconRadius);
+                RectF iconRect{front.x, back.y, back.x + back.w - front.x, iconSize + iconGap};
                 double hpad = Sc(cx, 6);
-                RectF hit{front.x - hpad, back.y - hpad,
-                          (back.x + back.w - front.x) + 2 * hpad,
-                          (iconSize + iconGap) + 2 * hpad};
-                cx.out->codeCopyHits.push_back({hit, b.codeText});
+                RectF hit{iconRect.x - hpad, iconRect.y - hpad,
+                          iconRect.w + 2 * hpad, iconRect.h + 2 * hpad};
+                cx.out->codeCopyHits.push_back({hit, iconRect, b.codeText});
             }
             y = boxTop + boxH + Sc(cx, 16);
             break;

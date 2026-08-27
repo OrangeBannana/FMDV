@@ -182,6 +182,7 @@ struct DrawCmd {
     COLORREF color;
     HFONT font;          // TEXT only
     std::wstring text;   // TEXT only
+    int radius = 0;      // RECT/FRAME: corner radius, 0 = square corners
 };
 static std::vector<DrawCmd> g_cmds;
 
@@ -220,11 +221,11 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
         switch (c.kind) {
         case fmdv::DrawCommand::FillRect:
             g_cmds.push_back({C_RECT, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
-                              ToColorRef(c.color), nullptr, {}});
+                              ToColorRef(c.color), nullptr, {}, Px(c.radius)});
             break;
         case fmdv::DrawCommand::FrameRect:
             g_cmds.push_back({C_FRAME, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
-                              ToColorRef(c.color), nullptr, {}});
+                              ToColorRef(c.color), nullptr, {}, Px(c.radius)});
             break;
         case fmdv::DrawCommand::Line:
             g_cmds.push_back({C_LINE, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
@@ -287,10 +288,33 @@ void PaintDocument(HDC hdc, int scrollY, int clientW, int clientH, const Theme& 
         } else {
             if (!vis(c.y, c.y + c.h)) continue;
             RECT rc{ c.x, c.y - scrollY, c.x + c.w, c.y + c.h - scrollY };
-            HBRUSH br = CreateSolidBrush(c.color);
-            if (c.kind == C_FRAME) FrameRect(hdc, &rc, br);
-            else                   FillRect(hdc, &rc, br);
-            DeleteObject(br);
+            if (c.radius > 0) {
+                // RoundRect fills with the selected brush and outlines with the
+                // selected pen, so a plain fill/frame needs a NULL pen/brush to
+                // suppress the half it isn't drawing.
+                if (c.kind == C_FRAME) {
+                    HPEN pen = CreatePen(PS_SOLID, 1, c.color);
+                    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+                    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, c.radius * 2, c.radius * 2);
+                    SelectObject(hdc, oldBrush);
+                    SelectObject(hdc, oldPen);
+                    DeleteObject(pen);
+                } else {
+                    HBRUSH br = CreateSolidBrush(c.color);
+                    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, br);
+                    HPEN oldPen = (HPEN)SelectObject(hdc, GetStockObject(NULL_PEN));
+                    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, c.radius * 2, c.radius * 2);
+                    SelectObject(hdc, oldPen);
+                    SelectObject(hdc, oldBrush);
+                    DeleteObject(br);
+                }
+            } else {
+                HBRUSH br = CreateSolidBrush(c.color);
+                if (c.kind == C_FRAME) FrameRect(hdc, &rc, br);
+                else                   FillRect(hdc, &rc, br);
+                DeleteObject(br);
+            }
         }
     }
 

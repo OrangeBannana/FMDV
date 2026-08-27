@@ -280,8 +280,14 @@ struct Frag {
     fmdv::Color hit{250, 220, 90}, cur{255, 168, 40};
     for (long i = 0; i < (long)_matches.size(); i++)
         out.push_back({[self matchRect:_matches[i]], (i == _curMatch) ? cur : hit});
-    if (_codeCopyFlashIndex >= 0 && _codeCopyFlashIndex < (long)_layout.codeCopyHits.size())
-        out.push_back({_layout.codeCopyHits[_codeCopyFlashIndex].rect, th.link});
+    if (_codeCopyFlashIndex >= 0 && _codeCopyFlashIndex < (long)_layout.codeCopyHits.size()) {
+        // A soft rounded pill behind just the icon (not the wider click-pad
+        // rect), in the same muted tint used for text selection -- a gentler
+        // confirmation than a flat, sharp-cornered accent-color block.
+        const fmdv::RectF& r = _layout.codeCopyHits[_codeCopyFlashIndex].iconRect;
+        double pad = 4;
+        out.push_back({{r.x - pad, r.y - pad, r.w + 2 * pad, r.h + 2 * pad}, th.sel, 6});
+    }
     return out;
 }
 - (NSString*)selectedString {

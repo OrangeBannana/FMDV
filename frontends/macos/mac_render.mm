@@ -82,6 +82,15 @@ static CGColorRef cg(CGColorSpaceRef cs, Color c) {
     return CGColorCreate(cs, comps);
 }
 
+// Adds a rounded-rect path (clamped so the radius never exceeds half the
+// shorter side) to the current path; caller fills or strokes it.
+static void addRoundedRectPath(CGContextRef ctx, CGRect rect, double radius) {
+    double r = std::max(0.0, std::min(radius, std::min(rect.size.width, rect.size.height) / 2.0));
+    CGPathRef path = CGPathCreateWithRoundedRect(rect, r, r, nullptr);
+    CGContextAddPath(ctx, path);
+    CGPathRelease(path);
+}
+
 void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
                  const LayoutTheme& th, CoreTextMeasurer& tm,
                  const std::vector<ColoredRect>* highlights) {
@@ -103,7 +112,9 @@ void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
         case DrawCommand::FillRect: {
             CGColorRef col = cg(cs, c.color);
             CGContextSetFillColorWithColor(ctx, col);
-            CGContextFillRect(ctx, CGRectMake(c.rect.x, flipY(c.rect.y + c.rect.h), c.rect.w, c.rect.h));
+            CGRect rr = CGRectMake(c.rect.x, flipY(c.rect.y + c.rect.h), c.rect.w, c.rect.h);
+            if (c.radius > 0) { addRoundedRectPath(ctx, rr, c.radius); CGContextFillPath(ctx); }
+            else CGContextFillRect(ctx, rr);
             CGColorRelease(col);
             break;
         }
@@ -111,8 +122,10 @@ void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
             CGColorRef col = cg(cs, c.color);
             CGContextSetStrokeColorWithColor(ctx, col);
             CGContextSetLineWidth(ctx, 1.0);
-            CGContextStrokeRect(ctx, CGRectMake(c.rect.x + 0.5, flipY(c.rect.y + c.rect.h) + 0.5,
-                                                c.rect.w - 1, c.rect.h - 1));
+            CGRect rr = CGRectMake(c.rect.x + 0.5, flipY(c.rect.y + c.rect.h) + 0.5,
+                                    c.rect.w - 1, c.rect.h - 1);
+            if (c.radius > 0) { addRoundedRectPath(ctx, rr, c.radius); CGContextStrokePath(ctx); }
+            else CGContextStrokeRect(ctx, rr);
             CGColorRelease(col);
             break;
         }
@@ -150,7 +163,9 @@ void PaintLayout(CGContextRef ctx, double height, const LayoutResult& r,
         for (const ColoredRect& h : *highlights) {
             CGColorRef hc = cg(cs, h.color);
             CGContextSetFillColorWithColor(ctx, hc);
-            CGContextFillRect(ctx, CGRectMake(h.rect.x, flipY(h.rect.y + h.rect.h), h.rect.w, h.rect.h));
+            CGRect rr = CGRectMake(h.rect.x, flipY(h.rect.y + h.rect.h), h.rect.w, h.rect.h);
+            if (h.radius > 0) { addRoundedRectPath(ctx, rr, h.radius); CGContextFillPath(ctx); }
+            else CGContextFillRect(ctx, rr);
             CGColorRelease(hc);
         }
     }

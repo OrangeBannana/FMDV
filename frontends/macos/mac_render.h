@@ -23,7 +23,7 @@ private:
 
 // A colored highlight rect (document space) drawn behind the text: selection,
 // find matches, etc.
-struct ColoredRect { RectF rect; Color color; };
+struct ColoredRect { RectF rect; Color color; double radius = 0; };
 
 // Paint a display list into a CGContext whose height is `height` px (document
 // space is top-left/y-down; this flips to CoreGraphics' bottom-left). Fills the
