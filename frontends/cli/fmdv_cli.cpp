@@ -120,6 +120,7 @@ static std::string dumpDoc(const Document& doc) {
             std::snprintf(buf, sizeof buf, " %s depth=%d task=%d",
                           b.ordered ? "ordered" : "bullet", b.level, b.taskState);
             o += buf;
+            if (b.ordered) { std::snprintf(buf, sizeof buf, " start=%d", b.listStart); o += buf; }
         }
         if (b.type == BlockType::CodeBlock) { o += " lang="; o += ToUtf8(b.lang); }
         o += "\n";

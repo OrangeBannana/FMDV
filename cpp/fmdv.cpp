@@ -155,8 +155,11 @@ static void ParseDump(const Document& doc) {
         const Block& b = doc.blocks[bi];
         wprintf(L"[%zu] %hs", bi, BlockTypeName(b.type));
         if (b.type == BlockType::Heading) wprintf(L" level=%d", b.level);
-        if (b.type == BlockType::ListItem) wprintf(L" %ls depth=%d task=%d",
-            b.ordered ? L"ordered" : L"bullet", b.level, b.taskState);
+        if (b.type == BlockType::ListItem) {
+            wprintf(L" %ls depth=%d task=%d",
+                    b.ordered ? L"ordered" : L"bullet", b.level, b.taskState);
+            if (b.ordered) wprintf(L" start=%d", b.listStart);
+        }
         if (b.type == BlockType::CodeBlock) wprintf(L" lang=%ls", b.lang.c_str());
         wprintf(L"\n");
         if (b.type == BlockType::CodeBlock) {

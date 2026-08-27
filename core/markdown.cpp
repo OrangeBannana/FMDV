@@ -370,6 +370,19 @@ Document ParseMarkdown(const Str& text) {
                 flushParagraph(para);
                 Block b; b.type = BlockType::ListItem;
                 b.ordered = isOl;
+                if (isOl) {
+                    // The author's own start number (ASCII digits, like
+                    // DecideListEnter); GFM renders the list from this value.
+                    // Capped so a later "num+1" in the layout can't overflow.
+                    int num = 0;
+                    // olStart == d + 2, so the marker's digits are s[0..olStart-2).
+                    for (size_t k = 0; k + 2 < olStart && num < 1000000; k++) {
+                        Char ch = s[k];
+                        if (ch >= U16('0') && ch <= U16('9')) num = num * 10 + (int)(ch - U16('0'));
+                        if (num > 1000000) num = 1000000;
+                    }
+                    b.listStart = num > 0 ? num : 1;
+                }
                 b.level = indent / 2;
                 b.srcStartLine = (int)i; // lets the frontend rewrite this line (task toggle)
                 Str content = isUl ? s.substr(2) : s.substr(olStart);

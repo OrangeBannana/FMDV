@@ -214,6 +214,25 @@ _(none)_
 - Testing relies on `--dump` PNG output since no screen access.
 - Coexists with the working Go/WebView2 build until P7; root `fmdv.exe` stays the
   Go build until the native one reaches parity.
+- ✅ **Ordered lists honor source numbers + blockquote spacing (intent change, 2026-08-27).**
+  User-reported: quote text crowded its neighbors, and list numbering from the raw
+  markdown was lost/reset to 1. Root causes: the parser (`core/markdown.cpp`)
+  dropped the `N.` number and the layout kept one global `olCounter` that reset on
+  any non-ordered block; the blockquote case had no top margin of its own (6px
+  after list items). Fix: `Block::listStart` (author's first number, capped 1e6)
+  + per-level `olNext[]/olLive[]` counters in `core/layout.cpp` with GFM
+  `<ol start="N">` semantics — a list renders from its first item's number and
+  continues sequentially, an interrupted list restarts at its own number, nested
+  ordered lists number independently, and a bullet inside an ordered list does NOT
+  reset the outer list. Blockquote gains a 16px top margin (GitHub `margin: 1em
+  0`: paragraph→quote 32px, list→quote 22px, was 6px). Both `--parse-dump`
+  (win32) and CLI `parse` now emit `start=N` for ordered items. The two layout
+  fixtures that previously *asserted* the reset-to-1 behavior were updated; new
+  fixtures cover non-1 starts, interrupted lists, sequential-from-start, nested +
+  interleaved lists, and quote clearance after list items / paragraphs. `test.md`
+  gained an ordered-list section so the CI PNG renders exercise both fixes.
+  Deliberate behavior change, full plan in
+  `docs/fix-plan-quote-spacing-and-ol-numbering.md`; no frontend code touched.
 
 ## Performance findings (P1)
 - **first-paint ~65ms warm** (was ~230ms before fix; old WebView2 build 250-500ms).

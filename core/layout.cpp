@@ -389,12 +389,22 @@ LayoutResult LayoutDocument(const Document& doc, double width,
     cx.right = width - Sc(cx, PAD_X);
 
     double y = Sc(cx, PAD_TOP);
-    int olCounter = 0; // running number for ordered lists
+    // Per-level ordered-list counters (GFM <ol start="N"> semantics): a new
+    // ordered list at level L renders starting at the first item's own
+    // number (Block::listStart), then continues sequentially; an interrupted
+    // list (non-list block in between) restarts at its own source number. A
+    // list item at level L ends every list nested deeper than L. A bullet
+    // item ends any list at its own level but leaves shallower lists alive
+    // (1. a / - sub / 2. b still renders 1, 2).
+    const int OLLV = 16; // far beyond the 24px/level indent can realistically nest
+    int olNext[OLLV] = {0};
+    bool olLive[OLLV] = {0};
 
     for (size_t bi = 0; bi < doc.blocks.size(); bi++) {
         const Block& b = doc.blocks[bi];
         res.blockTops.push_back(y);
-        if (b.type != BlockType::ListItem || !b.ordered) olCounter = 0;
+        if (b.type != BlockType::ListItem)
+            for (int k = 0; k < OLLV; k++) olLive[k] = false;
 
         switch (b.type) {
         case BlockType::Heading: {
@@ -426,6 +436,10 @@ LayoutResult LayoutDocument(const Document& doc, double width,
             // several consecutive BlockQuote blocks (core/markdown.cpp); lay
             // them all out here under one continuous left border bar instead
             // of one per paragraph, with a normal paragraph gap between them.
+            // The group also owns a 16px top margin (GitHub blockquote: margin
+            // 1em 0): before this it only got the PREVIOUS block's bottom gap
+            // (6px after list items), crowding adjacent text.
+            y += Sc(cx, 16);
             double top = y;
             size_t bj = bi;
             while (bj < doc.blocks.size() && doc.blocks[bj].type == BlockType::BlockQuote) {
@@ -453,6 +467,7 @@ LayoutResult LayoutDocument(const Document& doc, double width,
             double lineH = words.empty() ? tm.lineHeight(body) : 0;
             for (auto& w : words) if (w.h > lineH) lineH = w.h;
             double bodyAsc = tm.ascent(body);
+            int L = (b.level < 0) ? 0 : (b.level >= OLLV ? OLLV - 1 : b.level);
             if (b.taskState >= 0) {
                 RectF boxR{bulletX, y + Sc(cx, 3), Sc(cx, 14), Sc(cx, 14)};
                 frame(cx, boxR, th.text2);
@@ -467,15 +482,22 @@ LayoutResult LayoutDocument(const Document& doc, double width,
                     {{boxR.x - pad, boxR.y - pad, boxR.w + 2 * pad, boxR.h + 2 * pad},
                      b.srcStartLine, b.taskState});
             } else if (b.ordered) {
-                olCounter++;
-                Str num = toStr(olCounter) + U16(".");
-                textCmd(cx, bulletX, y + bodyAsc, tm.textWidth(body, num), lineH,
-                        num, body, th.text, false, false);
+                // First item of a new list at this level: honor the author's
+                // start number; continuation: keep counting from it.
+                int num = olLive[L] ? olNext[L] : (b.listStart > 0 ? b.listStart : 1);
+                olLive[L] = true;
+                olNext[L] = num + 1;
+                Str numStr = toStr(num) + U16(".");
+                textCmd(cx, bulletX, y + bodyAsc, tm.textWidth(body, numStr), lineH,
+                        numStr, body, th.text, false, false);
             } else {
+                olLive[L] = false; // a fresh bullet list replaces any at this level
                 Str bullet(1, (Char)0x2022);
                 textCmd(cx, bulletX, y + bodyAsc, tm.textWidth(body, bullet), lineH,
                         bullet, body, th.text, false, false);
             }
+            // This item (at level L) ends every list nested deeper than L.
+            for (int k = L + 1; k < OLLV; k++) olLive[k] = false;
             // An empty item (marker with no text) still reserves its marker's
             // line height; layoutWords returns y unchanged for zero words, which
             // would let the checkbox/bullet overlap the next block.

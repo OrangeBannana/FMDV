@@ -182,18 +182,53 @@ int main() {
         check(bullet && near(bullet->rect.x, 72), "ul: nested bullet shifts 24px per level");
     }
     {
-        // Layout renumbers ordered lists itself and resets after a non-ordered
-        // block; the source numbers are ignored.
-        LayoutResult r = lay("5. a\n6. b\n\npara\n\n9. c");
-        check(firstText(r, "1.") != nullptr && firstText(r, "2.") != nullptr,
-              "ol: renumbered from 1 regardless of source");
-        check(firstText(r, "5.") == nullptr, "ol: source number not drawn");
-        int ones = 0;
-        for (const auto& c : r.cmds)
-            if (c.kind == DrawCommand::Text && ToUtf8(c.text) == "1.") ones++;
-        check(ones == 2, "ol: counter resets after a non-ordered block");
-        const DrawCommand* marker = firstText(r, "2.");
+        // Ordered lists honor the author's start number (GFM <ol start="N">):
+        // a list renders from its first item's source number and continues
+        // sequentially; an interrupted list (paragraph in between) starts a NEW
+        // list at its own source number (previously everything reset to 1).
+        LayoutResult r = lay("5. a\n6. b\n\npara\n\n9. c\n10. d");
+        check(firstText(r, "5.") != nullptr && firstText(r, "6.") != nullptr,
+              "ol: source start number honoured, then continues");
+        check(firstText(r, "9.") != nullptr && firstText(r, "10.") != nullptr,
+              "ol: interrupted list restarts at its own source number");
+        check(firstText(r, "1.") == nullptr && firstText(r, "2.") == nullptr,
+              "ol: no reset to 1 anywhere");
+        const DrawCommand* marker = firstText(r, "9.");
         check(marker && !marker->selectable, "ol: number marker not selectable");
+    }
+    {
+        // A single non-1-start item keeps its own number.
+        LayoutResult r = lay("5. only");
+        check(firstText(r, "5.") != nullptr && firstText(r, "1.") == nullptr,
+              "ol: single item numbered 5 in source renders as 5.");
+    }
+    {
+        // Continuation runs sequentially from the start number; a skip in the
+        // source (8. instead of 7.) is ignored, per GFM.
+        LayoutResult r = lay("5. a\n6. b\n8. c");
+        check(firstText(r, "5.") != nullptr && firstText(r, "6.") != nullptr
+                  && firstText(r, "7.") != nullptr && firstText(r, "8.") == nullptr,
+              "ol: sequential from start number, source gaps ignored");
+    }
+    {
+        // Nested ordered lists number independently; the outer list continues
+        // after the nested one ends ("1.a / 1.x / 2.y / 2.b" -> 1, 1, 2, 2).
+        LayoutResult r = lay("1. a\n   1. x\n   2. y\n2. b");
+        auto countText = [&](const char* t) {
+            int n = 0;
+            for (const auto& c : r.cmds)
+                if (c.kind == DrawCommand::Text && ToUtf8(c.text) == t) n++;
+            return n;
+        };
+        check(countText("1.") == 2 && countText("2.") == 2 && countText("3.") == 0,
+              "ol: nested ordered list independent, outer list resumes");
+    }
+    {
+        // A bullet nested inside an ordered list must not reset the outer counter.
+        LayoutResult r = lay("1. a\n  - sub\n2. b");
+        check(firstText(r, "1.") != nullptr && firstText(r, "2.") != nullptr
+                  && firstText(r, "3.") == nullptr,
+              "ol: outer list survives a nested bullet item");
     }
     {
         LayoutResult r = lay("- [ ] todo");
@@ -295,10 +330,41 @@ int main() {
         check(t && sameColor(t->color, light.text2), "quote: muted text color");
         check(t && near(t->rect.x, 56), "quote: text indented 16px");
         bool bar = false;
+        double barY = -1;
         for (const auto& c : r.cmds)
             if (c.kind == DrawCommand::FillRect && near(c.rect.w, 4)
-                && sameColor(c.color, light.border)) bar = true;
+                && sameColor(c.color, light.border)) { bar = true; barY = c.rect.y; }
         check(bar, "quote: 4px border bar");
+        // Own 16px top margin: 32 pad + 16 margin + 15 ascent (regression pin
+        // for the crowding fix — previously the first block's pad was its only gap).
+        check(t && near(t->rect.y, 63), "quote: own top margin as first block (baseline 32+16+15)");
+        check(bar && near(barY, 46), "quote: bar overhang stays in the margin band");
+    }
+    {
+        // The reported bug: a quote after list items previously sat only 6px
+        // below the previous line. It must now keep >=16px, and its bar must
+        // not touch the previous text.
+        LayoutResult r = lay("- a\n- b\n\n> hi there");
+        const DrawCommand* t = firstText(r, "hi there");
+        const DrawCommand* lastItem = firstText(r, "b");
+        double gapTop = t->rect.y - 15.0 - (lastItem->rect.y + lastItem->rect.h - 15.0);
+        check(t && lastItem && gapTop >= 16.0 - 1e-9,
+              "quote: >=16px clearance after list items (was 6px)");
+        bool barClear = true;
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::FillRect && near(c.rect.w, 4)
+                && sameColor(c.color, light.border))
+                if (c.rect.y <= lastItem->rect.y + lastItem->rect.h - 15.0) barClear = false;
+        check(barClear, "quote: border bar clear of adjacent list text");
+    }
+    {
+        // Paragraph bottom margin (16) + quote's own top margin (16) = 32,
+        // matching GitHub's 1em/1em blockquote rhythm.
+        LayoutResult r = lay("hello\n\n> quoted");
+        const DrawCommand* t = firstText(r, "quoted");
+        const DrawCommand* p = firstText(r, "hello");
+        double gapTop = t->rect.y - 15.0 - (p->rect.y + p->rect.h - 15.0);
+        check(t && p && near(gapTop, 32.0), "quote: 32px below a paragraph (16+16)");
     }
     // A quote with a bare ">" paragraph break parses into multiple BlockQuote
     // blocks (core/markdown.cpp); layout must still draw one continuous

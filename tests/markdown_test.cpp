@@ -236,6 +236,23 @@ int main() {
         check(d.blocks.size() == 2 && d.blocks[0].ordered && d.blocks[1].ordered,
               "list: ordered items");
         check(runText(d.blocks[1].runs) == "ten", "list: multi-digit marker stripped");
+        check(d.blocks.size() == 2 && d.blocks[0].listStart == 1 && d.blocks[1].listStart == 10,
+              "list: author's start number preserved (1 and 10)");
+        Document big = parse("99999999999. x");
+        check(big.blocks.size() == 1 && big.blocks[0].listStart == 1000000,
+              "list: huge start number capped");
+    }
+    {
+        // Non-1 starts across an interrupted list are all preserved; the
+        // layout (not the parser) decides how to use them.
+        Document d = parse("5. a\n6. b\n\npara\n\n9. c");
+        check(d.blocks.size() == 4
+                  && d.blocks[0].listStart == 5 && d.blocks[1].listStart == 6
+                  && d.blocks[3].listStart == 9,
+              "list: per-item listStart (5, 6, 9) with a paragraph between");
+        Document u = parse("- a");
+        check(u.blocks.size() == 1 && !u.blocks[0].ordered && u.blocks[0].listStart == 0,
+              "list: unordered item keeps listStart 0");
     }
     {
         Document d = parse("- top\n  - nested\n    - deeper");

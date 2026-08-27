@@ -30,6 +30,9 @@ struct Block {
     BlockType type = BlockType::Paragraph;
     int level = 0;           // heading level (1-6) or list depth (0-based)
     bool ordered = false;    // ordered list item
+    int listStart = 0;       // ordered items only: the author's own number (>=1);
+                             // 0 = unordered / n-a. Layout renders the list starting
+                             // from this value (GFM <ol start="N"> semantics).
     int taskState = -1;      // -1 none, 0 unchecked, 1 checked
     Str lang;       // code block language
     Str codeText;   // raw code block contents
