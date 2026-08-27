@@ -190,6 +190,9 @@ cmd "key enter"; cmd "query findlabel"; eq "Enter steps to next" "$R" "2/2"
 cmd "key enter"; cmd "query findlabel"; eq "stepping wraps around" "$R" "1/2"
 cmd "find-step -1"; cmd "query findlabel"; eq "step back (Shift+Enter path)" "$R" "2/2"
 cmd "key esc"; cmd "query findbar"; eq "Esc closes the find bar" "$R" "0"
+# the X button is an additional way to dismiss -- Esc above still works too
+cmd "key cmd+f"; cmd "query findbar"; eq "find bar reopens" "$R" "1"
+cmd "click-findclose"; cmd "query findbar"; eq "X button closes the find bar" "$R" "0"
 check "window survives find" "$(alive)"
 
 echo

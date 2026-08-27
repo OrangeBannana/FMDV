@@ -80,6 +80,7 @@ struct Frag {
     NSView* _findBar;
     NSTextField* _findField;
     NSTextField* _findLabel;
+    NSButton* _findCloseBtn;
     std::vector<fmdv::FindMatch> _matches;
     long _curMatch;
     long _codeCopyFlashIndex; // index into _layout.codeCopyHits briefly highlighted after a click, -1 = none
@@ -100,6 +101,7 @@ struct Frag {
 // test-driver introspection (--test-drive)
 - (bool)findBarVisible;
 - (NSString*)findLabelText;
+- (BOOL)testClickFindClose;
 - (void)stepFind:(int)dir;
 - (NSString*)laidOutInfo; // "<laidOutWidth> <contentHeight>", to probe reflow
 - (NSString*)selectedString;         // current selection text ("" if none)
@@ -531,13 +533,13 @@ struct Frag {
 - (void)positionFindBar {
     NSScrollView* sv = self.enclosingScrollView;
     if (!sv || !_findBar) return;
-    _findBar.frame = NSMakeRect(sv.bounds.size.width - 320, sv.bounds.size.height - 44, 300, 36);
+    _findBar.frame = NSMakeRect(sv.bounds.size.width - 350, sv.bounds.size.height - 44, 330, 36);
 }
 - (void)showFind {
     NSScrollView* sv = self.enclosingScrollView;
     if (!sv) return;
     if (!_findBar) {
-        _findBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 300, 36)];
+        _findBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 330, 36)];
         _findBar.wantsLayer = YES;
         _findBar.layer.backgroundColor = [[NSColor windowBackgroundColor] CGColor];
         _findBar.layer.borderColor = [[NSColor separatorColor] CGColor];
@@ -553,6 +555,17 @@ struct Frag {
         _findLabel.editable = NO; _findLabel.bordered = NO; _findLabel.drawsBackground = NO;
         _findLabel.textColor = [NSColor secondaryLabelColor];
         [_findBar addSubview:_findLabel];
+        // Close button to the right of the label; Esc (cancelOperation: below)
+        // stays a valid way to dismiss too, this is just an additional affordance.
+        _findCloseBtn = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"xmark.circle.fill"
+                                              accessibilityDescription:@"Close"]
+                                            target:self action:@selector(closeFind)];
+        _findCloseBtn.frame = NSMakeRect(300, 7, 22, 22);
+        _findCloseBtn.bordered = NO;
+        _findCloseBtn.bezelStyle = NSBezelStyleRegularSquare;
+        _findCloseBtn.contentTintColor = [NSColor secondaryLabelColor];
+        _findCloseBtn.toolTip = @"Close (Esc)";
+        [_findBar addSubview:_findCloseBtn];
     }
     if (_findBar.superview != sv) [sv addFloatingSubview:_findBar forAxis:NSEventGestureAxisVertical];
     _findBar.hidden = NO;
@@ -568,6 +581,17 @@ struct Frag {
 }
 - (bool)findBarVisible { return _findBar && !_findBar.hidden; }
 - (NSString*)findLabelText { return _findLabel ? _findLabel.stringValue : @""; }
+// performClick: (Apple's own programmatic-click API) rather than raw
+// mouseDown:/mouseUp: injection: the close button lives in _findBar, a
+// floating subview of the scroll view rather than this view, and a plain
+// NSButtonCell's mouseDown: runs its own internal tracking loop that raw
+// synthetic events aren't guaranteed to satisfy the same way a real click's
+// event-queue delivery does.
+- (BOOL)testClickFindClose {
+    if (!_findCloseBtn) return NO;
+    [_findCloseBtn performClick:nil];
+    return YES;
+}
 - (void)updateFindLabel {
     if (!_findLabel) return;
     if (!_matches.empty())
@@ -1924,6 +1948,8 @@ static bool ParseKeySpec(NSString* spec, NSString** chars, unsigned short* code,
     if ([cmd isEqualToString:@"tripleclick-frag"]) return [self testClickFrag:arg.integerValue clicks:3];
     if ([cmd isEqualToString:@"click-task"])       return [self testClickTask:arg.integerValue];
     if ([cmd isEqualToString:@"click-codecopy"])   return [self testClickCodeCopy:arg.integerValue];
+    if ([cmd isEqualToString:@"click-findclose"])
+        return [_preview testClickFindClose] ? @"ok" : @"err no close button";
     if ([cmd isEqualToString:@"drag-frag"]) {
         NSArray<NSString*>* ij = [arg componentsSeparatedByString:@" "];
         if (ij.count != 2) return @"err bad drag-frag";

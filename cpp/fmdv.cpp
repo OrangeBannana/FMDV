@@ -355,6 +355,8 @@ static HBRUSH g_findBrush = nullptr;
 static std::vector<FindMatch> g_findMatches;
 static int g_findCurrent = -1;
 static const int FIND_ID = 1002;
+static const int FIND_CLOSE_ID = 1003;
+static HWND g_findCloseBtn = nullptr;
 
 // command IDs (driven by the accelerator table so they work even while typing)
 enum { ID_EDIT_TOGGLE = 2001, ID_DARK = 2002, ID_SAVE = 2003, ID_SAVE_CLOSE = 2004,
@@ -1449,7 +1451,11 @@ static void ToggleEditor(HWND hwnd) {
 // correct through scrolling without any extra bookkeeping here.
 
 static void CloseFindBar() {
-    if (g_findHwnd) { HWND h = g_findHwnd; g_findHwnd = nullptr; g_findEdit = nullptr; DestroyWindow(h); }
+    if (g_findHwnd) {
+        HWND h = g_findHwnd;
+        g_findHwnd = nullptr; g_findEdit = nullptr; g_findCloseBtn = nullptr;
+        DestroyWindow(h);
+    }
     if (g_findBrush) { DeleteObject(g_findBrush); g_findBrush = nullptr; }
     if (!g_findMatches.empty() || g_findCurrent != -1) {
         g_findMatches.clear();
@@ -1529,12 +1535,19 @@ static LRESULT CALLBACK FindEditSubProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     case WM_MOUSEWHEEL: // forward so the doc scrolls even while the box has focus
         if (g_mainHwnd) PostMessageW(g_mainHwnd, WM_MOUSEWHEEL, wp, lp);
         return 0;
-    case WM_KILLFOCUS:
-        // Close on focus loss to anything except the find bar itself or the
-        // main window — clicking/selecting in the doc shouldn't dismiss find
+    case WM_KILLFOCUS: {
+        // Close on focus loss to anything except the find bar itself, one of
+        // its own children (the close button — clicking it moves focus there
+        // first, and CloseFindBar would otherwise destroy the button's parent
+        // popup while the button's own click is still being processed), or the
+        // main window. Clicking/selecting in the doc shouldn't dismiss find
         // (matches browser Ctrl+F convention), only clicking fully away does.
-        if ((HWND)wp != g_findHwnd && (HWND)wp != g_mainHwnd) CloseFindBar();
+        HWND newFocus = (HWND)wp;
+        if (newFocus != g_findHwnd && newFocus != g_mainHwnd &&
+            (!newFocus || GetParent(newFocus) != g_findHwnd))
+            CloseFindBar();
         break;
+    }
     }
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
@@ -1551,6 +1564,9 @@ static LRESULT CALLBACK FindBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
+        // X button: an additional way to dismiss find; Esc (FindEditSubProc
+        // above) still works too.
+        if (LOWORD(wp) == FIND_CLOSE_ID) { CloseFindBar(); return 0; }
         return 0;
     case WM_CTLCOLOREDIT: {
         HDC dc = (HDC)wp;
@@ -1578,7 +1594,9 @@ static LRESULT CALLBACK FindBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HFONT of = (HFONT)SelectObject(hdc, f);
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, th.text2);
-        RECT statusRc{ rc.right - MulDiv(96, g_dpi, 96), 0, rc.right - MulDiv(8, g_dpi, 96), rc.bottom };
+        // Status text sits between the edit box and the close (X) button, which
+        // occupies the rightmost ~30px (see ShowFindBar's layout).
+        RECT statusRc{ rc.right - MulDiv(126, g_dpi, 96), 0, rc.right - MulDiv(38, g_dpi, 96), rc.bottom };
         DrawTextW(hdc, buf, (int)wcslen(buf), &statusRc, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
         SelectObject(hdc, of); DeleteObject(f);
         EndPaint(hwnd, &ps);
@@ -1607,7 +1625,10 @@ static void ShowFindBar(HWND main) {
         RegisterClassExW(&wc);
         reg = true;
     }
-    int w = MulDiv(300, g_dpi, 96), h = MulDiv(34, g_dpi, 96);
+    // 36px wider than the edit+status layout alone needs, reserved for the
+    // close (X) button at the right edge (see the status-rect comment in
+    // FindBarProc's WM_PAINT, which lays out around the same 30px).
+    int w = MulDiv(336, g_dpi, 96), h = MulDiv(34, g_dpi, 96);
     RECT mr; GetWindowRect(main, &mr);
     g_findHwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"FMDV_FindBar", L"",
         WS_POPUP | WS_BORDER, mr.right - w - MulDiv(24, g_dpi, 96), mr.top + MulDiv(40, g_dpi, 96),
@@ -1617,7 +1638,7 @@ static void ShowFindBar(HWND main) {
     DwmSetWindowAttribute(g_findHwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
 
     int pad = MulDiv(6, g_dpi, 96);
-    int editW = w - MulDiv(110, g_dpi, 96);
+    int editW = w - MulDiv(146, g_dpi, 96);
     g_findEdit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         pad, pad, editW, h - 2 * pad, g_findHwnd, (HMENU)(INT_PTR)FIND_ID,
         GetModuleHandleW(nullptr), nullptr);
@@ -1625,6 +1646,14 @@ static void ShowFindBar(HWND main) {
                            DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     SendMessageW(g_findEdit, WM_SETFONT, (WPARAM)ef, TRUE);
     SetWindowSubclass(g_findEdit, FindEditSubProc, 1, 0);
+
+    // Close (X) button, additional to Esc (handled in FindEditSubProc above).
+    int btnSize = MulDiv(22, g_dpi, 96), btnMargin = MulDiv(8, g_dpi, 96);
+    g_findCloseBtn = CreateWindowExW(0, L"BUTTON", L"×",
+        WS_CHILD | WS_VISIBLE | BS_FLAT | BS_PUSHBUTTON,
+        w - btnMargin - btnSize, (h - btnSize) / 2, btnSize, btnSize,
+        g_findHwnd, (HMENU)(INT_PTR)FIND_CLOSE_ID, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(g_findCloseBtn, WM_SETFONT, (WPARAM)ef, TRUE); // same font as the edit box
 
     ShowWindow(g_findHwnd, SW_SHOW);
     SetFocus(g_findEdit);
