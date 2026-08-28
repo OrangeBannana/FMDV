@@ -72,13 +72,14 @@ details, headless test/inspection flags, and source layout.
 ```powershell
 cd cpp
 .\build.ps1                            # -> cpp\fmdv.exe
-powershell -File tests\run-tests.ps1          # 73-check suite
+powershell -File tests\run-tests.ps1          # 116-check suite
 powershell -File tests\run-tests-hidden.ps1   # same, windows kept off-screen
 ```
 
 The shared `core/` has its own unit-test suites in [`tests/`](tests/) (parser,
 layout, edit helpers, release parsing, string conversion, find/selection,
-bench logging — ~240 checks, ≈98% line coverage of `core/`). Run them with
+bench logging, clipboard HTML fragment builder — ~380 checks, ≈98% line
+coverage of `core/`). Run them with
 `make test` (macOS/Linux) or `ctest` after a CMake build; CI runs them on both
 Windows (MinGW) and macOS.
 

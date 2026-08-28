@@ -28,21 +28,22 @@ and the table/layout changes — same suites CI runs):
 
 ```powershell
 # from the repo root, with g++ on PATH (or FMDV_MINGW set)
-$core = "core/str.cpp","core/markdown.cpp","core/edit_assist.cpp","core/release_info.cpp","core/layout.cpp","core/text_select.cpp"
-foreach ($t in "str","markdown","edit_assist","release_info","layout","text_select","bench_log") {
+$core = "core/str.cpp","core/markdown.cpp","core/edit_assist.cpp","core/release_info.cpp","core/layout.cpp","core/text_select.cpp","core/html_copy.cpp"
+foreach ($t in "str","markdown","edit_assist","release_info","layout","text_select","bench_log","html_copy") {
   g++ -std=c++17 -O2 -Wall -Wextra -Icore "tests/${t}_test.cpp" @core -o "build/${t}-test.exe"
   & "build/${t}-test.exe"     # expect: ALL PASS (0 failures)
 }
 ```
 
-Optionally run the live Win32 UI suite (selection/clipboard/autocomplete):
+Optionally run the live Win32 UI suite (selection/clipboard/autocomplete,
+copy-button flash, CF_HTML rich-clipboard, find-bar X, rounded corners):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File cpp\tests\run-tests.ps1
 ```
 
 - [ ] `build.ps1` compiles `fmdv.exe` with no errors.
-- [ ] All 7 core unit-test exes print `ALL PASS`.
+- [ ] All 8 core unit-test exes print `ALL PASS`.
 
 ## 1. Clickable task checkboxes (new Win32 wiring)
 
