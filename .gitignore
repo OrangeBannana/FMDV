@@ -27,3 +27,6 @@ desktop.ini
 
 # OS / macOS cruft
 .DS_Store
+
+# Local build toolchains / wine sandbox (cross-compilation & verification rig)
+.tools/
