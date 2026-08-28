@@ -30,3 +30,15 @@ desktop.ini
 
 # Local build toolchains / wine sandbox (cross-compilation & verification rig)
 .tools/
+
+# IDE / editor local config + scratch
+.vscode/
+.idea/
+*.swp
+*.swo
+~*
+*.bak
+*.log
+
+# Wine sandbox prefix (kept out of the repo if ever placed at workspace root)
+winehome/
