@@ -528,5 +528,78 @@ int main() {
               "scale: fractional scale rounds like Win32");
     }
 
+    // ---- afterText: decoration z-order (Windows 4-pass paint parity) ----
+    // The macOS painter draws in 4 passes: backgrounds/boxes -> highlights
+    // -> text -> afterText. The flag here is the shared contract: the Win32
+    // painter uses it to split its own passes the same way (G1).
+    {
+        LayoutResult r = lay("```\nab\ncd\n```");
+        const DrawCommand& box = r.cmds[0];
+        check(!box.afterText, "zorder: code background box is pre-text (behind glyphs)");
+        int icons = 0;
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::FrameRect) {
+                check(c.afterText, "zorder: code-copy icon frames are afterText (above paint order)");
+                icons++;
+            }
+        check(icons == 2, "zorder: copy icon's two frames still present");
+    }
+    {
+        LayoutResult r = lay("| A |\n| --- |\n| 1 |");
+        int grid = 0;
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::FillRect && sameColor(c.color, light.border)) {
+                check(c.afterText, "zorder: table grid lines are afterText (drawn over cell text)");
+                grid++;
+            }
+        check(grid >= 3, "zorder: table grid emits border-colored fills");
+    }
+    {
+        LayoutResult r = lay("~~s~~");
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::Line)
+                check(c.afterText, "zorder: strikethrough is afterText (drawn over the glyph)");
+    }
+    {
+        LayoutResult r = lay("[x](https://e)");
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::Line)
+                check(c.afterText, "zorder: link underline is afterText (drawn over the link text)");
+    }
+
+    // ---- rounded corners (542cbb2 parity): the Win32 RoundRect pass needs the
+    // same radii the macOS painter used, otherwise the dump pixel-check (corner
+    // stays background-white) regresses silently.
+    {
+        LayoutResult r = lay("```\nab\n```");
+        const DrawCommand& box = r.cmds[0];
+        check(near(box.radius, 8), "radius: code box has the shared 8px corner");
+        for (const auto& c : r.cmds)
+            if (c.kind == DrawCommand::FrameRect)
+                check(near(c.radius, 3), "radius: copy icon frames keep the shared 3px corner");
+    }
+    {
+        // the hit rect's tight icon bounds ride along for the click flash
+        LayoutResult r = lay("```\nab\ncd\n```");
+        const auto& h = r.codeCopyHits[0];
+        check(h.iconRect.w > 0 && h.iconRect.h > 0, "copy hit: icon bounds non-empty");
+        check(h.iconRect.x >= h.rect.x - 0.001 && h.iconRect.y >= h.rect.y - 0.001,
+              "copy hit: icon bounds sit within the hit rect (top-left)");
+        check(h.iconRect.x + h.iconRect.w <= h.rect.x + h.rect.w + 0.001 &&
+              h.iconRect.y + h.iconRect.h <= h.rect.y + h.rect.h + 0.001,
+              "copy hit: icon bounds sit within the hit rect (bottom-right)");
+    }
+
+    // ---- href split: adjacent distinct links stay separate hits (G3 input
+    // contract — the HTML builder relies on one LinkHit per href)
+    {
+        LayoutResult r = lay("[a](https://u.example/1) [b](https://u.example/2)");
+        check(r.links.size() == 2, "hrefs: adjacent distinct links are two hits");
+        check(r.links.size() == 2 && ToUtf8(r.links[0].href) == "https://u.example/1"
+                   && ToUtf8(r.links[1].href) == "https://u.example/2",
+              "hrefs: each hit keeps its own href");
+        check(firstText(r, "a") && firstText(r, "b"), "hrefs: both words are plain runs");
+    }
+
     return summary();
 }

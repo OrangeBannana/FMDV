@@ -183,6 +183,10 @@ struct DrawCmd {
     HFONT font;          // TEXT only
     std::wstring text;   // TEXT only
     int radius = 0;      // RECT/FRAME: corner radius, 0 = square corners
+    bool afterText = false; // RECT/FRAME/LINE: paint in the post-text pass, like
+                            // DrawCommand::afterText — decorations that must sit
+                            // on top of glyphs (table grid, strikethrough, link
+                            // underline, the code-copy icon frames).
 };
 static std::vector<DrawCmd> g_cmds;
 
@@ -221,15 +225,15 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
         switch (c.kind) {
         case fmdv::DrawCommand::FillRect:
             g_cmds.push_back({C_RECT, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
-                              ToColorRef(c.color), nullptr, {}, Px(c.radius)});
+                              ToColorRef(c.color), nullptr, {}, Px(c.radius), c.afterText});
             break;
         case fmdv::DrawCommand::FrameRect:
             g_cmds.push_back({C_FRAME, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
-                              ToColorRef(c.color), nullptr, {}, Px(c.radius)});
+                              ToColorRef(c.color), nullptr, {}, Px(c.radius), c.afterText});
             break;
         case fmdv::DrawCommand::Line:
             g_cmds.push_back({C_LINE, Px(c.rect.x), Px(c.rect.y), Px(c.rect.w), Px(c.rect.h),
-                              ToColorRef(c.color), nullptr, {}});
+                              ToColorRef(c.color), nullptr, {}, 0, c.afterText});
             break;
         case fmdv::DrawCommand::Text: {
             HFONT f = tm.font(c.font);
@@ -239,7 +243,7 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
             g_cmds.push_back({C_TEXT, x, top, 0, h, ToColorRef(c.color), f, c.text});
             if (frags && c.selectable)
                 frags->push_back(TextFrag{ RECT{ x, top, x + Px(c.rect.w), top + h },
-                                           c.text, f, c.spaceBefore });
+                                           c.text, f, c.spaceBefore, c.font });
             break;
         }
         }
@@ -256,9 +260,12 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
                                          t.srcLine, t.state });
     if (codeCopyHits)
         for (const auto& h : res.codeCopyHits)
-            codeCopyHits->push_back(CodeCopyHit{ RECT{ Px(h.rect.x), Px(h.rect.y),
-                                                        Px(h.rect.x + h.rect.w), Px(h.rect.y + h.rect.h) },
-                                                 h.text });
+            codeCopyHits->push_back(CodeCopyHit{
+                RECT{ Px(h.rect.x), Px(h.rect.y),
+                      Px(h.rect.x + h.rect.w), Px(h.rect.y + h.rect.h) },
+                RECT{ Px(h.iconRect.x), Px(h.iconRect.y),
+                      Px(h.iconRect.x + h.iconRect.w), Px(h.iconRect.y + h.iconRect.h) },
+                h.text });
     if (blockTops)
         for (double t : res.blockTops) blockTops->push_back(Px(t));
 
@@ -267,58 +274,69 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
 
 // ---------------- paint (cull cached list to viewport + selection) ----------------
 
+// One shape command (fill/frame/line), culled to the viewport. Shared by the
+// pre-text pass (backgrounds, boxes) and the post-text pass (afterText
+// decorations), so the two phases draw shapes identically.
+static void PaintShapeCmd(HDC hdc, const DrawCmd& c, int scrollY, int top, int bot) {
+    int t0, b0;
+    if (c.kind == C_LINE) { t0 = (c.y < c.h ? c.y : c.h); b0 = (c.y < c.h ? c.h : c.y); }
+    else                  { t0 = c.y;                  b0 = c.y + c.h; }
+    if (b0 < top || t0 > bot) return;
+    if (c.kind == C_LINE) {
+        HPEN pen = CreatePen(PS_SOLID, 1, c.color);
+        HPEN op = (HPEN)SelectObject(hdc, pen);
+        MoveToEx(hdc, c.x, c.y - scrollY, nullptr);
+        LineTo(hdc, c.w, c.h - scrollY);
+        SelectObject(hdc, op); DeleteObject(pen);
+    } else {
+        RECT rc{ c.x, c.y - scrollY, c.x + c.w, c.y + c.h - scrollY };
+        if (c.radius > 0) {
+            // RoundRect fills with the selected brush and outlines with the
+            // selected pen, so a plain fill/frame needs a NULL pen/brush to
+            // suppress the half it isn't drawing.
+            if (c.kind == C_FRAME) {
+                HPEN pen = CreatePen(PS_SOLID, 1, c.color);
+                HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+                HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, c.radius * 2, c.radius * 2);
+                SelectObject(hdc, oldBrush);
+                SelectObject(hdc, oldPen);
+                DeleteObject(pen);
+            } else {
+                HBRUSH br = CreateSolidBrush(c.color);
+                HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, br);
+                HPEN oldPen = (HPEN)SelectObject(hdc, GetStockObject(NULL_PEN));
+                RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, c.radius * 2, c.radius * 2);
+                SelectObject(hdc, oldPen);
+                SelectObject(hdc, oldBrush);
+                DeleteObject(br);
+            }
+        } else {
+            HBRUSH br = CreateSolidBrush(c.color);
+            if (c.kind == C_FRAME) FrameRect(hdc, &rc, br);
+            else                   FillRect(hdc, &rc, br);
+            DeleteObject(br);
+        }
+    }
+}
+
 void PaintDocument(HDC hdc, int scrollY, int clientW, int clientH, const Theme& th,
                    const Selection* sel, const std::vector<TextFrag>& frags,
-                   const std::vector<FindMatch>* findMatches, int currentMatch) {
+                   const std::vector<FindMatch>* findMatches, int currentMatch,
+                   const RECT* codeCopyFlash) {
     (void)clientW;
     int top = scrollY, bot = scrollY + clientH;
     auto vis = [&](int t, int b) { return b >= top && t <= bot; };
 
-    // phase 1: backgrounds, frames, lines (in document order)
+    // phase 1: backgrounds, frames, lines — everything EXCEPT afterText
+    // decorations, which must paint over the glyphs they decorate (the macOS
+    // painter's 4-pass order: boxes -> highlights -> text -> afterText).
     for (const auto& c : g_cmds) {
-        if (c.kind == C_TEXT) continue;
-        if (c.kind == C_LINE) {
-            int t = (c.y < c.h ? c.y : c.h), b = (c.y < c.h ? c.h : c.y);
-            if (!vis(t, b)) continue;
-            HPEN pen = CreatePen(PS_SOLID, 1, c.color);
-            HPEN op = (HPEN)SelectObject(hdc, pen);
-            MoveToEx(hdc, c.x, c.y - scrollY, nullptr);
-            LineTo(hdc, c.w, c.h - scrollY);
-            SelectObject(hdc, op); DeleteObject(pen);
-        } else {
-            if (!vis(c.y, c.y + c.h)) continue;
-            RECT rc{ c.x, c.y - scrollY, c.x + c.w, c.y + c.h - scrollY };
-            if (c.radius > 0) {
-                // RoundRect fills with the selected brush and outlines with the
-                // selected pen, so a plain fill/frame needs a NULL pen/brush to
-                // suppress the half it isn't drawing.
-                if (c.kind == C_FRAME) {
-                    HPEN pen = CreatePen(PS_SOLID, 1, c.color);
-                    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-                    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-                    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, c.radius * 2, c.radius * 2);
-                    SelectObject(hdc, oldBrush);
-                    SelectObject(hdc, oldPen);
-                    DeleteObject(pen);
-                } else {
-                    HBRUSH br = CreateSolidBrush(c.color);
-                    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, br);
-                    HPEN oldPen = (HPEN)SelectObject(hdc, GetStockObject(NULL_PEN));
-                    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, c.radius * 2, c.radius * 2);
-                    SelectObject(hdc, oldPen);
-                    SelectObject(hdc, oldBrush);
-                    DeleteObject(br);
-                }
-            } else {
-                HBRUSH br = CreateSolidBrush(c.color);
-                if (c.kind == C_FRAME) FrameRect(hdc, &rc, br);
-                else                   FillRect(hdc, &rc, br);
-                DeleteObject(br);
-            }
-        }
+        if (c.kind == C_TEXT || c.afterText) continue;
+        PaintShapeCmd(hdc, c, scrollY, top, bot);
     }
 
-    // phase 1b: find-in-doc match highlights (behind text, drawn before
+        // phase 1b: find-in-doc match highlights (behind text, drawn before
     // selection so an active selection still shows on top if they overlap)
     if (findMatches && !findMatches->empty()) {
         HBRUSH hbAll = CreateSolidBrush(th.findHi);
@@ -356,6 +374,26 @@ void PaintDocument(HDC hdc, int scrollY, int clientW, int clientH, const Theme& 
         DeleteObject(hb);
     }
 
+    // phase 2b: the code-copy button's click flash (macOS parity): a soft
+    // rounded pill one step larger than the icon's tight bounds, drawn after
+    // selection (so it wins where they could overlap) and before the text
+    // pass — the afterText icon frames then paint over it in phase 4.
+    if (codeCopyFlash) {
+        int pad = S(4), r = S(6);
+        RECT pr{ codeCopyFlash->left - pad, codeCopyFlash->top - pad,
+                 codeCopyFlash->right + pad, codeCopyFlash->bottom + pad };
+        if (pr.bottom >= top && pr.top <= bot) {
+            RECT scr{ pr.left, pr.top - scrollY, pr.right, pr.bottom - scrollY };
+            HBRUSH br = CreateSolidBrush(th.sel);
+            HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, br);
+            HPEN oldPen = (HPEN)SelectObject(hdc, GetStockObject(NULL_PEN));
+            RoundRect(hdc, scr.left, scr.top, scr.right, scr.bottom, r * 2, r * 2);
+            SelectObject(hdc, oldPen);
+            SelectObject(hdc, oldBrush);
+            DeleteObject(br);
+        }
+    }
+
     // phase 3: text
     SetBkMode(hdc, TRANSPARENT);
     for (const auto& c : g_cmds) {
@@ -365,5 +403,13 @@ void PaintDocument(HDC hdc, int scrollY, int clientW, int clientH, const Theme& 
         SetTextColor(hdc, c.color);
         TextOutW(hdc, c.x, c.y - scrollY, c.text.c_str(), (int)c.text.size());
         SelectObject(hdc, old);
+    }
+
+    // phase 4: afterText decorations (table grid lines, strikethroughs, link
+    // underlines, the copy-button icon frames) — on top of the glyphs, exactly
+    // like the macOS painter.
+    for (const auto& c : g_cmds) {
+        if (c.kind == C_TEXT || !c.afterText) continue;
+        PaintShapeCmd(hdc, c, scrollY, top, bot);
     }
 }

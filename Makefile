@@ -26,7 +26,7 @@ CLI_DEPS := core/str.h core/markdown.h core/edit_assist.h core/release_info.h co
 CLI_BIN  := build/fmdv-cli
 
 # macOS frontend (headless renderer for now): CoreText/CoreGraphics via .mm.
-MAC_SRCS := frontends/macos/main.mm frontends/macos/app.mm frontends/macos/mac_render.mm core/str.cpp core/markdown.cpp core/layout.cpp core/edit_assist.cpp core/release_info.cpp core/text_select.cpp
+MAC_SRCS := frontends/macos/main.mm frontends/macos/app.mm frontends/macos/mac_render.mm core/str.cpp core/markdown.cpp core/layout.cpp core/edit_assist.cpp core/release_info.cpp core/text_select.cpp core/html_copy.cpp
 MAC_DEPS := frontends/macos/mac_render.h core/layout.h core/markdown.h core/str.h
 MAC_FRAMEWORKS := -framework Cocoa -framework CoreGraphics -framework CoreText -framework ImageIO -framework CoreServices
 MAC_BIN  := build/fmdv-macos
@@ -128,10 +128,10 @@ notarize:
 	scripts/notarize.sh "$(FMDV_NOTARY_PROFILE)"
 
 # --- unit tests: one binary per core module (tests/<name>_test.cpp) ---
-TEST_NAMES := str markdown edit_assist release_info layout text_select bench_log
+TEST_NAMES := str markdown edit_assist release_info layout text_select bench_log html_copy
 TEST_BINS  := $(TEST_NAMES:%=build/%-test)
-TEST_CORE  := core/str.cpp core/markdown.cpp core/edit_assist.cpp core/release_info.cpp core/layout.cpp core/text_select.cpp
-TEST_HDRS  := tests/test_check.h core/str.h core/markdown.h core/edit_assist.h core/release_info.h core/layout.h core/text_select.h core/bench_log.h
+TEST_CORE  := core/str.cpp core/markdown.cpp core/edit_assist.cpp core/release_info.cpp core/layout.cpp core/text_select.cpp core/html_copy.cpp
+TEST_HDRS  := tests/test_check.h core/str.h core/markdown.h core/edit_assist.h core/release_info.h core/layout.h core/text_select.h core/bench_log.h core/html_copy.h
 
 build/%-test: tests/%_test.cpp $(TEST_CORE) $(TEST_HDRS)
 	@mkdir -p build

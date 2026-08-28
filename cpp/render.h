@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include "markdown.h"
+#include "layout.h"
 #include "theme.h"
 
 // A clickable link rectangle recorded during layout.
@@ -25,10 +26,13 @@ struct TaskHit {
 };
 
 // A clickable "copy to clipboard" button in a code block's top-right corner.
-// rc is in DOCUMENT space (not scroll-adjusted, like LinkHit/TaskHit). text is
-// that block's raw code, verbatim, ready to paste into a terminal.
+// rc is in DOCUMENT space (not scroll-adjusted, like LinkHit/TaskHit). iconRc
+// is the icon's own tight visual bounds (click feedback highlights it, not the
+// extra click padding). text is that block's raw code, verbatim, ready to
+// paste into a terminal.
 struct CodeCopyHit {
     RECT rc;
+    RECT iconRc;
     std::wstring text;
 };
 
@@ -40,6 +44,7 @@ struct TextFrag {
     std::wstring text;
     HFONT font;
     bool spaceBefore = false; // a space separated this frag from the previous one on the line
+    fmdv::FontSpec spec;      // role/bold/italic of this run — rich (HTML) copy source
 };
 
 // A point in the selectable text: which fragment and which character within it.
@@ -85,9 +90,13 @@ int LayoutDocument(HDC hdc, int width, const Document& doc, const Theme& th,
 // `findMatches`/`currentMatch`, if given, draw find-in-doc highlights (all
 // matches lightly, the current one emphasized) behind the text, same as
 // selection.
+// `codeCopyFlash`, if given (the copy-button icon's DOCUMENT-space rect),
+// draws the soft click-feedback pill behind that icon — before the text pass,
+// which also keeps the afterText decorations (icon frames) above it.
 void PaintDocument(HDC hdc, int scrollY, int clientW, int clientH, const Theme& th,
                    const Selection* sel, const std::vector<TextFrag>& frags,
-                   const std::vector<FindMatch>* findMatches = nullptr, int currentMatch = -1);
+                   const std::vector<FindMatch>* findMatches = nullptr, int currentMatch = -1,
+                   const RECT* codeCopyFlash = nullptr);
 
 // Free cached GDI font objects (call at exit).
 void FreeFontCache();

@@ -28,7 +28,8 @@ add_library(fmdv_core STATIC
   core/edit_assist.cpp
   core/release_info.cpp
   core/layout.cpp
-  core/text_select.cpp)
+  core/text_select.cpp
+  core/html_copy.cpp)
 target_include_directories(fmdv_core PUBLIC core)
 if(MSVC)
   target_compile_options(fmdv_core PRIVATE /W4)
@@ -45,7 +46,7 @@ target_compile_definitions(fmdv-cli PRIVATE
 
 # --- core unit tests (also run by `make test`; here wired to ctest) ---
 enable_testing()
-foreach(t str markdown edit_assist release_info layout text_select bench_log)
+foreach(t str markdown edit_assist release_info layout text_select bench_log html_copy)
   add_executable(${t}-test tests/${t}_test.cpp)
   target_link_libraries(${t}-test PRIVATE fmdv_core)
   add_test(NAME ${t} COMMAND ${t}-test)

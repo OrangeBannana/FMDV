@@ -19,6 +19,7 @@
 #include "text_select.h"
 #include "edit_assist.h"
 #include "render.h"
+#include "html_copy.h"
 #include "prefs.h"
 #include "updater.h"
 #include "version.h"
@@ -387,6 +388,16 @@ static std::vector<LinkHit> g_links;
 static std::vector<TaskHit> g_taskHits;
 // clickable code-block copy buttons from the last layout (same coord space as links)
 static std::vector<CodeCopyHit> g_codeCopyHits;
+// copy-button click feedback (the Windows half of the macOS soft flash): the
+// codeCopyHit being flashed, a GetTickCount deadline (~500ms, the same window
+// as the macOS dispatch_after), and a 50ms heartbeat timer that clears it.
+// While active, the paint pass draws a soft rounded pill behind the icon's own
+// bounds (iconRc), the macOS `codeCopyFlash` counterpart.
+static int g_copyFlashIdx = -1;
+static DWORD g_copyFlashUntil = 0;
+static const UINT_PTR COPYFLASH_TIMER = 4;
+static std::wstring g_savedFlashTitle;      // window title while the test hook overrode it
+static bool g_savedFlashTitleSet = false;
 
 // text selection state
 static std::vector<TextFrag> g_frags;   // drawn text runs from the last paint
@@ -537,6 +548,81 @@ static void SetClipboardText(HWND hwnd, const std::wstring& s) {
     CloseClipboard();
 }
 
+// ---- code-copy button click flash (macOS soft-flash parity, 388c871/542cbb2) ----
+// FMDV_TEST_COPY_FLASH_LOG exposes the flash state through the window title
+// (COPYFLASH:<index> then the original title again) — the same harness
+// escape hatch as FMDV_TEST_LINK_LOG, since the pill itself is a paint detail.
+static bool CopyFlashLogging() {
+    return GetEnvironmentVariableW(L"FMDV_TEST_COPY_FLASH_LOG", nullptr, 0) > 0;
+}
+static void SetCodeCopyFlash(HWND hwnd, int idx) {
+    if (idx < 0 || idx >= (int)g_codeCopyHits.size()) return;
+    g_copyFlashIdx = idx;
+    g_copyFlashUntil = GetTickCount() + 500;
+    if (CopyFlashLogging() && !g_savedFlashTitleSet) {
+        int n = GetWindowTextLengthW(hwnd);
+        g_savedFlashTitle.assign((size_t)n, L'\0');
+        if (n > 0) GetWindowTextW(hwnd, &g_savedFlashTitle[0], n + 1);
+        g_savedFlashTitleSet = true;
+    }
+    if (CopyFlashLogging())
+        SetWindowTextW(hwnd, (L"COPYFLASH:" + std::to_wstring(idx)).c_str());
+    SetTimer(hwnd, COPYFLASH_TIMER, 50, nullptr);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+static void ClearCodeCopyFlash(HWND hwnd) {
+    bool was = g_copyFlashIdx >= 0;
+    g_copyFlashIdx = -1;
+    g_copyFlashUntil = 0;
+    if (was) KillTimer(hwnd, COPYFLASH_TIMER);
+    if (g_savedFlashTitleSet) {
+        SetWindowTextW(hwnd, g_savedFlashTitle.c_str());
+        g_savedFlashTitleSet = false;
+    }
+    if (was) InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Put the plain text and its HTML rendering on the clipboard in one session.
+// `html` is the FRAGMENT body; BuildCfHtmlPayload wraps it in the "HTML
+// Format" (CF_HTML) envelope with the standard offset header.
+static void SetClipboardTextHtml(HWND hwnd, const std::wstring& text,
+                                 const std::wstring& html) {
+    if (!OpenClipboard(hwnd)) return;
+    EmptyClipboard();
+    auto put = [&](const std::wstring& s, UINT fmt) {
+        if (s.empty()) return;
+        size_t bytes = (s.size() + 1) * sizeof(wchar_t);
+        HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (!h) return;
+        void* p = GlobalLock(h);
+        memcpy(p, s.c_str(), bytes);
+        GlobalUnlock(h);
+        if (!SetClipboardData(fmt, h)) GlobalFree(h); // clipboard owns it on success
+    };
+    put(text, CF_UNICODETEXT);
+    if (!html.empty()) {
+        UINT htmlFmt = RegisterClipboardFormatW(L"HTML Format");
+        if (htmlFmt) put(BuildCfHtmlPayload(html), htmlFmt);
+    }
+    CloseClipboard();
+}
+
+// The de-facto "HTML Format" clipboard layout (Word/Outlook-style, as Chrome
+// and paste consumers read it): CRLF-terminated header whose offsets count
+// UTF-16 code units from the start of the header, 1-based, 8 hex digits;
+// then the body with the fragment between explicit markers.
+static std::wstring BuildCfHtmlPayload(const std::wstring& fragment) {
+    const std::wstring prefix = L"<html><body><!--StartFragment-->";
+    const std::wstring suffix = L"<!--EndFragment--></body></html>\r\n";
+    auto hex8 = [](size_t v) { wchar_t b[9]; swprintf(b, 9, L"%08lx", (unsigned long)v); return std::wstring(b); };
+    return L"Version:0.9\r\nHTML-Context:000000e4\r\n"
+         + L"StartHTML:" + hex8(1) + L"\r\n"
+         + L"EndHTML:" + hex8(1 + prefix.size() + fragment.size() + suffix.size()) + L"\r\n"
+         + L"StartFragment:" + hex8(1 + prefix.size()) + L"\r\n"
+         + L"EndFragment:" + hex8(1 + prefix.size() + fragment.size()) + L"\r\n"
+         + prefix + fragment + suffix;
+}
+
 // Build the selected text and put it on the clipboard.
 static void CopySelection(HWND hwnd) {
     if (!g_sel.active) return;
@@ -554,8 +640,48 @@ static void CopySelection(HWND hwnd) {
         out += f.text.substr(c0, c1 - c0);
         top = f.rc.top;
     }
-    SetClipboardText(hwnd, out);
+
+    // Issue #36: preserve the rich formatting — write the selection's HTML
+    // next to the plain text (parity with macOS, which sets
+    // NSPasteboardTypeHTML). The markup is the shared core builder
+    // (core/html_copy), so both frontends paste the same tags; the fragment
+    // keeps CF_UNICODETEXT exactly as before.
+    std::wstring fragment;
+    if (!out.empty() && g_sel.a.frag >= 0 && g_sel.b.frag >= 0 &&
+        g_sel.b.frag < (int)g_frags.size()) {
+        std::vector<CopyFrag> cfrags;
+        cfrags.reserve(g_frags.size());
+        for (const auto& f : g_frags) {
+            CopyFrag cf;
+            cf.box = { (double)f.rc.left, (double)f.rc.top,
+                       (double)(f.rc.right - f.rc.left), (double)(f.rc.bottom - f.rc.top) };
+            cf.font = f.spec;
+            cf.text = f.text;            // Str == std::wstring on Windows
+            cf.baseline = f.rc.top;      // lines differ -> differing values (separator rule)
+            cfrags.push_back(cf);
+        }
+        std::vector<fmdv::LinkHit> clinks;
+        clinks.reserve(g_links.size());
+        for (const auto& l : g_links) {
+            fmdv::LinkHit cl;
+            cl.rect = { (double)l.rc.left, (double)l.rc.top,
+                        (double)(l.rc.right - l.rc.left), (double)(l.rc.bottom - l.rc.top) };
+            cl.href = l.href;            // Str == std::wstring on Windows
+            clinks.push_back(cl);
+        }
+        std::string fragUtf8 = fmdv::ClipboardHtmlFragment(
+            cfrags, (std::size_t)g_sel.a.frag, (std::size_t)g_sel.a.ch,
+            (std::size_t)g_sel.b.frag, (std::size_t)g_sel.b.ch, clinks);
+        int need = MultiByteToWideChar(CP_UTF8, 0, fragUtf8.data(), (int)fragUtf8.size(),
+                                       nullptr, 0);
+        fragment.assign((size_t)need, L'\0');
+        if (need)
+            MultiByteToWideChar(CP_UTF8, 0, fragUtf8.data(), (int)fragUtf8.size(),
+                                &fragment[0], need);
+    }
+    SetClipboardTextHtml(hwnd, out, fragment);
 }
+
 
 static void ApplyZoom(HWND hwnd, int pct) {
     if (pct < 50) pct = 50;
@@ -719,9 +845,11 @@ static bool SaveToFile() {
 static bool CopyCodeBlockAt(HWND hwnd, int clientX, int clientY) {
     int bx = clientX - PreviewLeft();
     int by = clientY + g_scrollY;
-    for (const auto& h : g_codeCopyHits) {
+    for (size_t i = 0; i < g_codeCopyHits.size(); i++) {
+        const CodeCopyHit& h = g_codeCopyHits[i];
         if (bx < h.rc.left || bx >= h.rc.right || by < h.rc.top || by >= h.rc.bottom) continue;
         SetClipboardText(hwnd, h.text);
+        SetCodeCopyFlash(hwnd, (int)i);   // click feedback, same as macOS
         return true;
     }
     return false;
@@ -1682,8 +1810,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         FillRect(mem, &prc, bg);
         DeleteObject(bg);
 
+        // copy-button click flash: the active icon's own bounds (document
+        // space); PaintDocument draws the soft pill one step larger
+        RECT flashIcon;
+        const RECT* codeCopyFlash = nullptr;
+        if (g_copyFlashIdx >= 0 && g_copyFlashIdx < (int)g_codeCopyHits.size()) {
+            flashIcon = g_codeCopyHits[g_copyFlashIdx].iconRc;
+            codeCopyFlash = &flashIcon;
+        }
         PaintDocument(mem, g_scrollY, pw, h, g_theme, &g_sel, g_frags,
-                      g_findHwnd ? &g_findMatches : nullptr, g_findCurrent);
+                      g_findHwnd ? &g_findMatches : nullptr, g_findCurrent,
+                      codeCopyFlash);
         BitBlt(hdc, previewLeft, 0, pw, h, mem, 0, 0, SRCCOPY);
 
         // divider bar
@@ -2084,6 +2221,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_TIMER:
+        if (wp == COPYFLASH_TIMER) {
+            if (GetTickCount() >= g_copyFlashUntil) ClearCodeCopyFlash(hwnd);
+            return 0;
+        }
         if (wp == AUTOSCROLL_TIMER) {
             if (!g_selecting) { KillTimer(hwnd, AUTOSCROLL_TIMER); g_autoScroll = false; return 0; }
             int step = (g_dragPt.y < 0) ? -40 : 40;

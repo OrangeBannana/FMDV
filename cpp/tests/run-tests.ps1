@@ -606,6 +606,131 @@ $g.Dispose(); $bmp.Dispose()
 Check "narrow live-resize screenshot captured" ((Test-Path "$fix\resize_narrow_live.png") -and (Get-Item "$fix\resize_narrow_live.png").Length -gt 1500)
 if (-not $p.HasExited) { $p.Kill() }
 
+# ==== macOS parity (fixes since v1.2.2: 388c871 button, 542cbb2 radii+flash,
+#      e79b078/80aaa22 HTML copy, c90c8e0 find X) ====
+
+Write-Host "`nCopy button: click feedback + raw-code clipboard (388c871 parity):" -ForegroundColor Cyan
+$cc = "$fix\codeonly.md"
+[System.IO.File]::WriteAllText($cc, "# Code only`n`n```python`nhello = `\"code world`"`nline two`n```")
+function FindCopyBtn($h, $cw) {
+    # button sits in the code box's top-right header strip (box x=40..clientW-40
+    # at 1x); sweep the strip at generous steps instead of assuming the scale
+    for ($y = 34; $y -le 120; $y += 4) {
+        for ($x = $cw - 140; $x -le $cw - 28; $x += 8) {
+            ClickAt $h $x $y
+            if ((Get-Clipboard -Raw) -eq $sentinelCode) { return @{ x = $x; y = $y } }
+        }
+    }
+    return $null
+}
+$sentinelCode = "FMDV_SENTINEL_$(Get-Random)"
+Set-Clipboard -Value $sentinelCode
+$p = Launch $cc; $h = $p.MainWindowHandle; Start-Sleep -Milliseconds 250
+$cr2 = New-Object RECT; [T]::GetClientRect($h, [ref]$cr2) | Out-Null; $cw2 = $cr2.Right - $cr2.Left
+$hit = FindCopyBtn $h $cw2
+Check "copy button: found by sweep, clipboard changed" ($null -ne $hit)
+if ($null -ne $hit) {
+    $lines = (Get-Clipboard -Raw) -split "`r?`n"
+    Check "copy button: exact code text, verbatim" (($lines[0] -eq 'hello = "code world"') -and ($lines[1] -eq 'line two'))
+    Check "copy button: no extra clipboard lines" ($lines.Count -eq 2)
+}
+Check "copy button: window stable" (-not $p.HasExited)
+# a plain (non-button) click must leave the clipboard alone — no accidental
+# selection, same guarantee as the checkbox "no fall-through" test above
+Set-Clipboard -Value $sentinelCode
+ClickAt $h 60 150    # inside the code text area, clearly not the button strip
+[T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_COPY, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 200
+Check "copy button: plain text click + Ctrl+C is a no-op" ((Get-Clipboard -Raw) -eq $sentinelCode)
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+Write-Host "`nRich HTML clipboard (e79b078/80aaa22 parity, issue #36):" -ForegroundColor Cyan
+$p = Launch $basic; $h = $p.MainWindowHandle; Start-Sleep -Milliseconds 250
+[T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_SELALL, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 150
+[T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_COPY, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 250
+$html = $(Get-Clipboard -Format Html 2>$null)
+$html = [string]$html
+Check "html: clipboard carries HTML Format" ($html.Length -gt 100)
+Check "html: CF_HTML header present" ($html -match "Version:0\.9" -and $html -match "StartFragment:")
+Check "html: fragment markers present" ($html -match "<!--StartFragment-->" -and $html -match "<!--EndFragment-->")
+Check "html: heading tag"    ($html -match "<h1>Heading One</h1>")
+Check "html: bold tag"       ($html -match "<b>bold</b>")
+Check "html: italic tag"     ($html -match "<i>italic</i>")
+Check "html: code tag"       ($html -match "<code style=`"white-space:pre`">code</code>")
+Check "html: link tag"       ($html -match "href=`"https://example.com`">Example Link</a>")
+$raw = Get-Clipboard -Raw
+Check "html: plain text still alongside" (($raw -match "Heading One") -and ($raw -match "Example Link"))
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+Write-Host "`nCopy button flash state (542cbb2 parity, FMDV_TEST_COPY_FLASH_LOG):" -ForegroundColor Cyan
+function FindCopyBtnFlash($h, $cw) {
+    for ($y = 34; $y -le 120; $y += 4) {
+        for ($x = $cw - 140; $x -le $cw - 28; $x += 8) {
+            ClickAt $h $x $y
+            $t = GetWinTitle $h
+            if ($t -match '^COPYFLASH:\d+$') { return @{ x = $x; y = $y } }
+        }
+    }
+    return $null
+}
+$env:FMDV_TEST_COPY_FLASH_LOG = "1"
+$p = Launch $cc; $h = $p.MainWindowHandle; Start-Sleep -Milliseconds 250
+$cr3 = New-Object RECT; [T]::GetClientRect($h, [ref]$cr3) | Out-Null; $cw3 = $cr3.Right - $cr3.Left
+$hit = FindCopyBtnFlash $h $cw3
+Check "flash: COPYFLASH title hook fires on button click" ($null -ne $hit)
+Start-Sleep -Milliseconds 900    # 500ms window + timer ticks + margin
+$t = GetWinTitle $h
+Check "flash: state cleared after ~500ms (title restored)" ($t -ne $null -and $t -notmatch '^COPYFLASH:')
+Check "flash: window stable" (-not $p.HasExited)
+Remove-Item Env:\FMDV_TEST_COPY_FLASH_LOG
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+Write-Host "`nFind bar X close (c90c8e0 parity):" -ForegroundColor Cyan
+$p = Launch $basic; $h = $p.MainWindowHandle; Start-Sleep -Milliseconds 250
+[T]::PostMessage($h, $WM_COMMAND, [IntPtr]$ID_FIND, [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 300
+$fb = [T]::FindWindowW("FMDV_FindBar", $null)
+Check "find X: bar opens" ($fb -ne [IntPtr]::Zero)
+$xb = [T]::FindWindowExW($fb, [IntPtr]::Zero, "BUTTON", $null)
+Check "find X: close (X) button child exists" ($xb -ne [IntPtr]::Zero)
+if ($xb -ne [IntPtr]::Zero) {
+    [T]::SendInt($xb, 0x00F5, [IntPtr]0, [IntPtr]0) | Out-Null   # BM_CLICK
+    Start-Sleep -Milliseconds 300
+}
+Check "find X: BM_CLICK closes the bar" ([T]::FindWindowW("FMDV_FindBar", $null) -eq [IntPtr]::Zero)
+Check "find X: main window stable" (-not $p.HasExited)
+if (-not $p.HasExited) { $p.Kill() }; Start-Sleep -Milliseconds 250
+
+Write-Host "`nRounded code-box corner (542cbb2 parity, pixel check on --dump):" -ForegroundColor Cyan
+& $exe $cc --dump "$fix\corner.png" --width 900 | Out-Null
+if (Test-Path "$fix\corner.png") {
+    $bmp = [System.Drawing.Image]::FromFile("$fix\corner.png")
+    try {
+        # locate the code box's top-left by scanning for the bg2 fill; the
+        # first bg2 pixel is the box interior (the only bg2 fill in this doc),
+        # so (x-4, y-4) must be plain background if the 8px corner is honored
+        $boxX = $null; $boxY = $null
+        $scan = [Math]::Min(320, $bmp.Width)
+        for ($y = 0; $y -lt $scan -and $null -eq $boxX; $y++) {
+            for ($x = 0; $x -lt $scan; $x++) {
+                $px = $bmp.GetPixel($x, $y)
+                if ([int]$px.R -eq 0xF6 -and [int]$px.G -eq 0xF8 -and [int]$px.B -eq 0xFA) { $boxX = $x; $boxY = $y; break }
+            }
+        }
+        Check "corner: bg2 code-box fill found" ($null -ne $boxX)
+        if ($null -ne $boxX -and $boxX -ge 4 -and $boxY -ge 4) {
+            $px = $bmp.GetPixel($boxX - 4, $boxY - 4)
+            Check "corner: diagonal-outside pixel is background white (rounded corner honored)" ([int]$px.R -eq 255 -and [int]$px.G -eq 255 -and [int]$px.B -eq 255)
+        } else {
+            Check "corner: diagonal-outside pixel is background white (rounded corner honored)" $false
+        }
+    } finally { $bmp.Dispose() }
+} else {
+    Check "corner: dump png produced" $false
+}
+
 # ---- summary ----
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host ("  {0} passed, {1} failed" -f $script:pass, $script:fail) -ForegroundColor ($(if($script:fail){"Red"}else{"Green"}))
