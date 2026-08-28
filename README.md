@@ -45,24 +45,29 @@ app* → browse to `fmdv.exe` → *Always*. Put the exe somewhere stable first
   or pin any version — including downgrades.
 - **Ctrl+Shift+O** table of contents sidebar — click a heading to jump to it.
 - **Ctrl+F** find in doc: highlights all matches, Enter/Shift+Enter step
-  through them (wraps around).
+  through them (wraps around), Esc or the bar's close (X) button dismisses.
+- Task checkboxes toggle in place on click (editor stays in sync).
+- Code-block copy button — one click copies the code verbatim; selection copy
+  also carries HTML formatting (headings, bold/italic, code, links) so pastes
+  keep their structure — the markup comes from the shared `core/html_copy`.
 
-## macOS port (in progress)
-A native macOS frontend is being built on a shared, platform-neutral `core/`
-(parser, edit helpers, layout, find/selection) with an AppKit +
-CoreText/CoreGraphics UI — no browser engine, same priorities as the Windows
-app. It currently opens files and renders (light/dark), scrolls, zooms,
-selects/copies, follows links, finds (**⌘F**), shows a TOC sidebar
-(**⌘⇧O**), and has a split editor (**⌘E**) with ghost-text autocomplete, list
-continuation, and table insert (**⌘T**). It also reloads on external file
-changes and persists dark/zoom/split across launches. CI builds the CLI, the
-`.app`, and renders fixtures on `macos-latest`.
-
-Not yet at full parity: the **updater** has no in-app install — it checks GitHub
-on launch and shows a passive "update available" banner (⌘U for details), but
-auto-update/pin/install need the pending packaging work (signing/notarization,
-a macOS release artifact). The complete tracker is in
-[docs/macos-implementation-guide.md](docs/macos-implementation-guide.md#remaining-work).
+## macOS port
+A native macOS frontend is built on the shared, platform-neutral `core/`
+(parser, edit helpers, layout, find/selection, clipboard HTML) with an
+AppKit + CoreText/CoreGraphics UI — no browser engine, same priorities as the
+Windows app. It opens files and renders (light/dark), scrolls, zooms,
+selects/copies (incl. the rich HTML clipboard), follows links, finds
+(**⌘F**, with the close X button), shows a TOC sidebar (**⌘⇧O**), and has a
+split editor (**⌘E**) with ghost-text autocomplete, list continuation,
+checkbox toggling, and table insert (**⌘T**). It reloads on external file
+changes, persists dark/zoom/split across launches, and carries the full
+**⌘U** updater parity set (notify / auto-update / pin / in-app install with
+bundle swap). CI builds the CLI and the `.app`, runs the gating
+`tests/run-tests.sh` UI suite (88 checks), and renders fixtures on
+`macos-latest`. Feature parity is complete
+([docs/macos-implementation-guide.md](docs/macos-implementation-guide.md#remaining-work),
+2026-07-11); the only open item is a small hands-on QA residue, and
+Developer ID signing + notarization run as the manual local release step.
 
 ## Source & build
 The app is in [`cpp/`](cpp/) — see [cpp/README.md](cpp/README.md) for build

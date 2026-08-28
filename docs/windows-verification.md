@@ -234,3 +234,33 @@ review alone. All five are now closed:
 All of the above ran against a real `fmdv.exe`/`fmdv_dbg.exe` build (MinGW-w64
 UCRT g++ 16.1.0) — full suite: **93/93 passed**, plus core `text_select` still
 `ALL PASS` (40 cases, including the new punctuation-trim ones).
+
+## 5. Windows parity since v1.2.2 (2026-08-28, `6ed437f`)
+
+The macOS fixes from the Aug 26–27 commits (HTML clipboard copy #36,
+code-block copy button + soft click feedback, find-bar X, decoration z-order,
+rounded corners, inline-code leading) landed on Win32 on
+`fix/windows-parity-rich-copy-flash`. The machine-checkable parts are automated
+in the five new `run-tests.ps1` sections (copy-button clipboard, CF_HTML
+shape, flash lifecycle, find X, corner pixels) — the items below are what a
+human eye still has to confirm on a real desktop:
+
+- [ ] **Copy button feedback** — clicking a code block's copy icon shows a
+      soft rounded highlight around the icon for ~half a second, then eases
+      back (no hard flash, no repaint storm). Paste the copied code into
+      Notepad/Word: verbatim text, including quotes and indentation.
+- [ ] **Rich selection copy** — select text spanning a heading, `**bold**`,
+      `*italic*`, `` `code` ``, and a [link](https://example.com); Ctrl+C;
+      paste into Word or Outlook — heading level, bold, italic, code styling,
+      and the live link all survive (HTML clipboard), and pasting plain
+      (Notepad) still returns the correct text.
+- [ ] **Decoration z-order** — strikethrough strikes *through* the glyphs,
+      link underlines sit *under* the link text but *over* any background,
+      table gridlines draw over their cell text edges, and the copy icon is
+      crisp on top of the header strip (light + dark themes).
+- [ ] **Find bar X** — the close button sits at the bar's right edge; clicking
+      it returns focus to the document and leaves no match highlighting (the
+      machine only checks window teardown, not focus restore).
+- [ ] **Rounded corners** — code boxes and the copy icon have visibly rounded
+      corners in both themes (8 px / 3 px at 100 % zoom; the machine checks
+      one diagonal pixel on a `--dump` PNG).

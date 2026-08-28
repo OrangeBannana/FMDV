@@ -29,9 +29,19 @@ Custom markdown parser + GDI layout/renderer drawing directly to the window.
   past the window height are clipped rather than scrollable.
 - **Ctrl+F** — find in doc: a small search box highlights every match (current
   one emphasized), Enter/Shift+Enter step forward/backward with wraparound,
-  Esc closes. Matches don't span a formatting-change boundary within a line
-  (e.g. bold -> plain mid-match won't be found) — same frag-is-atomic
-  tradeoff selection/copy already make.
+  Esc or the bar's close (X) button closes it. Matches don't span a
+  formatting-change boundary within a line (e.g. bold -> plain mid-match won't
+  be found) — same frag-is-atomic tradeoff selection/copy already make.
+- Task checkboxes — click a `- [ ]` item in the preview to toggle it in place
+  (file updated, preview + editor re-sync); the editor pane stays consistent
+  while open.
+- Code-block copy button — each fenced block's header strip carries a small
+  icon; one click copies the code verbatim (plain text), with the same soft
+  ~500 ms rounded highlight feedback as the macOS app.
+- Rich selection copy — copying a preview selection also puts formatted HTML
+  on the clipboard (headings, bold/italic, code, links; plain text unchanged),
+  so pastes into Word/Outlook/VS Code keep their structure. The markup is
+  built by the shared `core/html_copy` (both frontends, unit-tested).
 - Scrolling: mouse wheel, scrollbar, PgUp/PgDn/Home/End/arrows/space.
 - Preferences (dark mode, split ratio, zoom, update mode/pin) saved to
   `%APPDATA%\fmdv\prefs.txt`.
@@ -68,12 +78,13 @@ $env:FMDV_BENCH_LABEL = "pre-core-split"
 # FMDV_VERSION_OVERRIDE=<ver> makes the app report that version (test hook)
 ```
 
-`tests\run-tests.ps1` builds both configurations and runs 73 checks: parser,
+`tests\run-tests.ps1` builds both configurations and runs 116 checks: parser,
 rendering, stability, TOC sidebar, find in doc, selection + clipboard,
 save round-trip, autocomplete, table picker (insert + resize), list
-continuation, updater. `tests\run-tests-hidden.ps1` runs the identical suite
-with every launched window relocated off-screen first, so it doesn't pop
-windows over whatever else you're doing.
+continuation, updater, task checkboxes, copy button + flash, HTML clipboard
+format, find-bar close button, rounded-corner pixels. `tests\run-tests-hidden.ps1`
+runs the identical suite with every launched window relocated off-screen first,
+so it doesn't pop windows over whatever else you're doing.
 
 ## Set as default app for .md
 1. Right-click any `.md` → **Open with → Choose another app**
@@ -102,4 +113,7 @@ Shared core (`../core/`):
   macOS frontend, measured through a per-frontend `TextMeasurer`
 - `edit_assist.h/.cpp` — autocomplete, list continuation, table generation
 - `release_info.h/.cpp` — release JSON parsing + version comparison
+- `text_select.h/.cpp` — selection/find span helpers (double-click word,
+  quoted-phrase span); shared by every frontend
+- `html_copy.h/.cpp` — clipboard HTML-fragment builder for rich selection copy
 - `bench_log.h` — structured benchmark logging schema

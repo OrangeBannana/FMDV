@@ -124,6 +124,51 @@ Remaining roadmap (not yet done):
 _(none)_
 
 ## Resolved
+- Windows parity: the macOS fixes since v1.2.2 landed on Win32 (2026-08-28,
+  `6ed437f` on `fix/windows-parity-rich-copy-flash`). Three gaps closed, with
+  tests at both levels: (1) **HTML clipboard copy (#36)** — the macOS inline
+  HTML-clipboard builder moved into shared `core/html_copy` (single source)
+  and both frontends now call it: Windows writes the selection as CF_HTML
+  (standard `"HTML Format"` offset header + StartFragment markers) alongside
+  the unchanged plain text; the mac `NSPasteboardTypeHTML` now comes from the
+  byte-identical fragment builder. New `tests/html_copy_test.cpp` (30
+  exact-output checks: styles, headings spanning wrapped frags, link-href
+  split/merge, entity escaping in content and hrefs, surrogate-pair-safe
+  slicing) was added to every build system plus the CI MinGW test matrix —
+  the CI job's hardcoded source/test lists had to be updated for that.
+  (2) **afterText z-order** — the 80aaa22 display-list flag was ignored by the
+  Win32 painter, so table grid/strikethrough/link-underline drew *under*
+  glyphs; `PaintDocument` now runs the mac-equivalent 4 passes
+  (backgrounds → highlights → text → afterText decorations), pinned by 24 new
+  `tests/layout_test.cpp` checks incl. the 8 px box / 3 px icon radius
+  contract and icon bounds inside the hit rect. (3) **Copy-button feedback**
+  — the code-block copy button now shows the same soft rounded ~500 ms pill
+  (th.sel, icon bounds) as macOS, cleared by a `WM_TIMER` heartbeat;
+  `FMDV_TEST_COPY_FLASH_LOG` mirrors `FMDV_TEST_LINK_LOG` for the harness.
+  `cpp/tests/run-tests.ps1` gained 5 live-UI parity sections (copy-button
+  exact clipboard + no accidental selection, CF_HTML shape + tag content,
+  flash lifecycle, find-bar X close via BM_CLICK, rounded-corner pixel check
+  on `--dump` PNGs — suite is now 116 checks). All 8 core suites green
+  locally (381 checks, gcc 15.2/Linux + `make test`-equivalent); the first
+  MinGW/UCRT64 compile and the live-UI run happen in CI on the PR.
+- Backfilled log entries for six since-v1.2.2 fixes that shipped without one
+  (2026-08-28; commits of 2026-08-26/27): **HTML clipboard copy on preview
+  copy** (#36, `e79b078`) — the selection now copies as formatted HTML
+  (headings, bold/italic, code, links) alongside plain text so a paste keeps
+  its structure; **rich-copy correctness + decoration z-order** (`80aaa22`)
+  — links/headings spanning wrapped lines, merged same-href links, entity
+  escaping, and decoration commands (strikethrough, link underline, table
+  grid) painting *over* the text via the display list's `afterText` flag
+  (mac honored it; the Win32 catch-up is the parity item above);
+  **code-block copy button** (`388c871`) — a small icon in each fenced
+  block's header strip copies the code verbatim on both frontends,
+  hit-test surfaced through `core/layout`'s `codeCopyHits`; **rounded
+  corners + soft click feedback** (`542cbb2`) — 8 px box / 3 px icon radii
+  and a soft ~500 ms rounded highlight on button click instead of a hard
+  flash; **find-bar close (X) button** (`c90c8e0`) on both frontends; and
+  **inline code leading bias** (`064bf01`) — inline code padding is now
+  weighted toward leading rather than trailing, with layout pins. All are
+  covered by `tests/run-tests.sh` sections and core layout/text_select pins.
 - Windows was missing the "launched with no file" open-dialog that macOS already
   has (2026-07-14 — regression/parity gap, not new in this port): `app.mm`'s
   `applicationDidFinishLaunching` shows an `NSOpenPanel` when launched without a
