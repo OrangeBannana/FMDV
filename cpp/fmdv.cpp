@@ -581,6 +581,7 @@ static void ClearCodeCopyFlash(HWND hwnd) {
     }
     if (was) InvalidateRect(hwnd, nullptr, FALSE);
 }
+static std::wstring BuildCfHtmlPayload(const std::wstring& fragment);
 
 // Put the plain text and its HTML rendering on the clipboard in one session.
 // `html` is the FRAGMENT body; BuildCfHtmlPayload wraps it in the "HTML
@@ -616,7 +617,7 @@ static std::wstring BuildCfHtmlPayload(const std::wstring& fragment) {
     const std::wstring suffix = L"<!--EndFragment--></body></html>\r\n";
     auto hex8 = [](size_t v) { wchar_t b[9]; swprintf(b, 9, L"%08lx", (unsigned long)v); return std::wstring(b); };
     return L"Version:0.9\r\nHTML-Context:000000e4\r\n"
-         + L"StartHTML:" + hex8(1) + L"\r\n"
+         L"StartHTML:" + hex8(1) + L"\r\n"
          + L"EndHTML:" + hex8(1 + prefix.size() + fragment.size() + suffix.size()) + L"\r\n"
          + L"StartFragment:" + hex8(1 + prefix.size()) + L"\r\n"
          + L"EndFragment:" + hex8(1 + prefix.size() + fragment.size()) + L"\r\n"
@@ -649,10 +650,10 @@ static void CopySelection(HWND hwnd) {
     std::wstring fragment;
     if (!out.empty() && g_sel.a.frag >= 0 && g_sel.b.frag >= 0 &&
         g_sel.b.frag < (int)g_frags.size()) {
-        std::vector<CopyFrag> cfrags;
+        std::vector<fmdv::CopyFrag> cfrags;
         cfrags.reserve(g_frags.size());
         for (const auto& f : g_frags) {
-            CopyFrag cf;
+            fmdv::CopyFrag cf;
             cf.box = { (double)f.rc.left, (double)f.rc.top,
                        (double)(f.rc.right - f.rc.left), (double)(f.rc.bottom - f.rc.top) };
             cf.font = f.spec;
