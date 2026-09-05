@@ -3,7 +3,7 @@
 **Goal:** Verify the branch tip builds and passes on real Windows **before** merging.
 **Rule:** test only — do NOT push anything, do NOT merge, do NOT modify sources.
 
-Branch tip at time of writing: **`ca3a42e`**. If the checked-out tip differs, stop
+Branch base at time of writing: **`ca3a42e`**; the tip must be **`c9c612e`** (this handoff doc) — verify both appear in `git log`. If the checked-out tip differs, stop
 and report — the tested byte sequence must match.
 
 ---
@@ -25,7 +25,7 @@ git clone https://github.com/OrangeBannana/FMDV.git   # or cd into an existing c
 cd FMDV
 git fetch origin fix/windows-parity-rich-copy-flash
 git checkout fix/windows-parity-rich-copy-flash
-git log -1 --oneline      # must print: ca3a42e (Gitignore: IDE/editor scratch…)
+git log -1 --oneline      # must print: c9c612e (this handoff doc); its parent is ca3a42e
 ```
 
 ### 3. Build + full automated suite (one command)
@@ -74,12 +74,12 @@ You are on a Windows 10/11 machine with Git and a MinGW-w64 UCRT64 toolchain
 report that as the single blocker and stop; do not install anything).
 
 Repo: https://github.com/OrangeBannana/FMDV.git
-Branch under test: fix/windows-parity-rich-copy-flash (tip must be ca3a42e)
+Branch under test: fix/windows-parity-rich-copy-flash (tip must be c9c612e or newer, with ca3a42e in its history)
 
 TASK — verify only. Do NOT modify sources, do NOT push, do NOT create PRs.
 
 1. git clone the repo (or use existing), git fetch, git checkout the branch,
-   confirm `git log -1 --oneline` starts with ca3a42e. If not, stop and report.
+   confirm `git log -1 --oneline` starts with c9c612e (this handoff doc). If not, stop and report.
 
 2. Run the full suite (it builds release+debug first):
    powershell -ExecutionPolicy Bypass -File cpp\tests\run-tests.ps1
@@ -125,7 +125,7 @@ real-toolchain behavior is the main open question. A build failure there is the
 most likely early signal; report it back for a same-turn fix + push, then re-run
 from step 2 on the Windows box.
 
-## Context: what this branch contains (tip `ca3a42e` over base `f285155`)
+## Context: what this branch contains (tip `c9c612e` over base `f285155`)
 | Commit | What |
 |---|---|
 | `6ed437f` | Parity: G1 afterText z-order, G2 copy-button flash, G3 rich HTML clipboard — Win32 port + tests + CI wiring |
@@ -134,6 +134,7 @@ from step 2 on the Windows box.
 | `5b5fe93` | Fix 3 Win32 G3 build errors found by cross-compilation |
 | `2d03570` | `.tools/` local toolchain dir → .gitignore |
 | `ca3a42e` | .gitignore: IDE/editor scratch, logs, wine prefix |
+| `c9c612e` | This handoff doc (instructions + agent prompt) |
 
 Already verified locally (Linux): full Win32 + all-core cross-compile green
 (-Wall -Wextra), 8/8 core suites cross-compiled to PE, 381/381 core checks on
