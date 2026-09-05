@@ -3,7 +3,7 @@
 **Goal:** Verify the branch tip builds and passes on real Windows **before** merging.
 **Rule:** test only — do NOT push anything, do NOT merge, do NOT modify sources.
 
-Branch base at time of writing: **`ca3a42e`**; the tip must be **`c9c612e`** (this handoff doc) — verify both appear in `git log`. If the checked-out tip differs, stop
+Branch base at time of writing: **`ca3a42e`**; the tip must be **`c9c612e`** (this handoff doc) or newer — verify both appear in `git log`. If the checked-out tip differs, stop
 and report — the tested byte sequence must match.
 
 ---
@@ -25,7 +25,7 @@ git clone https://github.com/OrangeBannana/FMDV.git   # or cd into an existing c
 cd FMDV
 git fetch origin fix/windows-parity-rich-copy-flash
 git checkout fix/windows-parity-rich-copy-flash
-git log -1 --oneline      # must print: c9c612e (this handoff doc); its parent is ca3a42e
+git merge-base --is-ancestor c9c612e HEAD && echo OK   # this doc + ca3a42e must be in the history (tip may be newer)
 ```
 
 ### 3. Build + full automated suite (one command)
@@ -79,7 +79,9 @@ Branch under test: fix/windows-parity-rich-copy-flash (tip must be c9c612e or ne
 TASK — verify only. Do NOT modify sources, do NOT push, do NOT create PRs.
 
 1. git clone the repo (or use existing), git fetch, git checkout the branch,
-   confirm `git log -1 --oneline` starts with c9c612e (this handoff doc). If not, stop and report.
+   confirm both c9c612e (this handoff doc) and ca3a42e are in its history:
+   `git merge-base --is-ancestor c9c612e HEAD && git merge-base --is-ancestor ca3a42e HEAD`.
+   If not, stop and report.
 
 2. Run the full suite (it builds release+debug first):
    powershell -ExecutionPolicy Bypass -File cpp\tests\run-tests.ps1
